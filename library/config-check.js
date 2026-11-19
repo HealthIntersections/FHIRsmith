@@ -176,9 +176,10 @@ const TOP = obj({
   auth: obj({
     database: str({ nonEmpty: true }),
     sessionSecret: str({ nonEmpty: true }),
-    administrators: arr(str({ pattern: /^(github:[A-Za-z0-9-]{1,39}|[^\s@]+@[^\s@]+)$/, patternText: 'an email address, or github:{name}' })),
+    administrators: arr(str({ pattern: /^(github:[A-Za-z0-9-]{1,39}|(google:)?[^\s@]+@[^\s@]+)$/, patternText: 'an email address, github:{name}, or google:{email}' })),
     publicUrl: url(),
     github: obj({ clientId: str({ nonEmpty: true, required: true }), clientSecret: str({ nonEmpty: true, required: true }), callbackUrl: url() }),
+    google: obj({ clientId: str({ nonEmpty: true, required: true }), clientSecret: str({ nonEmpty: true, required: true }), callbackUrl: url() }),
     cookieSecure: bool(),
     sessionHours: positive(),
     linkMinutes: int({ min: 1 }),

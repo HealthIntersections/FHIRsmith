@@ -61,6 +61,8 @@ class AuthStore {
         password_hash TEXT,
         github_id     TEXT UNIQUE,
         github_login  TEXT,
+        google_id     TEXT,
+        google_email  TEXT,
         enabled       INTEGER NOT NULL DEFAULT 1,
         epoch         INTEGER NOT NULL DEFAULT 0,
         notes         TEXT NOT NULL DEFAULT '',
@@ -107,6 +109,15 @@ class AuthStore {
       );
       CREATE INDEX IF NOT EXISTS login_events_at ON login_events(at);
     `);
+    // columns added since the table was first made
+    const cols = new Set(this.db.prepare('PRAGMA table_info(users)').all().map(c => c.name));
+    for (const c of ['google_id', 'google_email']) {
+      if (!cols.has(c)) {
+        this.db.exec(`ALTER TABLE users ADD COLUMN ${c} TEXT`);
+      }
+    }
+    // (SQLite can't add a UNIQUE column: an index does it)
+    this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_id)');
     this.db.pragma('foreign_keys = ON');
     this.pendingUse = new Map(); // token id -> { count, last }
     const p = sql => this.db.prepare(sql);
@@ -115,6 +126,8 @@ class AuthStore {
       userByLogin: p('SELECT * FROM users WHERE login = ?'),
       userByEmail: p('SELECT * FROM users WHERE email = ?'),
       userByGithub: p('SELECT * FROM users WHERE github_id = ?'),
+      userByGoogle: p('SELECT * FROM users WHERE google_id = ?'),
+      setGoogle: p('UPDATE users SET google_id = ?, google_email = ? WHERE id = ?'),
       users: p('SELECT * FROM users ORDER BY login'),
       insertUser: p('INSERT INTO users (login, name, email, github_id, github_login, notes, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
       updateUser: p('UPDATE users SET name = ?, email = ?, notes = ? WHERE id = ?'),
@@ -177,6 +190,38 @@ class AuthStore {
     return githubId ? this._user(this.stmts.userByGithub.get(String(githubId))) : null;
   }
 
+  userByGoogle(googleId) {
+    return googleId ? this._user(this.stmts.userByGoogle.get(String(googleId))) : null;
+  }
+
+  /** The user an identity from a login provider ('github', 'google') is linked to, or null */
+  userByIdentity(provider, id) {
+    return provider === 'github' ? this.userByGithub(id) : provider === 'google' ? this.userByGoogle(id) : null;
+  }
+
+  /**
+   * Link (or, with no id, unlink) a provider's identity: its id, and the handle shown for it
+   * (the GitHub login, the Google email)
+   */
+  setIdentity(provider, userId, id, handle) {
+    if (provider === 'github') {
+      return this.setGithub(userId, id, handle);
+    }
+    if (provider === 'google') {
+      return this.stmts.setGoogle.run(id ? String(id) : null, id ? handle : null, userId).changes > 0;
+    }
+    throw new Error(`Unknown login provider ${provider}`);
+  }
+
+  /** The id and handle of a provider's identity linked to this user row, or null */
+  static identityOf(user, provider) {
+    if (!user) {
+      return null;
+    }
+    const [id, handle] = provider === 'github' ? [user.github_id, user.github_login] : provider === 'google' ? [user.google_id, user.google_email] : [null, null];
+    return id ? { id, handle } : null;
+  }
+
   /** A login that isn't taken, from what's wanted: wanted, else wanted-2, wanted-3... */
   freeLogin(wanted) {
     let base = String(wanted || 'user').replace(/[^A-Za-z0-9._@+-]/g, '-').replace(/^[^A-Za-z0-9]+/, '').substring(0, 90) || 'user';
@@ -194,15 +239,23 @@ class AuthStore {
    * @returns {number} the new user's id
    * @throws if the login or email is taken, or not valid
    */
-  createUser({ login, name = '', email = null, githubId = null, githubLogin = null, notes = '' }) {
+  createUser({ login, name = '', email = null, githubId = null, githubLogin = null, notes = '', identity = null }) {
     if (!LOGIN_RE.test(login || '')) {
       throw new Error('A login is 2-100 letters, digits, and . _ @ + -, starting with a letter or digit');
     }
     if (email && !EMAIL_RE.test(email)) {
       throw new Error('That is not an email address');
     }
-    const r = this.stmts.insertUser.run(login, name, email || null, githubId ? String(githubId) : null, githubLogin, notes, now());
-    return Number(r.lastInsertRowid);
+    const create = () => {
+      const r = this.stmts.insertUser.run(login, name, email || null, githubId ? String(githubId) : null, githubLogin, notes, now());
+      const id = Number(r.lastInsertRowid);
+      // identity: {provider, id, handle}, from a login provider
+      if (identity) {
+        this.setIdentity(identity.provider, id, identity.id, identity.handle);
+      }
+      return id;
+    };
+    return this.db.transaction(create)();
   }
 
   updateUser(id, { name, email, notes }) {
@@ -260,7 +313,7 @@ class AuthStore {
    * A login (kind 'login'), or a failed login for an account that exists ('failed'), for the
    * daily report
    * @param {'login'|'failed'} kind
-   * @param {'password'|'github'} method
+   * @param {'password'|'github'|'google'} method
    */
   recordLogin(kind, method, userId) {
     this.stmts.insertEvent.run(now(), kind, method, userId ?? null);
@@ -274,7 +327,7 @@ class AuthStore {
     const from = new Date(since).toISOString();
     const to = new Date(until).toISOString();
     this.stmts.purgeEvents.run(new Date(until - EVENT_DAYS * 24 * 60 * 60 * 1000).toISOString());
-    const counts = { login: { password: 0, github: 0 }, failed: { password: 0, github: 0 } };
+    const counts = { login: { password: 0, github: 0, google: 0 }, failed: { password: 0, github: 0, google: 0 } };
     for (const r of this.stmts.countEvents.all(from, to)) {
       if (counts[r.kind]) {
         counts[r.kind][r.method] = (counts[r.kind][r.method] || 0) + r.n;

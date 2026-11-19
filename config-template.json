@@ -52,7 +52,7 @@
   },
   // The server's one login system (library/auth/README.md): users, roles and API tokens for
   // every module. People log in with a password (set from an emailed link: needs "email"
-  // above) or with GitHub; software uses API tokens. Optional; these are the defaults
+  // above), or with GitHub or Google; software uses API tokens. Optional; these are the defaults
   "auth": {
     // the users, sessions, roles and tokens, in the databases folder
     "database": "auth.db",
@@ -61,13 +61,16 @@
     "sessionSecret": "change-this-to-a-secure-random-string",
     // the administrators (server wide): email addresses (an account is made for each, and
     // the password set with Forgot password, or node server.js --password-link {email}),
-    // and github:{name} for a GitHub account. Others can be made administrators on the users page
+    // github:{name} for a GitHub account, and google:{email} for a Google account. Others can be made administrators on the users page
     "administrators": ["admin@example.org"],
     // where links in emails point; without it, https://{hostName}
     // "publicUrl": "https://tx.example.org",
     // logging in with GitHub: an OAuth app (https://github.com/settings/developers) whose
-    // callback URL is {publicUrl}/auth/github/callback. Without it, passwords only
+    // callback URL is {publicUrl}/auth/github/callback
     // "github": { "clientId": "...", "clientSecret": "..." },
+    // logging in with Google: an OAuth client (Google Cloud console, a web application) whose
+    // redirect URI is {publicUrl}/auth/google/callback. Without either, passwords only
+    // "google": { "clientId": "....apps.googleusercontent.com", "clientSecret": "..." },
     // session cookies only over HTTPS (behind a TLS proxy, make sure it sets X-Forwarded-Proto);
     // false only to run over plain http
     "cookieSecure": true,

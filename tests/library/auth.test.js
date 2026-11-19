@@ -489,6 +489,150 @@ describe('logging in with GitHub', () => {
   });
 });
 
+describe('logging in with Google', () => {
+  let app;
+  const realFetch = global.fetch;
+  let info;
+  beforeEach(async () => {
+    app = makeApp({ github: { clientId: 'gh', clientSecret: 'ghs' }, google: { clientId: 'gid', clientSecret: 'gsecret' }, administrators: ['google:boss@example.org'] });
+    info = { sub: '1001', email: 'Jane.Doe@example.org', email_verified: true, name: 'Jane Doe' };
+    global.fetch = async (url, init) => {
+      const u = String(url);
+      const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (u === 'https://oauth2.googleapis.com/token') {
+        const body = new URLSearchParams(init.body);
+        if (body.get('grant_type') !== 'authorization_code' || body.get('redirect_uri') !== 'https://fhir.example.org/auth/google/callback') {
+          return { ok: false, status: 400, json: async () => ({ error: 'invalid_request' }) };
+        }
+        return ok(body.get('code') === 'good' && body.get('client_secret') === 'gsecret' ? { access_token: 'ya29.x', id_token: 'x.y.z' } : { error: 'invalid_grant' });
+      }
+      if (u === 'https://openidconnect.googleapis.com/v1/userinfo') {
+        expect(init.headers.Authorization).toBe('Bearer ya29.x');
+        return ok(info);
+      }
+      throw new Error('unexpected fetch ' + u);
+    };
+  });
+  afterEach(() => {
+    global.fetch = realFetch;
+  });
+
+  async function viaGoogle(agent, { code = 'good', link = false } = {}) {
+    const start = link ? await form(agent, '/auth/account/google/link', {}, '/auth/account') : await agent.get('/auth/google?return=%2Fmodule%2Fpage');
+    expect(start.status).toBe(302);
+    const to = new URL(start.headers.location);
+    expect(to.origin + to.pathname).toBe('https://accounts.google.com/o/oauth2/v2/auth');
+    expect(to.searchParams.get('scope')).toBe('openid email profile');
+    expect(to.searchParams.get('response_type')).toBe('code');
+    expect(to.searchParams.get('redirect_uri')).toBe('https://fhir.example.org/auth/google/callback');
+    return agent.get(`/auth/google/callback?code=${code}&state=${encodeURIComponent(to.searchParams.get('state'))}`);
+  }
+
+  test('the login page: GitHub and Google first, then a line, then the password form', async () => {
+    const page = (await request(app).get('/auth/login?return=%2Fips')).text;
+    const gh = page.indexOf('href="/auth/github?return=%2Fips">Log in with GitHub');
+    const go = page.indexOf('href="/auth/google?return=%2Fips">Log in with Google');
+    const hr = page.indexOf('<hr/>');
+    const pw = page.indexOf('action="/auth/login"');
+    expect(gh).toBeGreaterThan(0);
+    expect(go).toBeGreaterThan(gh);
+    expect(hr).toBeGreaterThan(go);
+    expect(pw).toBeGreaterThan(hr);
+    expect(page).toContain('an account you have been given');
+    // with neither, just the form
+    const plain = (await request(makeApp()).get('/auth/login')).text;
+    expect(plain).not.toContain('<hr/>');
+    expect(plain).not.toContain('Log in with');
+  });
+
+  test('the first login makes an account with no roles, tied to Google\'s id; the next finds it', async () => {
+    const agent = request.agent(app);
+    const res = await viaGoogle(agent);
+    expect(res.headers.location).toBe('/module/page');
+    expect((await agent.get('/module/page')).text).toBe('hello Jane.Doe');
+    const u = auth.store.userByGoogle('1001');
+    expect(u.google_email).toBe('jane.doe@example.org');
+    expect(u.email).toBe('Jane.Doe@example.org');
+    expect(auth.store.rolesOf(u.id)).toEqual([]);
+    // a new address at Google: the same account
+    info.email = 'jane@example.org';
+    await viaGoogle(request.agent(app));
+    expect(auth.store.users()).toHaveLength(1);
+    expect(auth.store.userByGoogle('1001').google_email).toBe('jane@example.org');
+    expect(auth.dailyReport({ since: Date.now() - 60000, now: Date.now() + 1000 })).toMatch(/^2 logins, /);
+  });
+
+  test('an address Google hasn\'t verified, a bad code, or a made-up state is refused', async () => {
+    info.email_verified = false;
+    const res = await viaGoogle(request.agent(app));
+    expect(res.status).toBe(400);
+    expect(res.text).toContain('verified email');
+    info.email_verified = true;
+    expect((await viaGoogle(request.agent(app), { code: 'bad' })).status).toBe(400);
+    expect((await request.agent(app).get('/auth/google/callback?code=good&state=x')).status).toBe(400);
+    expect(auth.store.users()).toHaveLength(0);
+  });
+
+  test('accounts are not matched by email: an address another account has is not taken', async () => {
+    await makeUser('jane', GOOD, { email: 'jane.doe@example.org' });
+    await viaGoogle(request.agent(app));
+    const g = auth.store.userByGoogle('1001');
+    expect(g.login).not.toBe('jane');
+    expect(g.email).toBeNull();
+  });
+
+  test('a password account links Google and logs in with it; it can\'t unlink its only way in', async () => {
+    const id = await makeUser('jane', GOOD);
+    const { agent } = await login(app, 'jane', GOOD);
+    expect((await agent.get('/auth/account')).text).toContain('Link Google account');
+    expect((await viaGoogle(agent, { link: true })).headers.location).toBe('/auth/account');
+    const fresh = request.agent(app);
+    await viaGoogle(fresh);
+    expect((await fresh.get('/module/page')).text).toBe('hello jane');
+    // without a password, Google is the only way in
+    await auth.store.setPassword(id, null);
+    await viaGoogle(agent);
+    await form(agent, '/auth/account/google/unlink', {}, '/auth/account');
+    expect(auth.store.userByGoogle('1001').id).toBe(id);
+    expect((await agent.get('/auth/account')).text).toContain('Set a password first');
+  });
+
+  test('a configured google: administrator is one when Google says so', async () => {
+    info = { sub: '7', email: 'Boss@example.org', email_verified: true, name: 'Boss' };
+    await viaGoogle(request.agent(app));
+    expect(auth.principalById(auth.store.userByGoogle('7').id).isAdmin).toBe(true);
+    // the same address as a plain email entry is a different thing: google: needs Google's word
+    expect(auth.isConfiguredAdministrator({ email: 'boss@example.org' }, auth.configuredAdministrators())).toBeFalsy();
+  });
+
+  test('a database from before Google gets the columns', () => {
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const Database = require('better-sqlite3');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'auth-old-'));
+    const file = path.join(tmp, 'auth.db');
+    const old = new Database(file);
+    old.exec(`CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, login TEXT UNIQUE NOT NULL COLLATE NOCASE, name TEXT NOT NULL DEFAULT '',
+      email TEXT UNIQUE COLLATE NOCASE, password_hash TEXT, github_id TEXT UNIQUE, github_login TEXT, enabled INTEGER NOT NULL DEFAULT 1,
+      epoch INTEGER NOT NULL DEFAULT 0, notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, last_login_at TEXT)`);
+    old.prepare("INSERT INTO users (login, created_at) VALUES ('before', '2026-01-01T00:00:00Z')").run();
+    old.close();
+    const { AuthStore } = require('../../library/auth/store');
+    const store = new AuthStore(file, { bcryptCost: 4 });
+    try {
+      const u = store.userByLogin('before');
+      store.setIdentity('google', u.id, '55', 'before@example.org');
+      expect(store.userByGoogle('55').login).toBe('before');
+      const other = store.createUser({ login: 'other' });
+      expect(() => store.setIdentity('google', other, '55', 'x@example.org')).toThrow();
+    } finally {
+      store.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('the administrator\'s pages', () => {
   let app;
   let mailer;

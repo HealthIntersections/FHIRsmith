@@ -1,5 +1,5 @@
 // library/auth/pages.js
-// The pages under /auth: login (password or GitHub), logout, forgotten password and the
+// The pages under /auth: login (GitHub, Google or a password), logout, forgotten password and the
 // one-time password links, a user's own account, and the administrator's users pages.
 //
 // Every page with a form has auth.session + auth.csrf; every form post has sameOrigin,
@@ -10,7 +10,8 @@ const express = require('express');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
 const bcrypt = require('bcrypt');
-const github = require('./github');
+const oauth = require('./oauth');
+const { AuthStore } = require('./store');
 const { safeReturn, SERVER, ADMINISTRATOR, MIN_PASSWORD } = require('./auth');
 
 const TEMPLATE = 'root';
@@ -151,21 +152,50 @@ function buildRouter(auth) {
     req.session.destroy(() => res.redirect(back));
   }));
 
-  // ---- GitHub ----
+  // ---- GitHub, Google (oauth.js) ----
 
-  r.get('/github', session, h((req, res) => {
-    if (!auth.github) {
-      return sendError(auth, req, res, 404, 'GitHub login is not configured on this server');
-    }
-    github.start(auth, req, res, { returnTo: safeReturn(str(req.query.return), '/auth/account') });
-  }));
-  r.post('/account/github/link', sameOrigin, session, form, csrf, user, h((req, res) => {
-    if (!auth.github) {
-      return sendError(auth, req, res, 404, 'GitHub login is not configured on this server');
-    }
-    github.start(auth, req, res, { returnTo: '/auth/account', link: req.user.id });
-  }));
-  r.get('/github/callback', session, h((req, res) => githubCallback(auth, req, res)));
+  for (const p of Object.values(oauth.PROVIDERS)) {
+    // the routes exist whether or not the provider is configured: 404 if it isn't
+    const configured = (req, res) => {
+      if (!auth.providers[p.key]) {
+        sendError(auth, req, res, 404, `${p.label} login is not configured on this server`);
+        return false;
+      }
+      return true;
+    };
+    r.get(`/${p.key}`, session, h((req, res) => {
+      if (configured(req, res)) {
+        oauth.start(auth, p, req, res, { returnTo: safeReturn(str(req.query.return), '/auth/account') });
+      }
+    }));
+    r.get(`/${p.key}/callback`, session, h((req, res) => (configured(req, res) ? providerCallback(auth, p, req, res) : null)));
+    r.post(`/account/${p.key}/link`, sameOrigin, session, form, csrf, user, h((req, res) => {
+      if (configured(req, res)) {
+        oauth.start(auth, p, req, res, { returnTo: '/auth/account', link: req.user.id });
+      }
+    }));
+    r.post(`/account/${p.key}/unlink`, sameOrigin, session, form, csrf, user, h((req, res) => {
+      const u = auth.store.userById(req.user.id);
+      if (!u.password_hash && !linkedProviders(u).some(o => o.key !== p.key)) {
+        flash(req, `Set a password first: without one, and without ${p.label}, you could not log in`, 'danger');
+      } else {
+        auth.store.setIdentity(p.key, u.id, null, null);
+        auth.log.info(`Auth: '${u.login}' unlinked ${p.label}`);
+        flash(req, `${p.label} is no longer linked to your account`);
+      }
+      res.redirect('/auth/account');
+    }));
+    r.post(`/admin/users/:id/${p.key}/unlink`, sameOrigin, session, form, csrf, admin, h((req, res) => {
+      const u = targetUser(auth, req);
+      if (!u) {
+        return sendError(auth, req, res, 404, 'No such user');
+      }
+      auth.store.setIdentity(p.key, u.id, null, null);
+      auth.log.info(`Auth: ${p.label} unlinked from '${u.login}' by ${req.user.login}`);
+      flash(req, `${p.label} unlinked`);
+      res.redirect(`/auth/admin/users/${u.id}`);
+    }));
+  }
 
   // ---- forgotten passwords, and the links that set one ----
 
@@ -192,17 +222,6 @@ function buildRouter(auth) {
     }
     res.redirect('/auth/account');
   }));
-  r.post('/account/github/unlink', sameOrigin, session, form, csrf, user, h((req, res) => {
-    const u = auth.store.userById(req.user.id);
-    if (!u.password_hash) {
-      flash(req, 'Set a password first: without one, and without GitHub, you could not log in', 'danger');
-    } else {
-      auth.store.setGithub(u.id, null, null);
-      auth.log.info(`Auth: '${u.login}' unlinked GitHub`);
-      flash(req, 'GitHub is no longer linked to your account');
-    }
-    res.redirect('/auth/account');
-  }));
   r.post('/account/tokens', sameOrigin, session, form, csrf, user, h((req, res) => issueToken(auth, req, res, req.user.id, '/auth/account')));
   r.post('/account/tokens/:tid/revoke', sameOrigin, session, form, csrf, user, h((req, res) => revokeToken(auth, req, res, req.user.id, '/auth/account')));
   r.post('/account/logout-everywhere', sameOrigin, session, form, csrf, user, h((req, res) => {
@@ -225,17 +244,7 @@ function buildRouter(auth) {
     }
     await auth.store.setPassword(u.id, null);
     auth.log.info(`Auth: password of '${u.login}' removed by ${req.user.login}`);
-    flash(req, 'Password removed: the user can only log in with GitHub, or after setting a new one from a link');
-    res.redirect(`/auth/admin/users/${u.id}`);
-  }));
-  r.post('/admin/users/:id/github/unlink', sameOrigin, session, form, csrf, admin, h((req, res) => {
-    const u = targetUser(auth, req);
-    if (!u) {
-      return sendError(auth, req, res, 404, 'No such user');
-    }
-    auth.store.setGithub(u.id, null, null);
-    auth.log.info(`Auth: GitHub unlinked from '${u.login}' by ${req.user.login}`);
-    flash(req, 'GitHub unlinked');
+    flash(req, 'Password removed: the user can only log in with GitHub or Google, or after setting a new one from a link');
     res.redirect(`/auth/admin/users/${u.id}`);
   }));
   r.post('/admin/users/:id/sessions', sameOrigin, session, form, csrf, admin, h((req, res) => {
@@ -277,19 +286,30 @@ function buildRouter(auth) {
 
 function sendLogin(auth, req, res, status, error) {
   const ret = safeReturn(str(req.query.return || req.body?.return), '');
+  const q = ret ? `?return=${escape(encodeURIComponent(ret))}` : '';
   let h = alert(error ? { text: error, level: 'danger' } : takeFlash(req));
+  // first, logging in with another site's account: anyone can, and the first time makes an account
+  const providers = Object.values(oauth.PROVIDERS).filter(p => auth.providers[p.key]);
+  if (providers.length > 0) {
+    h += '<p>' + providers.map(p => `<a class="btn btn-outline-dark" style="margin: 0 8px 8px 0" href="/auth/${p.key}${q}">Log in with ${p.label}</a>`).join('') + '</p>' +
+      `<p class="text-muted"><small>Logging in with ${providers.map(p => p.label).join(' or ')} the first time makes you an account. ` +
+      'It can\'t do anything until the administrator gives it a role.</small></p><hr/>' +
+      '<p>Or log in with the username and password of an account you have been given:</p>';
+  }
   h += `<form method="post" action="/auth/login" style="max-width: 420px">${csrfField(res)}` +
     (ret ? `<input type="hidden" name="return" value="${escape(ret)}"/>` : '') +
     field('login', 'Username or email', 'text', { required: true, autocomplete: 'username' }) +
     field('password', 'Password', 'password', { required: true, autocomplete: 'current-password' }) +
     '<button type="submit" class="btn btn-primary">Log in</button> &nbsp; ' +
-    `<a href="/auth/forgot${ret ? `?return=${escape(encodeURIComponent(ret))}` : ''}">Forgotten your password?</a></form>`;
-  if (auth.github) {
-    h += `<p style="margin-top: 1.5em"><a class="btn btn-outline-dark" href="/auth/github${ret ? `?return=${escape(encodeURIComponent(ret))}` : ''}">Log in with GitHub</a></p>` +
-      '<p class="text-muted"><small>Logging in with GitHub the first time makes you an account. It can\'t do anything until the administrator gives it a role.</small></p>';
-  }
+    `<a href="/auth/forgot${q}">Forgotten your password?</a></form>`;
   h += `<p class="text-muted"><small><a href="${HELP_URL}">How logging in works</a></small></p>`;
   render(auth, req, res, 'Log in', h, status);
+}
+
+/** The providers whose identity is linked to this user row: [{key, label, handle}] */
+function linkedProviders(u) {
+  return Object.values(oauth.PROVIDERS).map(p => ({ p, i: AuthStore.identityOf(u, p.key) }))
+    .filter(x => x.i).map(x => ({ key: x.p.key, label: x.p.label, handle: x.i.handle }));
 }
 
 async function login(auth, req, res) {
@@ -312,20 +332,17 @@ async function login(auth, req, res) {
   res.redirect(safeReturn(str(req.body.return), '/auth/account'));
 }
 
-async function githubCallback(auth, req, res) {
-  if (!auth.github) {
-    return sendError(auth, req, res, 404, 'GitHub login is not configured on this server');
-  }
+async function providerCallback(auth, p, req, res) {
   let o;
-  let gh;
+  let who;
   try {
-    o = github.checkState(req);
-    gh = await github.identity(auth, req);
+    o = oauth.checkState(p, req);
+    who = await oauth.identity(auth, p, req);
   } catch (e) {
-    auth.log.info(`Auth: GitHub login failed from ${req.ip}: ${e.message}`);
+    auth.log.info(`Auth: ${p.label} login failed from ${req.ip}: ${e.message}`);
     return sendError(auth, req, res, 400, e.message);
   }
-  const bound = auth.store.userByGithub(gh.id);
+  const bound = auth.store.userByIdentity(p.key, who.id);
   if (o.link) {
     // linking to the account logged in when it started (and still logged in)
     const me = auth.currentUser(req);
@@ -333,37 +350,38 @@ async function githubCallback(auth, req, res) {
       return sendError(auth, req, res, 400, 'You are no longer logged in as the account you were linking');
     }
     if (bound && bound.id !== me.id) {
-      return sendError(auth, req, res, 400, `The GitHub account ${gh.login} is already linked to another account here`);
+      return sendError(auth, req, res, 400, `The ${p.label} account ${who.handle} is already linked to another account here`);
     }
-    auth.store.setGithub(me.id, gh.id, gh.login);
-    auth.log.info(`Auth: '${me.login}' linked GitHub ${gh.login} (${gh.id})`);
-    flash(req, `GitHub ${gh.login} is linked: you can log in with it now`);
+    auth.store.setIdentity(p.key, me.id, who.id, who.handle);
+    auth.log.info(`Auth: '${me.login}' linked ${p.label} ${who.handle} (${who.id})`);
+    flash(req, `${p.label} ${who.handle} is linked: you can log in with it now`);
     return res.redirect('/auth/account');
   }
   let u = bound;
   if (u) {
-    if (u.github_login !== gh.login) {
-      auth.store.setGithub(u.id, gh.id, gh.login); // renamed on GitHub
+    const had = AuthStore.identityOf(u, p.key);
+    if (had.handle !== who.handle) {
+      auth.store.setIdentity(p.key, u.id, who.id, who.handle); // renamed on GitHub, a new address at Google
       u = auth.store.userById(u.id);
     }
   } else {
-    // a new account, with no roles. The email is GitHub's verified one, unless an account here
-    // already has it - accounts are never matched by email
-    const email = gh.email && !auth.store.userByEmail(gh.email) ? gh.email : null;
+    // a new account, with no roles. The email is the provider's verified one, unless an account
+    // here already has it - accounts are never matched by email
+    const email = who.email && !auth.store.userByEmail(who.email) ? who.email : null;
     const id = auth.store.createUser({
-      login: auth.store.freeLogin(gh.login), name: gh.name || gh.login, email,
-      githubId: gh.id, githubLogin: gh.login, notes: 'Made by logging in with GitHub'
+      login: auth.store.freeLogin(who.login), name: who.name || who.login, email,
+      identity: { provider: p.key, id: who.id, handle: who.handle }, notes: `Made by logging in with ${p.label}`
     });
     u = auth.store.userById(id);
-    auth.log.info(`Auth: account '${u.login}' made by GitHub login ${gh.login} (${gh.id}) from ${req.ip}`);
+    auth.log.info(`Auth: account '${u.login}' made by ${p.label} login ${who.handle} (${who.id}) from ${req.ip}`);
   }
   if (!u.enabled) {
-    auth.store.recordLogin('failed', 'github', u.id);
+    auth.store.recordLogin('failed', p.key, u.id);
     return sendError(auth, req, res, 403, 'This account is disabled');
   }
   await logIn(auth, req, u);
-  auth.store.recordLogin('login', 'github', u.id);
-  auth.log.info(`Auth: '${u.login}' logged in with GitHub from ${req.ip}`);
+  auth.store.recordLogin('login', p.key, u.id);
+  auth.log.info(`Auth: '${u.login}' logged in with ${p.label} from ${req.ip}`);
   res.redirect(safeReturn(o.returnTo, '/auth/account'));
 }
 
@@ -516,7 +534,10 @@ function sendAccount(auth, req, res) {
   h += '<table class="grid" style="margin-bottom: 1em">' +
     `<tr><td><b>Login</b></td><td>${escape(u.login)}</td></tr>` +
     `<tr><td><b>Email</b></td><td>${escape(u.email || '(none)')} <small class="text-muted">(the administrator changes this)</small></td></tr>` +
-    `<tr><td><b>GitHub</b></td><td>${u.github_id ? escape(u.github_login) : '(not linked)'}</td></tr>` +
+    Object.values(oauth.PROVIDERS).filter(o => auth.providers[o.key] || AuthStore.identityOf(u, o.key)).map(o => {
+      const i = AuthStore.identityOf(u, o.key);
+      return `<tr><td><b>${o.label}</b></td><td>${i ? escape(i.handle) : '(not linked)'}</td></tr>`;
+    }).join('') +
     `<tr><td><b>Since</b></td><td>${escape(day(u.created_at))}</td></tr>` +
     '</table>';
   h += canDoHtml(auth, p);
@@ -535,18 +556,23 @@ function sendAccount(auth, req, res) {
       '<button type="submit" class="btn btn-secondary">Change password</button></form>' +
       '<p class="text-muted"><small>Changing your password logs you out everywhere else.</small></p>';
   } else {
-    h += '<p>Your account has no password: you log in with GitHub. ' +
+    const via = linkedProviders(u).map(o => o.label).join(' or ');
+    h += `<p>Your account has no password: you log in with ${escape(via || 'a password link')}. ` +
       (u.email ? postButton(res, '/auth/account/password-link', 'Email me a link to set one') : 'To have one, ask the administrator for a link.') + '</p>';
   }
 
-  if (auth.github) {
-    h += '<h5 style="margin-top: 1.5em">GitHub</h5>';
-    if (u.github_id) {
-      h += `<p>You can log in with the GitHub account <b>${escape(u.github_login)}</b>. ` +
-        postButton(res, '/auth/account/github/unlink', 'Unlink GitHub', 'btn-outline-danger', 'Unlink GitHub from your account?') + '</p>';
+  for (const o of Object.values(oauth.PROVIDERS)) {
+    const i = AuthStore.identityOf(u, o.key);
+    if (!auth.providers[o.key] && !i) {
+      continue;
+    }
+    h += `<h5 style="margin-top: 1.5em">${o.label}</h5>`;
+    if (i) {
+      h += `<p>You can log in with the ${o.label} account <b>${escape(i.handle)}</b>. ` +
+        postButton(res, `/auth/account/${o.key}/unlink`, `Unlink ${o.label}`, 'btn-outline-danger', `Unlink ${o.label} from your account?`) + '</p>';
     } else {
-      h += '<p>Link a GitHub account, and you can log in with it as well as your password. ' +
-        postButton(res, '/auth/account/github/link', 'Link GitHub account', 'btn-outline-dark') + '</p>';
+      h += `<p>Link a ${o.label} account, and you can log in with it as well. ` +
+        postButton(res, `/auth/account/${o.key}/link`, `Link ${o.label} account`, 'btn-outline-dark') + '</p>';
     }
   }
 
@@ -650,12 +676,12 @@ function targetUser(auth, req) {
 function sendUsers(auth, req, res, message, status = 200) {
   const users = auth.store.users();
   let h = alert(message || takeFlash(req));
-  h += '<table class="grid"><thead><tr><th>Login</th><th>Name</th><th>Email</th><th>GitHub</th><th>Password</th><th>Roles</th><th>Last login</th></tr></thead><tbody>';
+  h += '<table class="grid"><thead><tr><th>Login</th><th>Name</th><th>Email</th><th>Logs in with</th><th>Password</th><th>Roles</th><th>Last login</th></tr></thead><tbody>';
   for (const u of users) {
     const p = auth.principalFor(u, 'session');
     const roles = (p.isAdmin ? ['Administrator'] : []).concat(p.roles.filter(r => !(r.module === SERVER && r.role === ADMINISTRATOR)).map(r => describeRole(auth, r)));
     h += `<tr${u.enabled ? '' : ' class="text-muted"'}><td><a href="/auth/admin/users/${u.id}">${escape(u.login)}</a>${u.enabled ? '' : ' (disabled)'}</td>` +
-      `<td>${escape(u.name)}</td><td>${escape(u.email || '')}</td><td>${escape(u.github_login || '')}</td><td>${u.password_hash ? 'yes' : ''}</td>` +
+      `<td>${escape(u.name)}</td><td>${escape(u.email || '')}</td><td>${linkedProviders(u).map(o => `${escape(o.label)}: ${escape(o.handle)}`).join('<br/>')}</td><td>${u.password_hash ? 'yes' : ''}</td>` +
       `<td>${roles.length ? roles.map(x => escape(x)).join('<br/>') : '<i>none</i>'}</td><td>${escape(ago(u.last_login_at))}</td></tr>`;
   }
   if (users.length === 0) {
@@ -663,7 +689,7 @@ function sendUsers(auth, req, res, message, status = 200) {
   }
   h += '</tbody></table>';
   h += '<h4 style="margin-top: 1.5em">New account</h4>' +
-    '<p class="text-muted"><small>People who log in with GitHub make their own accounts. Make one here for someone who will log in with a password, ' +
+    '<p class="text-muted"><small>People who log in with GitHub or Google make their own accounts. Make one here for someone who will log in with a password, ' +
     `or for software (no email - it uses API tokens). ${auth.canEmail() ? 'Someone with an email address is sent a link to set their password.' : 'This server can\'t send email: you\'ll be shown the link that sets the password, to pass on.'}</small></p>` +
     `<form method="post" action="/auth/admin/users" style="max-width: 480px">${csrfField(res)}` +
     field('login', 'Login', 'text', { required: true, help: 'Letters, digits, and . _ @ + - (an email address will do)' }) +
@@ -728,7 +754,7 @@ function sendUser(auth, req, res, message, status = 200) {
     delete req.session.newLink;
   }
   h += `<p><b>Login:</b> ${escape(u.login)} &nbsp; <b>Made:</b> ${escape(day(u.created_at))} &nbsp; <b>Last login:</b> ${escape(ago(u.last_login_at))}` +
-    ` &nbsp; <b>GitHub:</b> ${u.github_id ? escape(u.github_login) : '(not linked)'} &nbsp; <b>Password:</b> ${u.password_hash ? 'yes' : 'no'}</p>`;
+    linkedProviders(u).map(o => ` &nbsp; <b>${escape(o.label)}:</b> ${escape(o.handle)}`).join('') + ` &nbsp; <b>Password:</b> ${u.password_hash ? 'yes' : 'no'}</p>`;
   h += `<form method="post" action="/auth/admin/users/${u.id}" style="max-width: 560px">${csrfField(res)}` +
     field('name', 'Name', 'text', { value: u.name }) +
     field('email', 'Email', 'email', { value: u.email || '', help: 'Where password links go. An address named in auth.administrators makes the account an administrator' }) +
@@ -780,8 +806,8 @@ function sendUser(auth, req, res, message, status = 200) {
   if (u.password_hash) {
     h += postButton(res, `/auth/admin/users/${u.id}/password/remove`, 'Remove the password', 'btn-outline-danger', 'Remove this user\'s password?') + ' ';
   }
-  if (u.github_id) {
-    h += postButton(res, `/auth/admin/users/${u.id}/github/unlink`, 'Unlink GitHub', 'btn-outline-danger', 'Unlink GitHub from this account?') + ' ';
+  for (const o of linkedProviders(u)) {
+    h += postButton(res, `/auth/admin/users/${u.id}/${o.key}/unlink`, `Unlink ${o.label}`, 'btn-outline-danger', `Unlink ${o.label} from this account?`) + ' ';
   }
   h += postButton(res, `/auth/admin/users/${u.id}/sessions`, 'End their sessions', 'btn-outline-secondary') + '</p>';
 

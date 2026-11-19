@@ -2,8 +2,8 @@
 // One login for the whole server. Every module asks this who a request is - a person logged
 // in with a session cookie, or software presenting an API token - and what they may do.
 //
-//  - Users log in with a password, or with GitHub. Anyone can make an account with GitHub; it
-//    has no roles until the administrator gives it some. The administrator makes password
+//  - Users log in with a password, or with GitHub or Google. Anyone can make an account with
+//    GitHub or Google; it has no roles until the administrator gives it some. The administrator makes password
 //    accounts, and the password is set from a link that is emailed (and the same for a
 //    forgotten password). Passwords are at least 15 characters.
 //  - Roles: "administrator" is server wide, and passes every check. Modules define their own
@@ -13,7 +13,7 @@
 //  - Software uses API tokens, which a user issues (or the administrator issues for them) and
 //    which carry that user's roles.
 //  - Who is an administrator is said by the configuration (auth.administrators: email addresses
-//    or github:{name}), and by the role granted on the users page.
+//    github:{name} or google:{email}), and by the role granted on the users page.
 //
 // It is a singleton (like html-server): require('library/auth') anywhere, and server.js
 // initializes it before any module. See library/auth/README.md.
@@ -94,6 +94,7 @@ class Principal {
     this.name = user.name || user.login;
     this.email = user.email || null;
     this.githubLogin = user.github_login || null;
+    this.googleEmail = user.google_email || null;
     this.hasPassword = !!user.hasPassword;
     this.isAdmin = isAdmin;
     this.adminFromConfig = adminFromConfig;
@@ -180,7 +181,16 @@ class Auth {
     this.dbPath = dbPath;
     this.store = new AuthStore(dbPath, { bcryptCost: this.config.bcryptCost });
     this.linkMinutes = Number.isInteger(this.config.linkMinutes) && this.config.linkMinutes > 0 ? this.config.linkMinutes : DEFAULT_LINK_MINUTES;
-    this.github = this.config.github && this.config.github.clientId && this.config.github.clientSecret ? this.config.github : null;
+    // the login providers configured (library/auth/oauth.js): auth.github, auth.google
+    this.providers = {};
+    for (const key of ['github', 'google']) {
+      const c = this.config[key];
+      if (c && typeof c.clientId === 'string' && c.clientId && typeof c.clientSecret === 'string' && c.clientSecret) {
+        this.providers[key] = c;
+      }
+    }
+    this.github = this.providers.github || null;
+    this.google = this.providers.google || null;
     this.applyConfiguredAdministrators();
     this.setupMiddleware();
     this.flushTimer = setInterval(() => {
@@ -192,7 +202,8 @@ class Auth {
     }, FLUSH_MS);
     this.flushTimer.unref();
     this.initialized = true;
-    this.log.info(`Auth: users in ${dbPath}; ${this.github ? 'GitHub login on' : 'no GitHub login (auth.github)'}; ` +
+    const on = Object.keys(this.providers);
+    this.log.info(`Auth: users in ${dbPath}; ${on.length ? `logging in with ${on.join(' and ')}` : 'no GitHub or Google login (auth.github, auth.google)'}; ` +
       `${this.mailer && this.mailer.configured() ? 'password links are emailed' : 'no email: password links are shown to the administrator'}`);
   }
 
@@ -223,12 +234,13 @@ class Auth {
   // ---- administrators from the configuration ----
 
   /**
-   * The configured administrators: {emails, github} (lower case). Only emails and GitHub
-   * names: a bare login could be taken by anyone who makes an account with GitHub first
+   * The configured administrators: {emails, github, google} (lower case). Only emails, GitHub
+   * names and Google email addresses: a bare login could be taken by anyone who makes an
+   * account with GitHub or Google first
    */
   configuredAdministrators() {
     const list = Array.isArray(this.config.administrators) ? this.config.administrators : [];
-    const out = { emails: new Set(), github: new Set(), invalid: [] };
+    const out = { emails: new Set(), github: new Set(), google: new Set(), invalid: [] };
     for (const raw of list) {
       if (typeof raw !== 'string' || !raw.trim()) {
         continue;
@@ -236,6 +248,8 @@ class Auth {
       const v = raw.trim().toLowerCase();
       if (v.startsWith('github:')) {
         out.github.add(v.substring(7));
+      } else if (v.startsWith('google:') && /^[^\s@]+@[^\s@]+$/.test(v.substring(7))) {
+        out.google.add(v.substring(7));
       } else if (/^[^\s@]+@[^\s@]+$/.test(v)) {
         out.emails.add(v);
       } else {
@@ -249,7 +263,9 @@ class Auth {
   isConfiguredAdministrator(user, admins = this.configuredAdministrators()) {
     return !!user && ((user.email && admins.emails.has(user.email.toLowerCase())) ||
       // only an account GitHub has vouched for (a github_id) matches a github: entry
-      (user.github_id && user.github_login && admins.github.has(user.github_login.toLowerCase())));
+      (user.github_id && user.github_login && admins.github.has(user.github_login.toLowerCase())) ||
+      // and only an account Google has vouched for (a google_id) matches a google: entry
+      (user.google_id && user.google_email && admins.google.has(user.google_email.toLowerCase())));
   }
 
   /**
@@ -265,9 +281,9 @@ class Auth {
       }
     }
     for (const bad of admins.invalid) {
-      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address nor github:{name} - ignored`);
+      this.log.warn(`Auth: auth.administrators entry '${bad}' is neither an email address, github:{name} nor google:{email} - ignored`);
     }
-    if (admins.emails.size + admins.github.size === 0) {
+    if (admins.emails.size + admins.github.size + admins.google.size === 0) {
       this.log.warn('Auth: no administrators are configured (auth.administrators) - nobody can manage users unless one has been given the role');
     }
   }
@@ -593,9 +609,10 @@ class Auth {
     if (s.users === 0) {
       return '';
     }
-    const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
-    const logins = s.logins.password + s.logins.github;
-    const failed = s.failed.password + s.failed.github;
+    const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub'], [c.google, 'with Google']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
+    const total = c => c.password + c.github + c.google;
+    const logins = total(s.logins);
+    const failed = total(s.failed);
     const sentences = [];
     let first = `${plural(logins, 'login')}${logins > 0 && how(s.logins).length > 1 ? ` (${how(s.logins).join(', ')})` : ''}`;
     first += `, and ${plural(failed, 'failed login')} for accounts that exist${failed > 0 && how(s.failed).length > 1 ? ` (${how(s.failed).join(', ')})` : ''}.`;
