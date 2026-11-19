@@ -468,7 +468,7 @@ describe('OMOP Provider', () => {
 
       await expect(
         provider.searchFilter(filterContext, 'test', false)
-      ).rejects.toThrow('Text Search is not supported');
+      ).rejects.toThrow('Text search is not supported for the code system');
     });
   });
 
