@@ -45,7 +45,7 @@ const runTests = shouldRunSlowTests();
 (runTests ? describe : describe.skip)('Package Management', () => {
     const CACHE_FOLDER = path.join(process.cwd(), 'package-cache');
     const SERVERS = [
-        'http://packages2.fhir.org/packages',
+        'http://npm.fhir.org/packages',
         'http://packages.fhir.org'
     ];
 

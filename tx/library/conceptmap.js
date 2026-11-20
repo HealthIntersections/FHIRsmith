@@ -221,6 +221,35 @@ class ConceptMap extends CanonicalResource {
     return result;
   }
 
+  /**
+   * As listTranslationsReverse, but the targets that name a value set rather than a code
+   * (target.valueSet): whether the coding is one of them is for the caller to decide
+   */
+  listValueSetTargetsReverse(coding, targetScope, sourceSystem) {
+    let result = [];
+    let vurl = VersionUtilities.vurl(coding.system, coding.version);
+
+    let all = this.canonicalMatches(targetScope, this.targetScope);
+    for (const g of this.jsonObj.group || []) {
+      const targetOk = this.canonicalMatches(vurl, g.target);
+      const sourceOk = !sourceSystem || this.canonicalMatches(sourceSystem, g.source);
+      if (all || (sourceOk && targetOk)) {
+        for (const em of g.element || []) {
+          for (const tm of em.target || []) {
+            if (!tm.code && tm.valueSet) {
+              result.push({
+                group: g,
+                match: em,
+                target: tm
+              });
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   listTranslationsReverse(coding, targetScope, sourceSystem) {
     let result = [];
     let vurl = VersionUtilities.vurl(coding.system, coding.version);

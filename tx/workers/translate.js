@@ -16,6 +16,13 @@ const {Extensions} = require("../library/extensions");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
 const {ValueSetChecker, ValidationCheckMode} = require("./validate");
+const {ValueSetExpander} = require("./expand");
+const {SearchFilterText} = require("../library/designations");
+
+// The most codes a value set in a ConceptMap (target.valueSet, unmapped.valueSet, and in reverse,
+// element.valueSet) is expanded to. A map that says "all the codes in this value set" for more
+// than this is not a translation anyone can use
+const MAP_VALUESET_LIMIT = 10000;
 
 // ConceptMap.group.element.comment is R6; on an R5 ConceptMap it is carried by the
 // cross-version extension. Read both, so a preadopted R5 resource and a native R6 one
@@ -456,14 +463,26 @@ class TranslateWorker extends TerminologyWorker {
       // normal form matches a code given in another form, but not the other way round
       const codes = this.sourceCodes(coding);
       const elements = codes.flatMap(c => (g.element || []).filter(e => e.code === c));
+      // ConceptMap.group.element.valueSet: the element is about every code in the value set.
+      // Whether this code is one of them is a membership check for every such element in the
+      // group, so it's only done when the server is configured to (conceptMapValueSetMatching)
+      if (this.conceptMapValueSetMatching) {
+        for (const e of g.element || []) {
+          if (!e.code && e.valueSet && await this.codeInScope(e.valueSet, coding, params, `source value set of an element in ConceptMap ${cm.vurl}`)) {
+            elements.push(e);
+          }
+        }
+      }
       for (const em of elements) {
+        // an element that names a value set rather than a code is about the code asked for
+        const srcCode = em.code || coding.code;
         // ConceptMap.group.element.noMap says, positively, that this concept has no
         // mapping in this map - which is an answer, not the absence of one. Report it
         // as a match that states the source concept and the map it came from, with no
         // concept and no relationship, and nothing to say about a target.
         if (em.noMap === true) {
           groupResult = true;
-          if (this.hasNoMap(output, g.source, em.code)) {
+          if (this.hasNoMap(output, g.source, srcCode)) {
             continue; // another map has already said this; saying it twice adds nothing
           }
           const noMapParts = [];
@@ -482,7 +501,7 @@ class TranslateWorker extends TerminologyWorker {
             name: 'sourceConcept',
             valueCoding: {
               system: g.source,
-              code: em.code
+              code: srcCode
             }
           });
           noMapParts.push({
@@ -505,23 +524,137 @@ class TranslateWorker extends TerminologyWorker {
           if (ok) {
             groupResult = true;
 
-            const outcome = {
-              system: g.target,
-              code: map.code
-            };
+            // a target that names a value set rather than a code: every code in it is a target
+            for (const outcome of await this.targetOutcomes(cm, g, map, params)) {
+              if (!this.hasMatch(output, outcome)) {
+                const matchParts = [];
+                matchParts.push({
+                  name: 'concept',
+                  valueCoding: outcome
+                });
+                matchParts.push({
+                  name: 'sourceConcept',
+                  valueCoding: {
+                    system: g.source,
+                    code: srcCode
+                  }
+                });
+                matchParts.push({
+                  name: 'relationship',
+                  valueCode: map.relationship
+                });
+                // equivalence vs relationship will be sorted out in the version transform for parameters
+                if (map.equivalence) {
+                  matchParts.push({
+                    name: 'equivalence',
+                    valueCode: map.equivalence
+                  });
+                }
+                // ConceptMap.group.element.comment is about the source concept,
+                // ConceptMap.group.element.target.comment is about this particular map
+                const srcComment = elementComment(em);
+                if (srcComment) {
+                  matchParts.push({
+                    name: 'sourceComment',
+                    valueString: srcComment
+                  });
+                }
+                if (map.comment) {
+                  matchParts.push({
+                    name: 'targetComment',
+                    valueString: map.comment
+                  });
+                }
+                for (const prod of map.product || []) {
+                  const productParts = [];
+                  productParts.push({
+                    name: 'element',
+                    valueString: prod.property
+                  });
+                  productParts.push({
+                    name: 'concept',
+                    valueCoding: {
+                      system: prod.system,
+                      code: prod.value
+                    }
+                  });
+                  matchParts.push({
+                    name: 'product',
+                    part: productParts
+                  });
+                }
+                matchParts.push({
+                  name: 'originMap',
+                  valueCanonical: originMap
+                });
+                output.push({
+                  name: 'match',
+                  part: matchParts
+                });
+              }
+            }
+          }
+        }
+      }
+      if (!groupResult) {
+        groupResult = await this.translateUsingUnmapped(cm, g, coding, targetScope, targetSystem, params, output,
+          visited || new Set([cm.vurl]), originMap);
+      }
+      result = groupResult || result;
+    }
+    return result;
+  }
 
+  async translateUsingGroupsReverse(cm, coding, targetScope, targetSystem, params, output) {
+    let result = false;
+    const matches = cm.listTranslationsReverse(coding, targetScope, targetSystem);
+    // ConceptMap.group.element.target.valueSet: in reverse, the code is a target if it's in the
+    // value set - a membership check for every such target, so it's only done when the server is
+    // configured to (conceptMapValueSetMatching), as element.valueSet is going forwards
+    if (this.conceptMapValueSetMatching) {
+      for (const m of cm.listValueSetTargetsReverse(coding, targetScope, targetSystem)) {
+        if (await this.codeInScope(m.target.valueSet, coding, params, `target value set of an element in ConceptMap ${cm.vurl}`)) {
+          matches.push(m);
+        }
+      }
+    }
+    if (matches.length > 0) {
+      for (let match of matches) {
+        const g = match.group;
+        const em = match.match;
+        const map = match.target;
+        let ok = false;
+        if (map.equivalence) { // R4 mode
+          ok = ['null', 'relatedto', 'equivalent', 'equal', 'wider', 'subsumes', 'narrower', 'specializes', 'inexact', 'unmatched', 'disjoint'].includes(map.equivalence);
+        } else {
+          ok = ['null', 'related-to', 'equivalent',  'source-is-narrower-than-target', 'source-is-broader-than-target', 'not-related-to'].includes(map.relationship);
+        }
+        if (ok) {
+          result = true;
+
+          const t = {
+            system: g.target,
+            code: coding.code
+          };
+
+          // an element that names a value set rather than a code: in reverse, every code in it
+          // is a source concept
+          let sources;
+          if (em.code || !em.valueSet) {
+            sources = [{ system: g.source, code: em.code }];
+          } else {
+            sources = await this.valueSetOutcomes(em.valueSet, g.source, params, `source value set of an element in ConceptMap ${cm.vurl}`);
+          }
+          for (const outcome of sources) {
             if (!this.hasMatch(output, outcome)) {
               const matchParts = [];
               matchParts.push({
-                name: 'concept',
+                name: 'sourceConcept',
                 valueCoding: outcome
               });
               matchParts.push({
-                name: 'sourceConcept',
-                valueCoding: {
-                  system: g.source,
-                  code: em.code
-                }
+                name: 'concept',
+                valueCoding: t
               });
               matchParts.push({
                 name: 'relationship',
@@ -534,8 +667,8 @@ class TranslateWorker extends TerminologyWorker {
                   valueCode: map.equivalence
                 });
               }
-              // ConceptMap.group.element.comment is about the source concept,
-              // ConceptMap.group.element.target.comment is about this particular map
+              // as above: element.comment describes the source concept, and
+              // element.target.comment describes this particular map
               const srcComment = elementComment(em);
               if (srcComment) {
                 matchParts.push({
@@ -569,7 +702,7 @@ class TranslateWorker extends TerminologyWorker {
               }
               matchParts.push({
                 name: 'originMap',
-                valueCanonical: originMap
+                valueCanonical: cm.vurl
               });
               output.push({
                 name: 'match',
@@ -579,108 +712,55 @@ class TranslateWorker extends TerminologyWorker {
           }
         }
       }
-      if (!groupResult) {
-        groupResult = await this.translateUsingUnmapped(cm, g, coding, targetScope, targetSystem, params, output,
-          visited || new Set([cm.vurl]), originMap);
-      }
-      result = groupResult || result;
     }
     return result;
   }
 
-  translateUsingGroupsReverse(cm, coding, targetScope, targetSystem, params, output) {
-    let result = false;
-    const matches = cm.listTranslationsReverse(coding, targetScope, targetSystem);
-    if (matches.length > 0) {
-      for (let match of matches) {
-        const g = match.group;
-        const em = match.match;
-        const map = match.target;
-        let ok = false;
-        if (map.equivalence) { // R4 mode
-          ok = ['null', 'relatedto', 'equivalent', 'equal', 'wider', 'subsumes', 'narrower', 'specializes', 'inexact', 'unmatched', 'disjoint'].includes(map.equivalence);
-        } else {
-          ok = ['null', 'related-to', 'equivalent',  'source-is-narrower-than-target', 'source-is-broader-than-target', 'not-related-to'].includes(map.relationship);
-        }
-        if (ok) {
-          result = true;
-
-          const outcome = {
-            system: g.source,
-            code: em.code
-          };
-          const t = {
-            system: g.target,
-            code: coding.code
-          };
-
-          if (!this.hasMatch(output, outcome)) {
-            const matchParts = [];
-            matchParts.push({
-              name: 'sourceConcept',
-              valueCoding: outcome
-            });
-            matchParts.push({
-              name: 'concept',
-              valueCoding: t
-            });
-            matchParts.push({
-              name: 'relationship',
-              valueCode: map.relationship
-            });
-            // equivalence vs relationship will be sorted out in the version transform for parameters
-            if (map.equivalence) {
-              matchParts.push({
-                name: 'equivalence',
-                valueCode: map.equivalence
-              });
-            }
-            // as above: element.comment describes the source concept, and
-            // element.target.comment describes this particular map
-            const srcComment = elementComment(em);
-            if (srcComment) {
-              matchParts.push({
-                name: 'sourceComment',
-                valueString: srcComment
-              });
-            }
-            if (map.comment) {
-              matchParts.push({
-                name: 'targetComment',
-                valueString: map.comment
-              });
-            }
-            for (const prod of map.product || []) {
-              const productParts = [];
-              productParts.push({
-                name: 'element',
-                valueString: prod.property
-              });
-              productParts.push({
-                name: 'concept',
-                valueCoding: {
-                  system: prod.system,
-                  code: prod.value
-                }
-              });
-              matchParts.push({
-                name: 'product',
-                part: productParts
-              });
-            }
-            matchParts.push({
-              name: 'originMap',
-              valueCanonical: cm.vurl
-            });
-            output.push({
-              name: 'match',
-              part: matchParts
-            });
-          }
-        }
-      }
+  /**
+   * The concepts a target of an element maps to: its code, or every code in its value set
+   * (ConceptMap.group.element.target.valueSet)
+   */
+  async targetOutcomes(cm, g, map, params) {
+    if (map.code || !map.valueSet) {
+      return [{ system: g.target, code: map.code }];
     }
-    return result;
+    return await this.valueSetOutcomes(map.valueSet, g.target, params, `target value set of an element in ConceptMap ${cm.vurl}`);
+  }
+
+  /**
+   * The codes in a value set a ConceptMap names (target.valueSet, unmapped.valueSet, element.valueSet
+   * in reverse), as outcomes in the given system - codes the expansion has from other systems are not
+   * the map's to give. The expansions are kept for the rest of the operation.
+   *
+   * A value set that can't be found or expanded is an error, as a scope that can't be is: the map
+   * says what it maps to, and that can't be determined
+   */
+  async valueSetOutcomes(canonical, system, params, why) {
+    if (!this.mapVsExpansions) {
+      this.mapVsExpansions = new Map();
+    }
+    let codes = this.mapVsExpansions.get(canonical);
+    if (!codes) {
+      const vs = await this.resolveScopeValueSet(canonical, why);
+      const txpe = params.clone();
+      txpe.limit = MAP_VALUESET_LIMIT;
+      const exp = new ValueSetExpander(this, txpe);
+      exp.noDetails = true;
+      const vse = await exp.expand(vs, new SearchFilterText(''), true);
+      codes = [];
+      const walk = (list) => {
+        for (const c of list || []) {
+          if (c.code) {
+            codes.push({ system: c.system, code: c.code });
+          }
+          walk(c.contains);
+        }
+      };
+      walk(vse.expansion && vse.expansion.contains);
+      this.mapVsExpansions.set(canonical, codes);
+    }
+    const base = system ? system.split('|')[0] : null;
+    return codes.filter(c => !base || !c.system || c.system === base).map(c => ({ system: base || c.system, code: c.code }));
   }
 
   /**
@@ -783,12 +863,6 @@ class TranslateWorker extends TerminologyWorker {
       if (!u || !u.mode) {
         return false;
       }
-      if (u.valueSet) {
-        // "all the codes in the specified value set" - that needs an expansion, which
-        // this operation does not do. Better to say so than to silently return nothing.
-        throw new Issue('error', 'not-supported', null, null,
-          `ConceptMap ${cm.vurl} uses group.unmapped.valueSet, which this server does not support`, null, 422);
-      }
       switch (u.mode) {
         case 'use-source-code' :
           result = this._addUnmappedMatch(output, originMap, coding, {system: g.target, code: coding.code}, u.relationship) || result;
@@ -800,6 +874,11 @@ class TranslateWorker extends TerminologyWorker {
               outcome.display = u.display;
             }
             result = this._addUnmappedMatch(output, originMap, coding, outcome, u.relationship) || result;
+          } else if (u.valueSet) {
+            // "all unmapped codes are mapped to each of the codes in the value set"
+            for (const outcome of await this.valueSetOutcomes(u.valueSet, g.target, params, `unmapped value set of a group in ConceptMap ${cm.vurl}`)) {
+              result = this._addUnmappedMatch(output, originMap, coding, outcome, u.relationship) || result;
+            }
           }
           break;
         case 'other-map' :
@@ -1279,7 +1358,7 @@ class TranslateWorker extends TerminologyWorker {
         if (cm.jsonObj.internalSource) {
           added = await this.translateUsingCodeSystem(cm, coding, targetSystem, params, result, reverse) || added;
         } else if (reverse) {
-          added = this.translateUsingGroupsReverse(cm, coding, targetScope, targetSystem, params, result) || added;
+          added = await this.translateUsingGroupsReverse(cm, coding, targetScope, targetSystem, params, result) || added;
         } else {
           added = await this.translateUsingGroupsForwards(cm, coding, targetScope, targetSystem, params, result) || added;
         }

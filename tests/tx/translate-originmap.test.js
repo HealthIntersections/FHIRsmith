@@ -58,9 +58,9 @@ describe('$translate originMap is emitted in both directions (issue #247)', () =
     expect(originMapOf(output)).toBe(CM_VURL);
   });
 
-  test('reverse translate also emits originMap (previously never did)', () => {
+  test('reverse translate also emits originMap (previously never did)', async () => {
     const output = [];
-    const added = worker().translateUsingGroupsReverse(
+    const added = await worker().translateUsingGroupsReverse(
       stubCm(), { system: 'http://example.org/target', code: 'T' }, null, null, null, output);
     expect(added).toBe(true);
     expect(originMapOf(output)).toBe(CM_VURL);
