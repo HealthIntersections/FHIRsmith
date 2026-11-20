@@ -41,6 +41,7 @@ describe("'profile' parameter", () => {
     ['a valueUri', { valueUri: 'http://example.org/profile' }, "the value 'http://example.org/profile'"],
     ['a valueCanonical', { valueCanonical: 'http://example.org/profile' }, "the value 'http://example.org/profile'"],
     ['a valueString (as from a GET)', { valueString: 'http://example.org/profile' }, "the value 'http://example.org/profile'"],
+    ['a value that has no primitive', { valueCoding: { system: 'http://example.org/cs', code: 'x' } }, 'a value of type Coding'],
   ])('%s is refused as not supported, with status 400', (_, profile, found) => {
     const error = refusal(profile);
     expect(error).toBeInstanceOf(Issue);
@@ -48,6 +49,7 @@ describe("'profile' parameter", () => {
     expect(error.cause).toBe('not-supported');
     expect(error.message).toContain('only supported as an inline Parameters resource');
     expect(error.message).toContain(found);
+    expect(error.msgId).toMatch(/^TX_PARAM_PROFILE_(RESOURCE|VALUE|TYPE)$/);
   });
 
   test("a 'profile' in a ValueSet's embedded expansion parameters is ignored, not refused", () => {
