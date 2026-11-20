@@ -27,6 +27,7 @@ const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
 const { storedList, hasConcepts, listedConcepts } = require('../library/stored-concepts');
+const { CodingsChecker } = require('./check-codings');
 
 const DEV_IGNORE_VALUESET = false; // todo: what's going on with this (ported from pascal)
 
@@ -1050,7 +1051,6 @@ class ValueSetChecker {
     let ppath; // the path of the coding that is returned
     let pver;
 
-
     let vstatus = {value: ''};
     let normalForm = {value: ''};
     let mt = [];
@@ -1058,6 +1058,9 @@ class ValueSetChecker {
     let tsys = '';
     let tcode = '';
     let tver = '';
+    // the codings as they were given: validating them fills in versions (for the codeableConcept
+    // that is returned), and what the ConceptMaps say is about the codings as given
+    const codingsAsGiven = (code.coding || []).map(c => Object.assign({}, c));
     let vcc = {}; // todo: VCC is an appendage, and useless. remove it
     if (code.text) {
       vcc.text = code.text;
@@ -1555,6 +1558,9 @@ class ValueSetChecker {
       result.addParamStr('message', toText(mt, '; '));
     }
     if (mode === 'codeableConcept') {
+      // what the ConceptMaps say about the codings together - hints and warnings only, so they
+      // don't affect the result or the message
+      await new CodingsChecker(this.worker, this.params).check(issuePath, { coding: codingsAsGiven }, op);
       result.addParam('codeableConcept', 'valueCodeableConcept', code);
     }
     if (op.hasIssues()) {

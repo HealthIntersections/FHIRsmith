@@ -349,6 +349,8 @@ const MODULES = {
     loincConnections: int({ min: 0 }),
     // an include that names a code the code system doesn't have: an error, rather than a warning
     errorsForInvalidCodes: bool(),
+    // a ConceptMap element that names a value set: match codes against it
+    conceptMapValueSetMatching: bool(),
     // the expansion limits: checked together below (TXModule.expansionLimits)
     internalLimit: int({ min: 1 }),
     externalLimit: int({ min: 1 }),

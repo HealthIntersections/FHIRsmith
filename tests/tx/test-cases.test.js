@@ -4695,6 +4695,14 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"unknown-system2"}, "4.0");
   });
 
+  it("unknown-system-version" + 'R5', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "5.0");
+  });
+
+  it("unknown-system-version" + 'R4', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "4.0");
+  });
+
   it("broken-filter-validate" + 'R5', async () => {
     await runTest({"suite":"errors","test":"broken-filter-validate"}, "5.0");
   });
@@ -5544,6 +5552,26 @@ describe('translate', () => {
     await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
+  it("translate-vs-target" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-target"}, "5.0");
+  });
+
+  it("translate-vs-unmapped" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-unmapped"}, "5.0");
+  });
+
+  it("translate-vs-element" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-element" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-target" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-target"}, "5.0");
+  });
+
 });
 
 describe('translate2', () => {
@@ -5607,6 +5635,67 @@ describe('translate2', () => {
 
   it("translate-reverse-r4-b" + 'R4', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4-b"}, "4.0");
+  });
+
+});
+
+describe('translate-check', () => {
+  // $validate-code on a CodeableConcept: what the ConceptMaps the server has say about its codings together. For each coding, the maps from its code system to the code system of another coding are consulted: a map that says the code is not-related-to the other coding, or has no map, is a warning; a map that relates it only to other codes is a hint. This is not a requirement on terminology servers - tx.fhir.org reports it in the issues, as hints and warnings. The tests that use LOINC's mappings to SNOMED CT also need the loinc mode
+
+  it("translate-cc-confirmed" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-confirmed"}, "5.0");
+  });
+
+  it("translate-cc-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-other"}, "5.0");
+  });
+
+  it("translate-cc-nomap" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-nomap"}, "5.0");
+  });
+
+  it("translate-cc-denied" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-denied"}, "5.0");
+  });
+
+  it("translate-cc-target-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs"}, "5.0");
+  });
+
+  it("translate-cc-target-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-element-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs"}, "5.0");
+  });
+
+  it("translate-cc-element-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R4', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "4.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R4', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "4.0");
   });
 
 });
@@ -6195,6 +6284,43 @@ describe('default-valueset-version', () => {
 
   it("indirect-validation-zero-pinned-wrong" + 'R4', async () => {
     await runTest({"suite":"default-valueset-version","test":"indirect-validation-zero-pinned-wrong"}, "4.0");
+  });
+
+});
+
+describe('supplement-url', () => {
+  // A supplement with the same url as the code system it supplements, and a version of its own. This is not valid - a supplement needs a canonical url of its own, and with the code system's url, url|version claims to be a version of the code system - but it is found in published packages, so servers process the request as usual, and warn about the supplement whenever they look up the code system it has the url of. The supplement's version is not a version of the code system: a value set that asks for it can't be expanded or validated against, and the valid versions named are only those of the code system
+
+  it("supplement-url-expand-v2" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "5.0");
+  });
+
+  it("supplement-url-expand-v2" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "4.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "5.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "4.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "4.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "4.0");
   });
 
 });
@@ -7373,6 +7499,22 @@ describe('loinc', () => {
 
   it("loinc-translate-code-mdc" + 'R4', async () => {
     await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "4.0");
+  });
+
+  it("loinc-translate-answer-sct" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "5.0");
+  });
+
+  it("loinc-translate-answer-sct" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "4.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "5.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "4.0");
   });
 
 });
@@ -17403,6 +17545,10 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"unknown-system2"}, "5.0");
   });
 
+  it("unknown-system-version" + 'R5-cached', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "5.0");
+  });
+
   it("broken-filter-validate" + 'R5-cached', async () => {
     await runTest({"suite":"errors","test":"broken-filter-validate"}, "5.0");
   });
@@ -17856,6 +18002,26 @@ describe('translate', () => {
     await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
+  it("translate-vs-target" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-target"}, "5.0");
+  });
+
+  it("translate-vs-unmapped" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-unmapped"}, "5.0");
+  });
+
+  it("translate-vs-element" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-element" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-target" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-target"}, "5.0");
+  });
+
 });
 
 describe('translate2', () => {
@@ -17899,6 +18065,59 @@ describe('translate2', () => {
 
   it("translate-reverse-r4-b" + 'R4-cached', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4-b"}, "4.0");
+  });
+
+});
+
+describe('translate-check', () => {
+  // $validate-code on a CodeableConcept: what the ConceptMaps the server has say about its codings together. For each coding, the maps from its code system to the code system of another coding are consulted: a map that says the code is not-related-to the other coding, or has no map, is a warning; a map that relates it only to other codes is a hint. This is not a requirement on terminology servers - tx.fhir.org reports it in the issues, as hints and warnings. The tests that use LOINC's mappings to SNOMED CT also need the loinc mode
+
+  it("translate-cc-confirmed" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-confirmed"}, "5.0");
+  });
+
+  it("translate-cc-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-other"}, "5.0");
+  });
+
+  it("translate-cc-nomap" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-nomap"}, "5.0");
+  });
+
+  it("translate-cc-denied" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-denied"}, "5.0");
+  });
+
+  it("translate-cc-target-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs"}, "5.0");
+  });
+
+  it("translate-cc-target-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-element-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs"}, "5.0");
+  });
+
+  it("translate-cc-element-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "5.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "5.0");
   });
 
 });
@@ -18203,6 +18422,27 @@ describe('default-valueset-version', () => {
 
   it("indirect-validation-zero-pinned-wrong" + 'R5-cached', async () => {
     await runTest({"suite":"default-valueset-version","test":"indirect-validation-zero-pinned-wrong"}, "5.0");
+  });
+
+});
+
+describe('supplement-url', () => {
+  // A supplement with the same url as the code system it supplements, and a version of its own. This is not valid - a supplement needs a canonical url of its own, and with the code system's url, url|version claims to be a version of the code system - but it is found in published packages, so servers process the request as usual, and warn about the supplement whenever they look up the code system it has the url of. The supplement's version is not a version of the code system: a value set that asks for it can't be expanded or validated against, and the valid versions named are only those of the code system
+
+  it("supplement-url-expand-v2" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "5.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "5.0");
   });
 
 });
@@ -18797,6 +19037,14 @@ describe('loinc', () => {
 
   it("loinc-translate-code-mdc" + 'R5-cached', async () => {
     await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "5.0");
+  });
+
+  it("loinc-translate-answer-sct" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "5.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "5.0");
   });
 
 });

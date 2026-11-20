@@ -43,6 +43,11 @@ class TerminologyWorker {
   requiredSupplements = new Set();
   usedSupplements = new Set();
 
+  // modules.tx.conceptMapValueSetMatching: whether a ConceptMap element (or, in reverse, target)
+  // that names a value set rather than a code is matched by checking the code against the value
+  // set. Set from the configuration on the workers that use ConceptMaps ($translate, $validate-code)
+  conceptMapValueSetMatching = false;
+
   /**
    * @param {OperationContext} opContext - Operation context
    * @param {Logger} log - Provider for code systems and resources

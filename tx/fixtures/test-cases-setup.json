@@ -3,6 +3,7 @@
   "consoleErrors": false,
   "host" : "local.host",
   "librarySource": "tx/fixtures/test-cases.yml",
+"conceptMapValueSetMatching": true,
   "endpoints": [
     {
       "path": "/r5",

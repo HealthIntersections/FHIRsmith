@@ -250,6 +250,10 @@ class TXModule {
       throw new Error(`modules.tx.errorsForInvalidCodes must be true or false, not ${JSON.stringify(config.errorsForInvalidCodes)}`);
     }
     this.log.info(`Invalid codes in value set includes: ${config.errorsForInvalidCodes === true ? 'an error' : 'left out, with a warning'} (errorsForInvalidCodes)`);
+    if (config.conceptMapValueSetMatching !== undefined && typeof config.conceptMapValueSetMatching !== 'boolean') {
+      throw new Error(`modules.tx.conceptMapValueSetMatching must be true or false, not ${JSON.stringify(config.conceptMapValueSetMatching)}`);
+    }
+    this.log.info(`ConceptMap elements that name a value set: ${config.conceptMapValueSetMatching === true ? 'matched' : 'not matched'} (conceptMapValueSetMatching)`);
 
     // Optional instance code, prefixed onto every cache-id this server issues so a
     // proxy in front of several instances can route by it (see nginx.md). Checked
@@ -958,6 +962,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -967,6 +972,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -978,6 +984,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -987,6 +994,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -997,6 +1005,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1006,6 +1015,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1037,6 +1047,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -1046,6 +1057,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, 'validate', Date.now() - start, req);
@@ -1099,6 +1111,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1108,6 +1121,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1182,6 +1196,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1191,6 +1206,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1203,6 +1219,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1212,6 +1229,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1266,6 +1284,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1275,6 +1294,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);

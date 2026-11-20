@@ -142,6 +142,7 @@ class BatchValidateWorker extends TerminologyWorker {
           const entryContext = this.opContext.copy({ ownProviders: true });
           entryContext.batch = this.opContext;
           let worker = new ValidateWorker(entryContext, this.log, this.provider, this.languages, this.i18n);
+          worker.conceptMapValueSetMatching = this.conceptMapValueSetMatching;
           try {
             // Validating an entry never yields the event loop by itself, and IG builds send batches
             // of up to 1,000 entries (~1 s of compute): give other requests a turn between entries

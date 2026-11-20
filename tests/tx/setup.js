@@ -34,6 +34,8 @@ async function getTestApp() {
   // Configure TX module - empty library, cloneWithFhirVersion will load R5 core
   const config = {
     librarySource: path.join(__dirname, 'fixtures', 'test-library.yaml'),
+    // on for testing; off by default (see config-template.json)
+    conceptMapValueSetMatching: true,
     endpoints: [
       {
         path: '/tx/r5',
