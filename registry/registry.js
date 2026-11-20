@@ -1579,6 +1579,9 @@ class RegistryModule {
     if (language) {
       html += `<p><strong>Language:</strong> ${escape(language)}</p>`;
     }
+    if (result['unknown-host']) {
+      html += `<p><strong>Unknown host:</strong> no server hosts any code system on ${escape(result['unknown-host'])}</p>`;
+    }
     html += '</div>';
     html += '</div>';
 

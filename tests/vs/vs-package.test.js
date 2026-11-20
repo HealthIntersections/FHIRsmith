@@ -174,17 +174,32 @@ describe('PackageValueSetProvider', () => {
       expect(results[0].name).toBe('PrimitiveTypesVS');
     });
 
-    test('url is a left match: the url starts with it', async () => {
-      const prefix = 'http://hl7.org/fhir/tools/ValueSet/primitive-';
-      const results = await provider.searchValueSets([{ name: 'url', value: prefix }]);
-      expect(results.length).toBeGreaterThan(0);
-      expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
-      for (const r of results) {
-        expect(r.url.startsWith(prefix)).toBe(true);
-      }
+    test('url is an exact match: a url that starts with it is not a match', async () => {
+      // a prefix of a url is not that url (VSAC's ...1267.3 is not ...1267.39)
+      expect((await provider.searchValueSets([{ name: 'url', value: 'http://hl7.org/fhir/tools/ValueSet/primitive-' }])).length).toBe(0);
+      expect((await provider.searchValueSets([{ name: 'url', value: 'http://hl7.org/fhir/tools/ValueSet/primitive-type' }])).length).toBe(0);
+      // and with _elements (built from the indexed columns)
+      expect((await provider.searchValueSets([{ name: 'url', value: 'http://hl7.org/fhir/tools/ValueSet/primitive-' }], ['url'])).length).toBe(0);
       // not anywhere in the url, and case-sensitive
       expect((await provider.searchValueSets([{ name: 'url', value: 'tools/ValueSet/primitive-types' }])).length).toBe(0);
       expect((await provider.searchValueSets([{ name: 'url', value: 'HTTP://hl7.org/fhir/tools/ValueSet/primitive-types' }])).length).toBe(0);
+    });
+
+    test('url:below is a left match: the url starts with it', async () => {
+      const prefix = 'http://hl7.org/fhir/tools/ValueSet/primitive-';
+      for (const elements of [null, ['url']]) {
+        const results = await provider.searchValueSets([{ name: 'url:below', value: prefix }], elements);
+        expect(results.length).toBeGreaterThan(0);
+        expect(results.some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+        for (const r of results) {
+          expect(r.url.startsWith(prefix)).toBe(true);
+        }
+      }
+      // the whole url is below itself
+      expect((await provider.searchValueSets([{ name: 'url:below', value: 'http://hl7.org/fhir/tools/ValueSet/primitive-types' }])).some(r => r.url === 'http://hl7.org/fhir/tools/ValueSet/primitive-types')).toBe(true);
+      // not anywhere in the url, and case-sensitive
+      expect((await provider.searchValueSets([{ name: 'url:below', value: 'tools/ValueSet/primitive-' }])).length).toBe(0);
+      expect((await provider.searchValueSets([{ name: 'url:below', value: 'HTTP://hl7.org/fhir/tools/ValueSet/primitive-' }])).length).toBe(0);
     });
 
     test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {

@@ -2168,6 +2168,16 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
             return false;
           }
           break;
+        case 'url:below':
+          if (!(json.url || '').toLowerCase().startsWith(value)) {
+            return false;
+          }
+          break;
+        case 'url:contains':
+          if (!(json.url || '').toLowerCase().includes(value)) {
+            return false;
+          }
+          break;
         case 'system':
           if (!json.compose?.include?.some(i => (i.system || '').toLowerCase().includes(value))) {
             return false;

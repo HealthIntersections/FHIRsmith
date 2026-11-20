@@ -1,5 +1,5 @@
 const {Languages, LanguageDefinitions} = require("../library/languages");
-const { validateResource, strToBool, getValuePrimitive, validateParameter, Utilities} = require("../library/utilities");
+const { validateResource, strToBool, getValuePrimitive, getValueName, validateParameter, Utilities} = require("../library/utilities");
 const {Issue} = require("./library/operation-outcome");
 const {I18nSupport} = require("../library/i18nsupport");
 
@@ -486,16 +486,32 @@ class TxParameters {
         if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
         } else if (overwrite) {
-          const found = res ? 'a resource of type ' + res.resourceType : "the value '" + getValuePrimitive(value) + "'";
-          throw new Issue('error', 'not-supported', null, null, "The parameter 'profile' is only supported as an inline Parameters resource, not " + found, null, 400);
+          const primitive = res ? null : getValuePrimitive(value);
+          if (res) {
+            this.#notSupported('TX_PARAM_PROFILE_RESOURCE', [res.resourceType]);
+          } else if (primitive !== null && primitive !== undefined) {
+            this.#notSupported('TX_PARAM_PROFILE_VALUE', [String(primitive)]);
+          } else {
+            // a value with no primitive (a valueCoding, say): its type
+            this.#notSupported('TX_PARAM_PROFILE_TYPE', [(getValueName(value) || 'value').replace(/^value/, '')]);
+          }
         }
         break;
       }
 
       case 'exclude-system': {
-        throw new Issue('error', 'not-supported', null, null, "The parameter 'exclude-system' is not supported by this system", null, 400);
+        this.#notSupported('TX_PARAM_NOT_SUPPORTED', ['exclude-system']);
       }
     }
+  }
+
+  /**
+   * Refuse a request for a parameter, or a form of one, that this server doesn't support (400)
+   * @param {string} msgId - the message (translations/Messages.properties)
+   * @param {string[]} args - its parameters
+   */
+  #notSupported(msgId, args) {
+    throw new Issue('error', 'not-supported', null, msgId, this.i18n.translate(msgId, this.HTTPLanguages, args), 'not-supported', 400);
   }
 
   /**

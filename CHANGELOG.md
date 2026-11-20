@@ -5,6 +5,35 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.7] - 2026-mm-dd
+
+### Security
+
+- 
+
+### Added
+
+- Registry: a code system resolution that finds nothing says, with `unknown-host`, when no server hosts any code system on the url's host, so clients needn't ask about each of that host's code systems (the tx ecosystem IG's Unknown Hosts)
+- tx: the ecosystem resolver remembers an `unknown-host` answer from the registry, and doesn't ask the registry about other code systems on that host for as long as it remembers a code system it was told nothing about; the cached answers viewer shows the hosts
+- Search (`CodeSystem?`, `ValueSet?`, `ConceptMap?`): the `url:below` (the url starts with the value, case-sensitive) and `url:contains` (the url contains the value, without regard to case) modifiers. The HTML search form still asks for `url:contains`
+
+### Changed
+
+- ETags: a stored resource that is read (a CodeSystem, ValueSet or ConceptMap by id) has an ETag worked out from where it came from - the package (id#version) and the resource's type and id, or the hash VSAC's database keeps - with the server's version, the format and the FHIR version: nothing is hashed, and it's the same in every process, across restarts, and on every server running the same release with the same packages. Resources from a folder or file the server loads still have a hash of their content. Clients that keep ETags get each resource once more. Nothing else gets an ETag from Express any more (it hashed every response body, POSTs included, and no client revalidates an operation or a search); static files keep theirs
+
+### Fixed
+
+- Search: the `url` parameter is an exact match again for ValueSets and ConceptMaps, as it is for CodeSystems and as FHIR says it is (1.0.0 made it a left match). A url that is a prefix of another found both: `ValueSet?url=http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113762.1.4.1267.3` also found `...1267.39`, and the IG publisher rendered the binding with a link to the wrong value set. A left match is `url:below`
+- tx: large XML responses (the full ICD-10-CM CodeSystem, 64 MB) still held the event loop when several came together - for 2-4 s on tx.fhir.org - in joining, counting and encoding the whole text to send it. The XML kept for large arrays (`xmlCacheMB`) is now kept encoded, and a large response is written in its parts, as the socket takes them, never joined; `xmlCacheMB` counts the bytes of XML kept, not its characters
+
+### Removed
+
+-
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [1.0.6] - 2026-11-19
 
 **Upgrading**: logins have changed - every server with a module that has logins or passwords (ips, publisher, testing, registry, packages, shl, folder) needs the new `auth` block. See [Upgrading to the single login](CONFIGURATION.md#upgrading-to-the-single-login).

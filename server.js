@@ -29,7 +29,6 @@ if (require('./library/config-check').wantsCheck(process.argv.slice(2))) {
 // missing dependency, an unwritable folder) says why in the log as well as on stderr. It starts with
 // the logger defaults; config.logging is applied once config.json has been read
 const folders = require('./library/folder-setup');
-const { boundedWeakETag } = require('./library/etags');
 const Logger = require('./library/logger');
 let bootLog;
 try {
@@ -188,8 +187,9 @@ const app = express();
 // quiet about it: ERR_ERL_PERMISSIVE_TRUST_PROXY). See nginx.md.
 const DEFAULT_TRUST_PROXY = 'loopback, linklocal, uniquelocal';
 app.set('trust proxy', config.server.trustProxy ?? DEFAULT_TRUST_PROXY);
-// Express's weak ETag, but not for large bodies: hashing them costs more than it's worth (library/etags.js)
-app.set('etag', boundedWeakETag());
+// no ETag from Express (a hash of every response body): the tx module gives stored resources
+// their own, without hashing, and nothing else is revalidated (library/etags.js)
+app.set('etag', false);
 
 const PORT = (role && role.port) || process.env.PORT || config.server.port || 3000;
 // with a role, loopback unless server.cluster.bindAddress says otherwise (cluster.md); with

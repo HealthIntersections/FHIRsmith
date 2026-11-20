@@ -647,12 +647,13 @@ class TXModule {
           if (opContext.clientGone) {
             return abandon();
           }
-          // a stored resource that was read: our own ETag (Express's would hash the whole body,
-          // after serialising it), and a 304 at once if the client has it already. Not for HTML,
-          // where the page around the resource varies
+          // a stored resource that was read: its ETag, from where it came from (library/etags.js),
+          // and a 304 at once if the client has it already. Not for HTML, where the page around
+          // the resource varies
           if (!isHtml && req.txStoredResource === data && data && (req.method === 'GET' || req.method === 'HEAD') && res.statusCode === 200) {
             const format = xmlFmt ? 'xml' : 'json';
-            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion));
+            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion,
+              { sourcePackage: req.sourcePackage, contentHash: req.txStoredContentHash }));
             if (req.fresh) {
               res.status(304).end();
               this.log.info(`[${requestId}] ${req.method} ${format} 304 ${duration}ms 0: ${req.originalUrl} )`);
@@ -663,6 +664,7 @@ class TXModule {
 
           let responseSize;
           let result;
+          let serialisedAt = null;
 
           if (isHtml) {
             // _format=html/fragment: the rendering only, with no page around it, for a
@@ -679,10 +681,18 @@ class TXModule {
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const xml = await this.convertResourceToXmlAsync(data, () => !opContext.clientGone);
-              responseSize = Buffer.byteLength(xml, 'utf8');
+              const parts = await FhirXmlBase.toXmlChunksAsync(() => this.convertResourceToXml(data), () => !opContext.clientGone);
               res.setHeader('Content-Type', xmlFmt);
-              result = res.send(xml);
+              if (parts.length === 1 && typeof parts[0] === 'string') {
+                responseSize = Buffer.byteLength(parts[0], 'utf8');
+                result = res.send(parts[0]);
+              } else {
+                // a large resource: written in its parts, never joined (see toXmlChunksAsync). The
+                // time logged is the time to serialise, not to send (which is up to the client)
+                serialisedAt = Date.now();
+                responseSize = await FhirXmlBase.writeXmlParts(res, parts);
+                result = res;
+              }
             } catch (err) {
               if (err.abandoned) {
                 return abandon();
@@ -709,7 +719,7 @@ class TXModule {
           const format = isHtml ? 'html' : (xmlFmt ? 'xml' : 'json');
           let li = req.logInfo ? "(" + req.logInfo + ")" : "";
           // operation+serialising, when serialising took long enough to matter (e.g. "5+6120ms")
-          const serialiseMs = Date.now() - serialiseStart;
+          const serialiseMs = (serialisedAt ?? Date.now()) - serialiseStart;
           const timing = serialiseMs >= SERIALISE_LOG_MS ? `${duration}+${serialiseMs}ms` : `${duration}ms`;
           this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${timing} ${responseSize}: ${req.originalUrl} ${li})`);
           // a slow request: what it asked, so that it can be repeated (the line above has the url)
@@ -1929,14 +1939,6 @@ class TXModule {
     params.parameter = params.parameter.filter(p => p.name !== 'tx-resource');
 
     return params;
-  }
-
-  /**
-   * convertResourceToXml, letting other requests run while a large resource is
-   * serialised (see FhirXmlBase.toXmlAsync)
-   */
-  async convertResourceToXmlAsync(res, stillWanted = null) {
-    return FhirXmlBase.toXmlAsync(() => this.convertResourceToXml(res), stillWanted);
   }
 
   convertResourceToXml(res) {

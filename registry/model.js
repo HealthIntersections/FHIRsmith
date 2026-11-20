@@ -556,6 +556,21 @@ class ServerRegistryUtilities {
     return r === s || r.startsWith(s + '-');
   }
 
+  /**
+   * The host of an http: or https: url (in lower case, with the port if there is one),
+   * or null for anything else. A version (after '|') is ignored
+   */
+  static urlHost(url) {
+    if (!url) return null;
+    const base = url.includes('|') ? url.substring(0, url.indexOf('|')) : url;
+    if (!/^https?:\/\//i.test(base)) return null;
+    try {
+      return new URL(base).host.toLowerCase() || null;
+    } catch {
+      return null;
+    }
+  }
+
   static hasMatchingCodeSystem(cs, list, supportMask, content, noVersionIndependentMatching = false) {
     if (!cs || list.length === 0) return false;
 

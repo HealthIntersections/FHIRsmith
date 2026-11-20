@@ -74,7 +74,7 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheMemoryThreshold` | integer | No       | Heap memory usage in MB that triggers evicting oldest half of expansion cache. 0 = disabled. Default: 0 |
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
 | (`adminPassword`)               |         |          | No longer used: the server's administrators, logged in ([library/auth](../library/auth/README.md)), empty the caches on the caches page (`/{path}/caches`) |
-| `xmlCacheMB`                    | integer | No       | Most XML and JSON, in MB, kept per process for large resources (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. The budget counts characters: XML with text outside Latin-1 (Chinese or Arabic displays, say) takes two bytes a character, so in the worst case the cache uses twice this. 0: none. Default: 256 |
+| `xmlCacheMB`                    | integer | No       | Most XML and JSON, in MB, kept per process for large resources (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. XML is kept encoded (UTF-8), as it is sent, so the budget counts its bytes; JSON is kept as text, and the budget counts its characters (two bytes each, when the text is outside Latin-1). 0: none. Default: 256 |
 | `loincConnections`              | integer | No       | How many connections to the LOINC database the requests share. A connection runs one query at a time, so there are several; a connection is given one query at a time, and the others wait for the first that is free. 0: each request opens a connection of its own and closes it at the end, as it used to (if the shared ones can't be opened, that is what happens too). In a cluster, each process has its own. Default: 4 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
 | `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
@@ -136,6 +136,12 @@ in the background: a request never waits for a refresh, only the first request f
 other servers' answers to `$lookup` and `$validate-code` are kept for an hour too (the most recent
 10,000), so the same question is only asked once. Requests that had to ask another server are
 counted, and graphed, separately on the home page (External requests).
+
+When the registry finds no server for a code system, it may also say that no server hosts any
+code system on that host at all (`unknown-host`, see 'Unknown Hosts' in the tx ecosystem IG). That
+is kept for an hour, for the FHIR version asked about, and the registry isn't asked about any other
+code system on the host (at that FHIR version) in that time. It's only ever for the exact host:
+not the hosts under it.
 
 Only a code system that is a URI (`http://...`, `urn:oid:...`) is looked for: `1`, `LOINC` or a
 url with a version glued on aren't sent to the registry. A server registered as `http://` is asked
@@ -269,8 +275,8 @@ Some caches list what they hold: their names link to a page of their entries
 (`/{path}/caches?show=<id>`; the most recently used 5,000, in each process), for the server's
 administrators only, since they hold what clients asked for. So far: what the ecosystem registry and
 servers said (`ecosystem`: which servers have a code system and version, their capabilities, the
-searches made of them, their answers to `$lookup` and `$validate-code`, and whether they answer on
-https), and the parsed language tags (`language-tags`).
+searches made of them, their answers to `$lookup` and `$validate-code`, whether they answer on
+https, and the hosts the registry knows nothing on), and the parsed language tags (`language-tags`).
 
 Under the cluster launcher the page is server wide: it shows every process (a column for each, and
 the total, then each process in full), and empties the caches of every process (see

@@ -232,6 +232,79 @@ describe('FhirXmlBase.toXmlAsync', () => {
   });
 });
 
+describe('FhirXmlBase.toXmlChunksAsync and writeXmlParts', () => {
+  const { PassThrough } = require('stream');
+  const joined = parts => Buffer.concat(parts.map(p => (typeof p === 'string' ? Buffer.from(p, 'utf8') : p))).toString('utf8');
+
+  afterEach(() => FhirXmlBase.setFragmentCache(null));
+
+  test('a small resource comes back as one string', async () => {
+    const cs = { resourceType: 'CodeSystem', id: 'x', status: 'active', content: 'complete' };
+    const parts = await FhirXmlBase.toXmlChunksAsync(() => CodeSystemXML.toXml(cs));
+    expect(parts).toEqual([CodeSystemXML.toXml(cs)]);
+  });
+
+  test('kept XML is encoded once, and a later response is given those same Buffers', async () => {
+    const cache = new XmlFragmentCache({ budgetBytes: 10 * 1024 * 1024, minMs: 0 });
+    FhirXmlBase.setFragmentCache(cache);
+    const cs = codeSystem();
+    cs.concept.push({ code: 'U', display: 'Ünïcödé – ✓' });
+    const expected = CodeSystemXML.toXml(cs);
+    await FhirXmlBase.toXmlChunksAsync(() => CodeSystemXML.toXml(cs));
+    const second = await FhirXmlBase.toXmlChunksAsync(() => CodeSystemXML.toXml(cs));
+    expect(joined(second)).toBe(expected);
+    const third = await FhirXmlBase.toXmlChunksAsync(() => CodeSystemXML.toXml(cs));
+    expect(joined(third)).toBe(expected);
+    const buffers = third.filter(p => Buffer.isBuffer(p));
+    expect(buffers.length).toBeGreaterThan(0);
+    expect(second.filter(p => Buffer.isBuffer(p))).toEqual(buffers);
+    expect(buffers.every((b, i) => b === second.filter(p => Buffer.isBuffer(p))[i])).toBe(true);
+    // the cache counts the bytes it holds, not characters
+    expect(cache.bytes).toBe(buffers.reduce((n, b) => n + b.length, 0));
+  });
+
+  function fakeResponse(method = 'GET', highWaterMark = 16) {
+    const res = new PassThrough({ highWaterMark });
+    const headers = {};
+    res.req = { method };
+    res.setHeader = (k, v) => { headers[k] = v; };
+    res.headers = headers;
+    const received = [];
+    res.on('data', c => received.push(c));
+    res.received = () => Buffer.concat(received).toString('utf8');
+    return res;
+  }
+
+  test('writes every part, waiting for the socket, with the length in bytes', async () => {
+    const parts = ['<a>', Buffer.from('ünï', 'utf8'), 'x'.repeat(1000), Buffer.from('</a>')];
+    const res = fakeResponse();
+    const ended = new Promise(resolve => res.on('end', resolve));
+    const size = await FhirXmlBase.writeXmlParts(res, parts);
+    await ended;
+    const expected = '<a>ünï' + 'x'.repeat(1000) + '</a>';
+    expect(res.received()).toBe(expected);
+    expect(size).toBe(Buffer.byteLength(expected, 'utf8'));
+    expect(res.headers['Content-Length']).toBe(size);
+  });
+
+  test('a HEAD request gets the length and no body', async () => {
+    const res = fakeResponse('HEAD');
+    const size = await FhirXmlBase.writeXmlParts(res, ['<a>', Buffer.from('</a>')]);
+    expect(size).toBe(7);
+    expect(res.headers['Content-Length']).toBe(7);
+    expect(res.writableEnded).toBe(true);
+    expect(res.received()).toBe('');
+  });
+
+  test('stops when the client has gone', async () => {
+    const res = fakeResponse('GET', 1);
+    res.removeAllListeners('data'); // nobody reading: the first write fills the buffer
+    const writing = FhirXmlBase.writeXmlParts(res, ['x'.repeat(100), 'y'.repeat(100)]);
+    res.destroy();
+    await expect(writing).resolves.toBe(200);
+  });
+});
+
 describe('codeSystemFromR5', () => {
   test('does not change the R5 resource, and copies only what it changes', () => {
     const cs = codeSystem();

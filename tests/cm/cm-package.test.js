@@ -162,16 +162,24 @@ describe('PackageConceptMapProvider', () => {
       }
     });
 
-    test('url is a left match: the url starts with it', async () => {
+    test('url is an exact match: a url that starts with it is not a match', async () => {
+      expect((await provider.searchConceptMaps([{ name: 'url', value: 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-' }])).length).toBe(0);
+      expect((await provider.searchConceptMaps([{ name: 'url', value: 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhi' }])).length).toBe(0);
+      // not anywhere in the url
+      expect((await provider.searchConceptMaps([{ name: 'url', value: 'ConceptMap/bfs-encounter-class-to-fhir' }])).length).toBe(0);
+    });
+
+    test('url:below is a left match: the url starts with it', async () => {
       const prefix = 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-';
-      const results = await provider.searchConceptMaps([{ name: 'url', value: prefix }]);
+      const results = await provider.searchConceptMaps([{ name: 'url:below', value: prefix }]);
       expect(results.length).toBeGreaterThan(0);
       expect(results.some(r => r.url === 'http://fhir.ch/ig/ch-core/ConceptMap/bfs-encounter-class-to-fhir')).toBe(true);
       for (const r of results) {
         expect(r.url.startsWith(prefix)).toBe(true);
       }
-      // not anywhere in the url
-      expect((await provider.searchConceptMaps([{ name: 'url', value: 'ConceptMap/bfs-encounter-class-to-fhir' }])).length).toBe(0);
+      // not anywhere in the url, and case-sensitive
+      expect((await provider.searchConceptMaps([{ name: 'url:below', value: 'ConceptMap/bfs-' }])).length).toBe(0);
+      expect((await provider.searchConceptMaps([{ name: 'url:below', value: 'HTTP://fhir.ch/ig/ch-core/ConceptMap/bfs-' }])).length).toBe(0);
     });
 
     test('url:contains (the HTML search form): anywhere in the url, without regard to case', async () => {

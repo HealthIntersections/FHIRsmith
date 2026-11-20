@@ -24,6 +24,11 @@ const { requestDeadline, describeRequestFailure } = require('../library/http-lim
  * are kept for an hour too (sendCached), and the same request asked twice at once is only sent
  * once.
  *
+ * When the registry finds no server for a code system and says that no server hosts any code
+ * system on its host (unknown-host: see 'Unknown Hosts' in the tx ecosystem IG), that's kept
+ * for an hour too, for the FHIR version it was asked about, and the registry isn't asked about
+ * that host's other code systems at that FHIR version in that time
+ *
  * Every request (to the registry, to the servers it names, and for OAuth tokens) goes through the
  * SSRF guard (library/ssrf-guard.js): only public addresses, unless allowPrivateAddresses is set
  */
@@ -87,6 +92,9 @@ class EcosystemResolver {
     this.answers = new Map();
     // see #request: host:port of a server given as http:// -> {scheme: 'https' or 'http', at}
     this.schemes = new Map();
+    // see findServers: host#fhirVersion (as asked of the registry) -> {at, unknownHost: true},
+    // for hosts the registry said no server hosts any code system on
+    this.hosts = new Map();
   }
 
   /**
@@ -94,7 +102,7 @@ class EcosystemResolver {
    * @returns {number}
    */
   cacheCount() {
-    return this.servers.size + this.versions.size + this.searched.size + this.codes.size + this.answers.size + this.schemes.size;
+    return this.servers.size + this.versions.size + this.searched.size + this.codes.size + this.answers.size + this.schemes.size + this.hosts.size;
   }
 
   /**
@@ -103,7 +111,7 @@ class EcosystemResolver {
    */
   cacheSizes() {
     return { servers: this.servers.size, capabilities: this.versions.size, searches: this.searched.size,
-      'server codes': this.codes.size, answers: this.answers.size, schemes: this.schemes.size };
+      'server codes': this.codes.size, answers: this.answers.size, schemes: this.schemes.size, 'unknown hosts': this.hosts.size };
   }
 
   /**
@@ -121,6 +129,9 @@ class EcosystemResolver {
       }
       if (entry.failure) {
         return 'not known: ' + entry.failure.reason;
+      }
+      if (entry.unknownHost) {
+        return 'no server hosts any code system on this host';
       }
       const v = entry.value !== undefined ? entry.value : entry;
       if (v === null) {
@@ -142,7 +153,7 @@ class EcosystemResolver {
       return text && text.length > 200 ? text.substring(0, 200) + '...' : String(text);
     };
     const caches = [['servers', this.servers], ['capabilities', this.versions], ['searches', this.searched],
-      ['server codes', this.codes], ['answers', this.answers], ['schemes', this.schemes]];
+      ['server codes', this.codes], ['answers', this.answers], ['schemes', this.schemes], ['unknown hosts', this.hosts]];
     for (const [name, cache] of caches) {
       for (const [key, entry] of cache) {
         rows.push([name, key, entry && entry.at ? Math.round((now - entry.at) / 1000) : null, say(entry || {})]);
@@ -158,7 +169,7 @@ class EcosystemResolver {
    */
   clearCaches() {
     const count = this.cacheCount();
-    for (const cache of [this.servers, this.versions, this.searched, this.codes, this.answers, this.schemes]) {
+    for (const cache of [this.servers, this.versions, this.searched, this.codes, this.answers, this.schemes, this.hosts]) {
       cache.clear();
     }
     return count;
@@ -249,6 +260,38 @@ class EcosystemResolver {
    */
   isExcludedSystem(system, version) {
     return this.excludedPatterns.some(r => r.test(system) || (version && r.test(system + '|' + version)));
+  }
+
+  /**
+   * The host of an http: or https: system, as the registry gives it in unknown-host (lower case,
+   * with the port if there is one), or null for anything else
+   */
+  static hostOf(system) {
+    if (typeof system !== 'string' || !/^https?:\/\//i.test(system)) {
+      return null;
+    }
+    try {
+      return new URL(system).host.toLowerCase() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the registry said, within the hour, that no server hosts any code system on host
+   * at FHIR version fv (an entry older than that is let go)
+   */
+  isUnknownHost(host, fv) {
+    const key = host + '#' + fv;
+    const entry = this.hosts.get(key);
+    if (!entry) {
+      return false;
+    }
+    if (Date.now() - entry.at >= CACHE_MS) {
+      this.hosts.delete(key);
+      return false;
+    }
+    return true;
   }
 
   static fhirVersionFor(v) {
@@ -544,10 +587,18 @@ class EcosystemResolver {
     const key = system + (version ? '|' + version : '');
     return this.#known(this.servers, key + '#' + fhirVersion, async (ctxt) => {
       const first = EcosystemResolver.fhirVersionFor(fhirVersion);
+      const host = EcosystemResolver.hostOf(system);
       let failure = null;
       for (const fv of [first, ...['5.0', '4.0'].filter(v => v !== first)]) {
+        if (host && this.isUnknownHost(host, fv)) {
+          continue; // the registry has said it knows nothing on this host, at this FHIR version
+        }
         try {
           const json = await this.getRegistryJson(this.registry + '/resolve?fhirVersion=' + fv + '&url=' + encodeURIComponent(key), ctxt);
+          if (host && json['unknown-host'] === host && (json.authoritative || []).length === 0 && (json.candidates || []).length === 0) {
+            this.#remember(this.hosts, host + '#' + fv, { at: Date.now(), unknownHost: true });
+            continue;
+          }
           if ((json.authoritative || []).some(s => s.url && this.isExcludedServer(s.url))) {
             return null;
           }
