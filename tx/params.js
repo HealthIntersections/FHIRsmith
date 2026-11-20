@@ -486,14 +486,29 @@ class TxParameters {
         if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
         } else if (overwrite) {
-          const found = res ? 'a resource of type ' + res.resourceType : "the value '" + getValuePrimitive(value) + "'";
-          throw new Issue('error', 'not-supported', null, null, "The parameter 'profile' is only supported as an inline Parameters resource, not " + found, null, 400);
+          // say what was found: the resource type, the value of a primitive, or the type of any other value
+          let msgId, detail;
+          if (res) {
+            msgId = 'PARAMETER_PROFILE_NOT_SUPPORTED_RESOURCE';
+            detail = res.resourceType;
+          } else {
+            const primitive = getValuePrimitive(value);
+            const valueKey = Object.keys(value).find(k => k.startsWith('value') && k.length > 5);
+            if (primitive !== null || !valueKey) {
+              msgId = 'PARAMETER_PROFILE_NOT_SUPPORTED_VALUE';
+              detail = primitive ?? '';
+            } else {
+              msgId = 'PARAMETER_PROFILE_NOT_SUPPORTED_TYPE';
+              detail = valueKey.substring(5);
+            }
+          }
+          throw new Issue('error', 'not-supported', null, msgId, this.i18n.translate(msgId, this.HTTPLanguages, [detail]), 'not-supported', 400);
         }
         break;
       }
 
       case 'exclude-system': {
-        throw new Issue('error', 'not-supported', null, null, "The parameter 'exclude-system' is not supported by this system", null, 400);
+        throw new Issue('error', 'not-supported', null, 'PARAMETER_NOT_SUPPORTED', this.i18n.translate('PARAMETER_NOT_SUPPORTED', this.HTTPLanguages, ['exclude-system']), 'not-supported', 400);
       }
     }
   }
