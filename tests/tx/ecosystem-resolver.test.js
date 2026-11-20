@@ -294,6 +294,84 @@ describe('EcosystemResolver', () => {
     });
   });
 
+  describe('hosts the registry knows nothing on', () => {
+    const DN = 'http://dnvimatis.com/fhir/CodeSystem/';
+    const unknown = { 'unknown-host': 'dnvimatis.com' };
+
+    test('the hostOf a system: http and https only, lower case, with the port', () => {
+      expect(EcosystemResolver.hostOf('http://DNVIMATIS.com/fhir/CodeSystem/x')).toBe('dnvimatis.com');
+      expect(EcosystemResolver.hostOf('https://termgit.elga.gv.at:8443/x')).toBe('termgit.elga.gv.at:8443');
+      expect(EcosystemResolver.hostOf('urn:oid:1.2.246.537.6.55')).toBeNull();
+      expect(EcosystemResolver.hostOf('urn:rfc3881')).toBeNull();
+    });
+
+    test('once the registry says so, it isn\'t asked about the host\'s other code systems', async () => {
+      const r = resolver();
+      const asked = [];
+      nock(REG).get('/tx-reg/resolve').query(q => { asked.push(q.url + '#' + q.fhirVersion); return true; }).times(3).reply(200, unknown);
+      expect(await r.findServers(DN + 'task-subcategoryid', null, 4)).toBeNull();
+      // asked at every FHIR version, since it only says so for the one it was asked about
+      expect(asked).toEqual([DN + 'task-subcategoryid#4.0', DN + 'task-subcategoryid#5.0']);
+      const o = { n: 0, countExternalRequest() { this.n++; } };
+      expect(await r.findServers(DN + 'task-infectionStatus', null, 4, o)).toBeNull();
+      expect(await r.findServers('https://DNVIMATIS.com/fhir/CodeSystem/x', '1.0', 5, o)).toBeNull();
+      expect(asked.length).toBe(2);
+      expect(o.n).toBe(0);
+      expect(r.whyNoServers(DN + 'task-infectionStatus', null, 4)).toBeNull();
+      expect([...r.hosts.keys()].sort()).toEqual(['dnvimatis.com#4.0', 'dnvimatis.com#5.0']);
+    });
+
+    test('it only covers the FHIR version it was said for', async () => {
+      const r = resolver();
+      nock(REG).get('/tx-reg/resolve').query(q => q.fhirVersion === '4.0').reply(200, unknown);
+      nock(REG).get('/tx-reg/resolve').query(q => q.fhirVersion === '5.0' && q.url === DN + 'a').reply(200, {});
+      expect(await r.findServers(DN + 'a', null, 4)).toBeNull();
+      // known at 4.0, so only 5.0 is asked
+      nock(REG).get('/tx-reg/resolve').query(q => q.fhirVersion === '5.0' && q.url === DN + 'b').reply(200, { candidates: [{ url: OPEN, open: true }] });
+      expect(await r.findServer(DN + 'b', null, 4)).toBe(OPEN);
+      expect(nock.isDone()).toBe(true);
+    });
+
+    test('not for another host, even one that starts the same', async () => {
+      const r = resolver();
+      nock(REG).get('/tx-reg/resolve').query(true).times(2).reply(200, unknown);
+      expect(await r.findServers(DN + 'a', null, 5)).toBeNull();
+      const scope = nock(REG).get('/tx-reg/resolve').query(true).times(4).reply(200, {});
+      expect(await r.findServers('http://dnvimatis.com.au/cs', null, 5)).toBeNull();
+      expect(await r.findServers('http://www.dnvimatis.com/cs', null, 5)).toBeNull();
+      expect(scope.isDone()).toBe(true);
+    });
+
+    test('an unknown-host for another host, or with servers in it, is ignored', async () => {
+      const r = resolver();
+      nock(REG).get('/tx-reg/resolve').query(q => q.url === DN + 'a').times(2).reply(200, { 'unknown-host': 'other.example' });
+      expect(await r.findServers(DN + 'a', null, 5)).toBeNull();
+      nock(REG).get('/tx-reg/resolve').query(q => q.url === DN + 'b').reply(200, { 'unknown-host': 'dnvimatis.com', candidates: [{ url: OPEN, open: true }] });
+      expect(await r.findServer(DN + 'b', null, 5)).toBe(OPEN);
+      expect(r.hosts.size).toBe(0);
+    });
+
+    test('it is kept for an hour, and then the registry is asked again', async () => {
+      let now = 1800000000000;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now);
+      try {
+        const r = resolver();
+        nock(REG).get('/tx-reg/resolve').query(true).times(2).reply(200, unknown);
+        expect(await r.findServers(DN + 'a', null, 5)).toBeNull();
+        now += 59 * 60 * 1000;
+        const early = nock(REG).get('/tx-reg/resolve').query(true).reply(200, {});
+        expect(await r.findServers(DN + 'b', null, 5)).toBeNull();
+        expect(early.isDone()).toBe(false);
+        nock.cleanAll();
+        now += 2 * 60 * 1000;
+        nock(REG).get('/tx-reg/resolve').query(q => q.url === DN + 'c').times(2).reply(200, { candidates: [{ url: OPEN, open: true }] });
+        expect(await r.findServer(DN + 'c', null, 5)).toBe(OPEN);
+      } finally {
+        clock.mockRestore();
+      }
+    });
+  });
+
   describe('what is kept', () => {
     const LOOKUP = `${OPEN}/CodeSystem/$lookup?system=x&code=1`;
     const op = () => ({ n: 0, countExternalRequest() { this.n++; } });
@@ -527,7 +605,8 @@ describe('EcosystemResolver caches, for the caches page', () => {
     er.answers.set('https://tx.example.org/r4/CodeSystem/$lookup?code=x', { at: Date.now(), value: { status: 404 } });
     er.schemes.set('tx.example.org:80', { scheme: 'https', at: Date.now() });
     er.searched.set('https://tx.example.org/r4|http://example.org/cs', { pending: Promise.resolve() });
-    expect(er.cacheSizes()).toEqual({ servers: 3, capabilities: 0, searches: 1, 'server codes': 0, answers: 1, schemes: 1 });
+    er.hosts.set('dnvimatis.com#4.0', { at: Date.now(), unknownHost: true });
+    expect(er.cacheSizes()).toEqual({ servers: 3, capabilities: 0, searches: 1, 'server codes': 0, answers: 1, schemes: 1, 'unknown hosts': 1 });
     const rows = er.cacheEntries();
     expect(rows.map(r => [r[0], r[1], r[3]])).toEqual([
       ['servers', 'http://example.org/cs#4', 'https://tx.example.org/r4 (authoritative)'],
@@ -535,8 +614,12 @@ describe('EcosystemResolver caches, for the caches page', () => {
       ['servers', 'http://failed.org/cs#4', 'not known: Unable to read the registry: timeout'],
       ['searches', 'https://tx.example.org/r4|http://example.org/cs', 'being asked now'],
       ['answers', 'https://tx.example.org/r4/CodeSystem/$lookup?code=x', 'HTTP 404'],
-      ['schemes', 'tx.example.org:80', 'https']
+      ['schemes', 'tx.example.org:80', 'https'],
+      ['unknown hosts', 'dnvimatis.com#4.0', 'no server hosts any code system on this host']
     ]);
+    expect(er.cacheCount()).toBe(7);
+    expect(er.clearCaches()).toBe(7);
+    expect(er.hosts.size).toBe(0);
     expect(rows[0][2]).toBeGreaterThanOrEqual(4);
   });
 });

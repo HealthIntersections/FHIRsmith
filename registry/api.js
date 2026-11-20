@@ -525,6 +525,15 @@ class RegistryAPI {
     authMatches.sort((a, b) => a.score - b.score);
     result.authoritative = authMatches.map(m => m.entry);
 
+    // Nothing found: say if no server hosts any code system on the url's host at all, so
+    // the client needn't ask about the others (see 'Unknown Hosts' in the tx ecosystem IG)
+    if (result.authoritative.length === 0 && result.candidates.length === 0) {
+      const host = ServerRegistryUtilities.urlHost(codeSystem);
+      if (host && !this._hostsCodeSystemOnHost(normalizedVersion, host, usage)) {
+        result['unknown-host'] = host;
+      }
+    }
+
     return {
       result: this._cleanEmptyArrays(result),
       matches: matchedServers.length > 0 ? matchedServers.join(',') : '--'
@@ -855,6 +864,31 @@ class RegistryAPI {
       'master-url': data.address,
       results: [...authRows, ...otherRows].map(r => r.row)
     };
+  }
+
+  /**
+   * True if any server that a resolve request at this FHIR version and usage would consider
+   * hosts a code system (any version, http or https, not excluded) whose url is on the host.
+   * Independent of authoritativeOnly and language: a host where a server is only a candidate
+   * is still known
+   */
+  _hostsCodeSystemOnHost(normalizedVersion, host, usage = '') {
+    const data = this.crawler.getData();
+    for (const registry of data.registries) {
+      for (const server of registry.servers) {
+        if (!(server.usageList.length === 0 || (usage && server.usageList.includes(usage)))) continue;
+        for (const version of server.versions) {
+          if (!ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) continue;
+          for (const item of version.codeSystems || []) {
+            const uri = typeof item === 'string' ? item : item.uri;
+            if (!uri || ServerRegistryUtilities.urlHost(uri) !== host) continue;
+            const vurl = typeof item === 'string' ? item : (item.version ? item.uri + '|' + item.version : item.uri);
+            if (!server.isExcludedTarget(vurl)) return true;
+          }
+        }
+      }
+    }
+    return false;
   }
 
   _cleanEmptyArrays(result) {
