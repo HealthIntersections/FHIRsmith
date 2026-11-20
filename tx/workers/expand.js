@@ -14,7 +14,7 @@ const {Designations, SearchFilterText} = require("../library/designations");
 const {Extensions} = require("../library/extensions");
 const {getValuePrimitive, getValueName, validateParameter} = require("../../library/utilities");
 const {div} = require("../../library/html");
-const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
+const { Issue, buildOperationOutcome } = require('../library/operation-outcome');
 const crypto = require('crypto');
 const ValueSet = require("../library/valueset");
 const {VersionUtilities} = require("../../library/version-utilities");
@@ -2314,6 +2314,12 @@ class ValueSetExpander {
         new Issue('warning', 'code-invalid', null, u.msgId,
           this.worker.i18n.translate(u.msgId, this.params.HTTPLanguages, u.params), 'invalid-code')));
     }
+    // a request supplement with the url of the code system it supplements (see
+    // TerminologyWorker.noteSupplementsWithCodeSystemUrl)
+    const sameUrl = this.worker.sameUrlSupplementIssues();
+    if (sameUrl.length > 0) {
+      this.addExpansionIssue(result, exp, sameUrl);
+    }
     if (this.capCut) {
       this.addExpansionIssue(result, exp, new Issue('warning', 'business-rule', null, 'VALUESET_EXPANSION_CODESYSTEM_LIMITED',
         this.worker.i18n.translate('VALUESET_EXPANSION_CODESYSTEM_LIMITED', this.params.httpLanguages, [this.capCut.system, this.capCut.limit]), 'business-rule'));
@@ -3065,14 +3071,7 @@ class ExpandWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const statusCode = error.statusCode || 500;
-      if (error instanceof Issue) {
-        let oo = new OperationOutcome();
-        oo.addIssue(error);
-        return res.status(error.statusCode || 500).json(oo.jsonObj);
-      } else {
-        return res.status(statusCode).json(outcomeFromError(error));
-      }
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -3089,8 +3088,7 @@ class ExpandWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const statusCode = error.statusCode || 500;
-      return res.status(statusCode).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 

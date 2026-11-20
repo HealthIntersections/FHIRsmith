@@ -1207,6 +1207,10 @@ class OperationContext {
     // time-limit message; null when not known (no $operation in the path, or not a request)
     this.operationName = null;
     this.ecosystemForwarded = false; // see EcosystemResolver
+    // the request's supplements that have the url of the code system they supplement, that this
+    // operation looked that code system up with (see TerminologyWorker.noteSupplementsWithCodeSystemUrl).
+    // Not shared with copies: a batch entry reports its own
+    this.sameUrlSupplements = null;
     // how many requests answering this one sent to other servers (EcosystemResolver): if any,
     // it's counted as an external request (ServerStats.countExternalRequest). Shared with the
     // copies (a batch's entries), so what they send counts against the request
@@ -1285,6 +1289,20 @@ class OperationContext {
       this._external.problems = new Map();
     }
     this._external.problems.set(vurl + ' ' + why, { vurl, why });
+  }
+
+  /**
+   * A supplement the request carries has the url of the code system it supplements, and this
+   * operation looked that code system up: the operation reports it with a warning
+   * (see TerminologyWorker.sameUrlSupplementIssues)
+   *
+   * @param {string} vurl - the supplement's url|version (url, if it has no version)
+   */
+  noteSameUrlSupplement(vurl) {
+    if (!this.sameUrlSupplements) {
+      this.sameUrlSupplements = new Set();
+    }
+    this.sameUrlSupplements.add(vurl);
   }
 
   /**
