@@ -59,6 +59,22 @@ describe('url search: partial for the HTML form only', () => {
     expect(asked).toEqual([[{ name: 'status', value: 'active' }]]);
   });
 
+  test.each(['ValueSet', 'ConceptMap'])('%s: an API client can ask for url:below and url:contains', async (type) => {
+    const { asked } = await search(type, { 'url:below': 'http://example.org/ValueSet/', 'url:contains': '1.2.3' }, JSON_);
+    expect(asked).toEqual([[{ name: 'url:below', value: 'http://example.org/ValueSet/' }, { name: 'url:contains', value: '1.2.3' }]]);
+  });
+
+  test('CodeSystem: url:below is a left match, case-sensitive; url:contains is partial, without regard to case', async () => {
+    const ids = async (query) => ((await search('CodeSystem', query, JSON_)).body.entry || []).map(e => e.resource.id).sort();
+    expect(await ids({ 'url:below': 'http://example.org/fhir/CodeSystem/' })).toEqual(['oid', 'other']);
+    expect(await ids({ 'url:below': 'http://example.org/fhir/CodeSystem/Oth' })).toEqual(['other']);
+    expect(await ids({ 'url:below': 'http://example.org/fhir/CodeSystem/oth' })).toEqual([]);
+    expect(await ids({ 'url:below': 'CodeSystem/Other' })).toEqual([]);
+    expect(await ids({ 'url:contains': 'codesystem/OTHER' })).toEqual(['other']);
+    // a prefix of a url is not that url
+    expect(await ids({ url: 'http://example.org/fhir/CodeSystem/Oth' })).toEqual([]);
+  });
+
   test('CodeSystem: the HTML form matches part of the url, without regard to case', async () => {
     const ids = async (query, accept) => ((await search('CodeSystem', query, accept)).body.entry || []).map(e => e.resource.id);
     expect(await ids({ url: '2.16.840.1.113883 ' }, HTML)).toEqual(['oid']);

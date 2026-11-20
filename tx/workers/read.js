@@ -140,6 +140,7 @@ class ReadWorker extends TerminologyWorker {
         req.sourcePackage = vs.sourcePackage;
         // a stored resource: the tx module gives it an ETag, and can answer 304 without serialising
         req.txStoredResource = vs.jsonObj;
+        req.txStoredContentHash = vs.contentHash || null;
         return res.json(vs.jsonObj);
       }
     }

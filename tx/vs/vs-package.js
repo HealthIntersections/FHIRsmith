@@ -330,8 +330,15 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               break;
             }
           } else if (param === 'url') {
-            // a left match, on the url as asked for (not lower cased)
+            // an exact match, on the url as asked for (not lower cased)
             const asked = searchParams.find(sp => sp.name === 'url').value;
+            if (json.url !== asked) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:below') {
+            // a left match, on the url as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'url:below').value;
             if (!(json.url || '').startsWith(asked)) {
               isMatch = false;
               break;
