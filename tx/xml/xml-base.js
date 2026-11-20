@@ -713,6 +713,28 @@ class FhirXmlBase {
    * @returns {Promise<string>} XML string
    */
   static async toXmlAsync(render, stillWanted = null) {
+    const parts = await this.toXmlChunksAsync(render, stillWanted);
+    return parts.length === 1 && typeof parts[0] === 'string'
+      ? parts[0]
+      : parts.map(p => (typeof p === 'string' ? p : p.toString('utf8'))).join('');
+  }
+
+  /**
+   * toXmlAsync, but the XML in parts - strings, and Buffers (UTF-8) - to be written to the
+   * response one after another (see writeXmlParts), never joined into one string.
+   *
+   * Joining 64 MB, then counting and encoding it to send it, can't let other work run, and took
+   * about 150 ms (several times that on tx.fhir.org, and back to back when several requests for
+   * ICD-10-CM came together: blocks of 2-4 s, 2026-11-19). So the XML of a large array is kept
+   * (XmlFragmentCache) encoded, in the parts it was rendered in, and a response that has it
+   * writes those parts as they are; the rest of the text is in parts of what is rendered between
+   * yields.
+   *
+   * @param {Function} render
+   * @param {Function} [stillWanted]
+   * @returns {Promise<Array<string|Buffer>>}
+   */
+  static async toXmlChunksAsync(render, stillWanted = null) {
     let text;
     let jobs;
     deferred = [];
@@ -723,14 +745,21 @@ class FhirXmlBase {
       deferred = null;
     }
     if (jobs.length === 0) {
-      return text;
+      return [text];
     }
     const parts = text.split(DEFERRED_MARK);
     const out = [];
-    // out is joined into chunks as it goes (at each yield), so the end isn't one join of millions
-    // of pieces. busy: the time spent serialising, not counting the time given to other work
+    // out is joined into chunks (strings) as it goes, at each yield, and kept XML is put among
+    // them as it is (Buffers). busy: the time spent serialising, not counting the time given to
+    // other work
     const clock = { last: performance.now(), chunks: [], busy: 0, stillWanted };
     const busyNow = () => clock.busy + (performance.now() - clock.last);
+    const flush = () => {
+      if (out.length > 0) {
+        clock.chunks.push(out.join(''));
+        out.length = 0;
+      }
+    };
     const cache = fragmentCache;
     // split leaves the text between the marks at the even positions, and the job numbers at the odd ones
     for (let i = 0; i < parts.length; i++) {
@@ -741,26 +770,89 @@ class FhirXmlBase {
       const job = jobs[Number(parts[i])];
       const key = job.name + '|' + job.level;
       const kept = cache ? cache.get(job.value, key) : null;
-      if (kept !== null) {
-        out.push(kept);
+      if (Array.isArray(kept)) {
+        flush();
+        for (const b of kept) {
+          clock.chunks.push(b);
+        }
         continue;
       }
       // this array's text in chunks of its own, in case it's worth keeping
-      clock.chunks.push(out.join(''));
-      out.length = 0;
+      flush();
       const first = clock.chunks.length;
       const started = busyNow();
       await this._emitArrayAsync(out, job.name, job.value, job.level, clock);
+      flush();
       if (cache && cache.wants(job.value, key, busyNow() - started)) {
-        clock.chunks.push(out.join(''));
-        out.length = 0;
-        const text = clock.chunks.splice(first).join('');
-        clock.chunks.push(text);
-        cache.put(job.value, key, text);
+        // kept encoded, a chunk at a time (yielding as it goes), and used for this response too
+        const encoded = [];
+        for (let c = first; c < clock.chunks.length; c++) {
+          const b = Buffer.from(clock.chunks[c], 'utf8');
+          clock.chunks[c] = b;
+          encoded.push(b);
+          await this._maybeYield(clock);
+        }
+        cache.put(job.value, key, encoded);
       }
     }
-    clock.chunks.push(out.join(''));
-    return clock.chunks.join('');
+    flush();
+    return clock.chunks;
+  }
+
+  /**
+   * Yield to the event loop if this has been computing for YIELD_MS (see _emitArrayAsync)
+   * @private
+   */
+  static async _maybeYield(clock) {
+    const now = performance.now();
+    if (now - clock.last >= YIELD_MS) {
+      clock.busy += now - clock.last;
+      await new Promise(resolve => setImmediate(resolve));
+      if (clock.stillWanted && !clock.stillWanted()) {
+        const error = new Error('Serialising abandoned: the response is no longer wanted');
+        error.abandoned = true;
+        throw error;
+      }
+      clock.last = performance.now();
+    }
+  }
+
+  /**
+   * Write XML in parts (toXmlChunksAsync) to an HTTP response and end it: Content-Length from
+   * the parts, then each part as it is, waiting whenever the socket says to (backpressure).
+   * Nothing is joined or encoded whole.
+   * @param {http.ServerResponse} res - headers other than Content-Length already set
+   * @param {Array<string|Buffer>} parts
+   * @returns {Promise<number>} the bytes written
+   */
+  static async writeXmlParts(res, parts) {
+    let size = 0;
+    for (const p of parts) {
+      size += typeof p === 'string' ? Buffer.byteLength(p, 'utf8') : p.length;
+    }
+    res.setHeader('Content-Length', size);
+    if (res.req && res.req.method === 'HEAD') {
+      res.end();
+      return size;
+    }
+    for (const p of parts) {
+      if (res.destroyed || res.writableEnded) {
+        return size;
+      }
+      if (!res.write(p)) {
+        await new Promise(resolve => {
+          const done = () => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+          };
+          res.on('drain', done);
+          res.on('close', done);
+        });
+      }
+    }
+    res.end();
+    return size;
   }
 
   /**
@@ -827,18 +919,10 @@ class FhirXmlBase {
       } else {
         this._emitElement(out, name, item, level);
       }
-      const now = performance.now();
-      if (now - clock.last >= YIELD_MS) {
+      if (performance.now() - clock.last >= YIELD_MS) {
         clock.chunks.push(out.join(''));
         out.length = 0;
-        clock.busy += now - clock.last;
-        await new Promise(resolve => setImmediate(resolve));
-        if (clock.stillWanted && !clock.stillWanted()) {
-          const error = new Error('Serialising abandoned: the response is no longer wanted');
-          error.abandoned = true;
-          throw error;
-        }
-        clock.last = performance.now();
+        await this._maybeYield(clock);
       }
     }
   }

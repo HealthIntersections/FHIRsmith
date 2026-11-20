@@ -25,7 +25,7 @@
 class XmlFragmentCache {
   /**
    * @param {object} opts
-   * @param {number} opts.budgetBytes - most text (in characters) held in all
+   * @param {number} opts.budgetBytes - most held in all: characters of text, bytes of encoded XML
    * @param {number} [opts.minMs=50] - least render (compute) time worth remembering
    */
   constructor({ budgetBytes, minMs = 50 }) {
@@ -46,7 +46,8 @@ class XmlFragmentCache {
   }
 
   /**
-   * @returns {string|null} the XML kept for this array at this key, or null
+   * @returns {string|Buffer[]|null} what is kept for this array at this key - the JSON text, or
+   *   the XML, encoded, in parts (see FhirXmlBase.toXmlChunksAsync) - or null
    */
   get(array, key) {
     const entry = this._entries.get(array)?.get(key);
@@ -60,7 +61,7 @@ class XmlFragmentCache {
     this._lru.delete(entry);
     this._lru.add(entry);
     this.hits++;
-    return entry.text;
+    return entry.value;
   }
 
   /**
@@ -83,8 +84,14 @@ class XmlFragmentCache {
     return true;
   }
 
-  put(array, key, text) {
-    const bytes = text.length;
+  /**
+   * @param {Array} array
+   * @param {string} key
+   * @param {string|Buffer[]} value - text, or encoded XML in parts (kept as it is: the parts are
+   *   written to the response one after another, so nothing has to be joined or encoded again)
+   */
+  put(array, key, value) {
+    const bytes = Array.isArray(value) ? value.reduce((n, b) => n + b.length, 0) : value.length;
     if (bytes > this.budgetBytes) {
       return;
     }
@@ -96,7 +103,7 @@ class XmlFragmentCache {
     } else if (byKey.has(key)) {
       this._drop(byKey.get(key), true);
     }
-    const entry = { key, text, bytes, length: array.length, byKey };
+    const entry = { key, value, bytes, length: array.length, byKey };
     byKey.set(key, entry);
     this._lru.add(entry);
     this.bytes += bytes;
