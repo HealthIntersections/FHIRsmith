@@ -51,7 +51,8 @@ class KeyStoreKeyProvider {
       status: row.status,
       expires: row.expires || null,
       reason: row.reason || null,
-      owner: `${row.origin === 'created' ? 'created' : 'uploaded'} by ${ks.ownerName(row)}`,
+      owner: `${row.origin === 'created' ? 'created' : 'uploaded'} by ${ks.ownerLabel(row)}`,
+      ownerKind: ks.ownerKind(row),
       origin: row.origin,
       source: 'keystore'
     };

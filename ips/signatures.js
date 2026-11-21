@@ -39,6 +39,21 @@
  * document's processing goes on: a signature that can't be checked doesn't stop the analysis.
  * Outcomes that aren't of this form are shown as errors too.
  *
+ * verify() is given at most VERIFY_TIMEOUT_MS (pipeline.js); one that takes longer is an error
+ * outcome, and the processing goes on.
+ *
+ * **No network.** verify() must not fetch anything a document names - a key or certificate URL
+ * in a signature (x5u, jku), a key's permalink, anything else: the document is whatever someone
+ * submitted, and a fetch would let them have the server request any address (SSRF), or hold
+ * the processing up. Keys come only from the KeyProvider, and from the signature itself (x5c).
+ *
+ * Notes:
+ *   - verify should attempt to describe what is wrong with a signature if it can, but it is not actually a validator
+ *   - even if the certificate is self-contained, the verification should still consult the Key provider
+ *     for the key to cross-check details and check for revocation
+ *   - the UI presenting results will match key ids to known keys in the web interface when presenting the outcomes
+ *
+ *
  * ## KeyProvider
  *
  * Both methods are async, and return null when the key isn't known:
@@ -58,7 +73,8 @@
  *     status:  'active' | 'retired' | 'revoked',   retired: replaced by a newer key, but its signatures stand
  *     expires: string | null,           for a revoked key, from when it is not to be trusted (ISO 8601)
  *     reason:  string | null,           why it was revoked, if anyone said
- *     owner:   string,                  who it belongs to, as the provider shows it ("uploaded by" / "created by"): the provider's say-so, not an identity check
+ *     owner:   string,                  who it belongs to, as the provider shows it, with its kind: "created by System", "uploaded by User: {name}" - the provider's say-so, not an identity check
+ *     ownerKind: 'system' | 'user',     whose key it is: the server's own, or a user's (a user can't be called System)
  *     origin:  'uploaded' | 'created',  created: the provider made the key pair, and holds the private key
  *     source:  string                   which provider ('keystore')
  *   }
@@ -79,11 +95,30 @@
  *   {
  *     key:        Object,              the public key, as a KeyProvider gives it (above)
  *     privateKey: crypto.KeyObject,    the private key: crypto.sign, or a JOSE library
- *     url:        string               the key's permalink: its page on this server, for anyone checking
+ *     url:        string,              the key's permalink: its page on this server, for anyone checking
+ *     identity:   Object | null        user only: who is signing - { name, login, email (or null) }. A user
+ *                                      who signs is identified in the signature (Signature.who): that is
+ *                                      what signing as yourself means. null for the system
  *   }
+ *
+ * What the signatures mean: the system's signature says only that the document has not been
+ * changed since it left this server - nothing about where it came from or whether it is right
+ * (anyone can submit a document to an open project, and have the server sign it). A user's says
+ * that this user, logged in here, asked for it to be signed. Put nothing more into either.
+ *
+ * Never log or return the private keys, nor put them in an error message.
+ *
+ * sign() is given at most SIGN_TIMEOUT_MS (ips.js); one that takes longer is refused.
  *
  * The server chooses the key pair: the first type in `signingKeyTypes` (below) the user (or
  * the system) has. Its names are the key store's: 'EC-P256', 'EC-P384', 'Ed25519', 'RSA'.
+ *
+ * Notes:
+ *   - if both keys are provided, one party is signing, the other is counter-signing. I think the right
+ *     convention is that the server counter-signs
+ *   - the url is provided for the case that there's a place to put the reference in the signature;
+ *     then parties can choose to consult the server or not when verifying
+ *   - the user, if a key is provided, is quite well attested by their email: it is in signers.user.identity
  *
  * @module ips/signatures
  */

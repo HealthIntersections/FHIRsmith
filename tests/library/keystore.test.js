@@ -206,26 +206,26 @@ describe('the store', () => {
 
   test('create: one active pair per type; a new one retires the old and destroys its private key; once a day per type', async () => {
     const dave = await principal('dave');
-    const k1 = keystore.create(dave, 'EC-P256');
+    const k1 = await keystore.create(dave, 'EC-P256');
     expect(k1).toMatchObject({ origin: 'created', status: 'active', has_private: 1, owner: String(dave.id) });
     expect(keystore.db.privateKey(k1.key_id)).not.toBeNull();
-    expect(() => keystore.create(dave, 'EC-P256')).toThrow(/tomorrow/);
+    await expect(keystore.create(dave, 'EC-P256')).rejects.toThrow(/tomorrow/);
     // another type, the same day: fine
-    keystore.create(dave, 'Ed25519');
+    await keystore.create(dave, 'Ed25519');
     keystore.db.db.prepare("UPDATE key_events SET at = '2020-01-01T00:00:00.000Z'").run();
-    const k2 = keystore.create(dave, 'EC-P256');
+    const k2 = await keystore.create(dave, 'EC-P256');
     expect(keystore.keyById(k1.id)).toMatchObject({ status: 'retired', has_private: 0 });
     expect(keystore.db.privateKey(k1.key_id)).toBeNull();
     expect(keystore.signingKey(dave.id, 'EC-P256').id).toBe(k2.id);
-    expect(() => keystore.create(dave, 'DSA')).toThrow(/Unknown key type/);
+    await expect(keystore.create(dave, 'DSA')).rejects.toThrow(/Unknown key type/);
   });
 
   test('system keys: administrators only, one active per type, no limits', async () => {
     const admin = await principal('root', { admin: true });
     const user = await principal('erin');
-    expect(() => keystore.create(user, 'EC-P256', { system: true })).toThrow(/administrators/);
-    const s1 = keystore.create(admin, 'EC-P256', { system: true });
-    const s2 = keystore.create(admin, 'EC-P256', { system: true });
+    await expect(keystore.create(user, 'EC-P256', { system: true })).rejects.toThrow(/administrators/);
+    const s1 = await keystore.create(admin, 'EC-P256', { system: true });
+    const s2 = await keystore.create(admin, 'EC-P256', { system: true });
     expect(s2.owner).toBe(keystore.SYSTEM);
     expect(keystore.keyById(s1.id).status).toBe('retired');
     expect(keystore.ownerName(s2)).toBe('System');
@@ -236,7 +236,7 @@ describe('the store', () => {
     const frank = await principal('frank');
     const grace = await principal('grace');
     const admin = await principal('root', { admin: true });
-    const k = keystore.create(frank, 'EC-P256');
+    const k = await keystore.create(frank, 'EC-P256');
     expect(() => keystore.revoke(grace, k.id)).toThrow(/only your own/);
     const r = keystore.revoke(frank, k.id, { reason: 'laptop stolen', expires: '2026-11-01T10:00' });
     expect(r).toMatchObject({ status: 'revoked', reason: 'laptop stolen', expires: '2026-11-01T10:00:00.000Z', has_private: 0 });
@@ -256,7 +256,7 @@ describe('the store', () => {
     // the administrator sorts out a disputed id: the squatter's key gets its fingerprint
     expect(keystore.setKid(admin, u.id, '').key_id).toBe(u.fingerprint);
     expect(keystore.key('taken-kid')).toBeNull();
-    const c = keystore.create(heidi, 'Ed25519');
+    const c = await keystore.create(heidi, 'Ed25519');
     expect(keystore.setKid(admin, c.id, 'heidi-ed').key_id).toBe('heidi-ed');
     // the private key moved with it
     expect(keystore.sign({ owner: heidi.id, purpose: 'test:x', payload: 'hi' }).keyId).toBe('heidi-ed');
@@ -271,7 +271,7 @@ describe('the store', () => {
   test('sign and verify: each type; JWS, detached; a revoked key fails from its expiry; a disabled account signs nothing', async () => {
     const ivan = await principal('ivan');
     for (const kty of Object.keys(keystore.KEY_TYPES)) {
-      const k = keystore.create(ivan, kty);
+      const k = await keystore.create(ivan, kty);
       const s = keystore.sign({ owner: ivan.id, purpose: 'test:sign', payload: 'the payload', kty });
       expect(s.keyId).toBe(k.key_id);
       expect(keystore.verify({ kid: s.keyId, alg: s.alg, data: 'the payload', signature: s.signature }).ok).toBe(true);
@@ -284,7 +284,7 @@ describe('the store', () => {
     const jws = keystore.signJws({ owner: ivan.id, purpose: 'test:jws', payload: '{"a":1}', header: { canon: 'http://hl7.org/fhir/canonicalization/json' } });
     expect(jws.split('.')[1]).toBe('');
     const v = keystore.verifyJws(jws, '{"a":1}');
-    expect(v).toMatchObject({ ok: true, owner: 'ivan name' });
+    expect(v).toMatchObject({ ok: true, owner: 'User: ivan name' });
     expect(keystore.verifyJws(jws, '{"a":2}').ok).toBe(false);
     // the jose library agrees
     const jose = require('jose');
@@ -307,14 +307,14 @@ describe('the store', () => {
 
   test('the system signs', async () => {
     const admin = await principal('root', { admin: true });
-    keystore.create(admin, 'EC-P256', { system: true });
+    await keystore.create(admin, 'EC-P256', { system: true });
     const s = keystore.sign({ owner: keystore.SYSTEM, purpose: 'test:system', payload: 'x' });
     expect(keystore.verify({ kid: s.keyId, alg: s.alg, data: 'x', signature: s.signature })).toMatchObject({ ok: true, owner: 'System' });
   });
 
   test('housekeeping: a deleted account\'s private keys are destroyed; its public keys stay', async () => {
     const judy = await principal('judy');
-    const k = keystore.create(judy, 'EC-P256');
+    const k = await keystore.create(judy, 'EC-P256');
     auth.store.db.prepare('DELETE FROM users WHERE id = ?').run(judy.id);
     keystore.housekeeping();
     expect(keystore.keyById(k.id)).toMatchObject({ has_private: 0, status: 'active' });
@@ -322,17 +322,30 @@ describe('the store', () => {
     expect(keystore.ownerName(k)).toMatch(/deleted/);
   });
 
+  test('no account can be called System, so no user key looks like the system\'s', async () => {
+    expect(() => auth.store.createUser({ login: 'sys1', name: 'System' })).toThrow(/the server's own name/);
+    const id = auth.store.createUser({ login: 'sys2', name: 'Someone' });
+    expect(() => auth.store.updateUser(id, { name: ' system ' })).toThrow(/the server's own name/);
+    expect(() => auth.store.updateUser(id, { name: 'The System' })).toThrow(/the server's own name/);
+    auth.store.updateUser(id, { name: 'Systematic' });
+    // a user whose login is "system", and has no name: still shown as a user
+    const p = auth.principalById(auth.store.createUser({ login: 'system' }));
+    const [k] = keystore.upload(p, ecPem());
+    expect(keystore.ownerLabel(k)).toBe('User: system');
+    expect(keystore.jwk(k)).toMatchObject({ ownerKind: 'user', owner: 'User: system' });
+  });
+
   test('JWKS: kid, alg, use and what the store knows; filters', async () => {
     const admin = await principal('root', { admin: true });
     const ken = await principal('ken');
-    keystore.create(admin, 'Ed25519', { system: true });
+    await keystore.create(admin, 'Ed25519', { system: true });
     const [u] = keystore.upload(ken, ecPem());
     keystore.revoke(ken, u.id);
     const all = keystore.jwks();
     expect(all.keys).toHaveLength(2);
-    expect(all.keys.find(k => k.owner === 'system')).toMatchObject({ kty: 'OKP', crv: 'Ed25519', alg: 'EdDSA', use: 'sig', status: 'active', origin: 'created' });
-    expect(all.keys.find(k => k.owner === 'ken name')).toMatchObject({ status: 'revoked', origin: 'uploaded', signs: false });
-    expect(all.keys.find(k => k.owner === 'system').signs).toBe(true);
+    expect(all.keys.find(k => k.ownerKind === 'system')).toMatchObject({ owner: 'System', kty: 'OKP', crv: 'Ed25519', alg: 'EdDSA', use: 'sig', status: 'active', origin: 'created' });
+    expect(all.keys.find(k => k.owner === 'User: ken name')).toMatchObject({ status: 'revoked', origin: 'uploaded', signs: false });
+    expect(all.keys.find(k => k.ownerKind === 'system').signs).toBe(true);
     expect(keystore.jwks({ status: 'active' }).keys).toHaveLength(1);
     expect(keystore.jwks({ system: true }).keys).toHaveLength(1);
     // no private members, ever
@@ -343,7 +356,7 @@ describe('the store', () => {
     const lee = await principal('lee');
     expect(keystore.dailyReport({ since: Date.now() - 86400000, now: Date.now() + 1000 })).toBe('');
     keystore.upload(lee, ecPem());
-    keystore.create(lee, 'EC-P256');
+    await keystore.create(lee, 'EC-P256');
     keystore.sign({ owner: lee.id, purpose: 'ips:sign', payload: 'x' });
     expect(() => keystore.upload(lee, crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }).privateKey.export({ type: 'pkcs8', format: 'pem' }))).toThrow();
     const text = keystore.dailyReport({ since: Date.now() - 86400000, now: Date.now() + 1000 });
@@ -364,6 +377,9 @@ describe('the private database', () => {
       setupAuth();
       keystore.initialize({}, { log: quiet, auth, databasesDir: dir });
       expect(fs.statSync(path.join(dir, 'keystore-private.db')).mode & 0o777).toBe(0o600);
+      // no WAL for the private keys (it would keep a destroyed key's old pages)
+      expect(keystore.db.secrets.pragma('journal_mode', { simple: true })).toBe('delete');
+      expect(keystore.db.db.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(fs.existsSync(path.join(dir, 'keystore.db'))).toBe(true);
       keystore.shutdown();
       expect(() => keystore.initialize({ database: 'same.db', privateDatabase: 'same.db' }, { log: quiet, auth, databasesDir: dir })).toThrow(/different files/);
@@ -399,7 +415,7 @@ describe('the pages and the API', () => {
     expect(list.text).not.toContain('>mia<');
     const page = await request(app).get(`/keys/key/${encodeURIComponent(k.key_id)}`);
     expect(page.status).toBe(200);
-    expect(page.text).toContain('uploaded by Mia Display');
+    expect(page.text).toContain('uploaded by User: Mia Display');
     const jwk = await request(app).get(`/keys/key/${encodeURIComponent(k.key_id)}?format=json`);
     expect(jwk.body).toMatchObject({ kid: 'mia/key-1', kty: 'EC', crv: 'P-256' });
     const pem = await request(app).get(`/keys/key/${encodeURIComponent(k.key_id)}`).set('Accept', 'application/x-pem-file');
@@ -463,8 +479,14 @@ describe('the pages and the API', () => {
     expect(keystore.keyById(k.id)).toBeNull();
   });
 
-  test('the API: a token uploads, makes and revokes; no token, 401', async () => {
+  test('the API: a token uploads, makes and revokes; no token, 401 - a login is not enough', async () => {
     expect((await request(app).post('/keys/api/upload').send({ key: ecPem() })).status).toBe(401);
+    await makeUser('sess', PASSWORD);
+    const { agent } = await login(app, 'sess', PASSWORD);
+    const viaSession = await agent.post('/keys/api/create').send({ kty: 'Ed25519' });
+    expect(viaSession.status).toBe(401);
+    expect(viaSession.body.message).toMatch(/API token is required/);
+    expect(keystore.list()).toHaveLength(0);
     const id = await makeUser('robot', null);
     const token = tokenFor(id);
     const jwk = crypto.generateKeyPairSync('ec', { namedCurve: 'P-384' }).publicKey.export({ format: 'jwk' });

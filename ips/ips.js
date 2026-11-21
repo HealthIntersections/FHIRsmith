@@ -67,7 +67,7 @@ const patients = require('./patients');
 const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, patientOf } = require('./search');
 const render = require('./render');
 const { TxClient } = require('./tx-client');
-const { STEPS, stripChecks } = require('./pipeline');
+const { STEPS, stripChecks, withTimeout } = require('./pipeline');
 const signatures = require('./signatures');
 const { KeyStoreKeyProvider } = require('./signature-keys');
 const keystore = require('../library/keystore');
@@ -88,6 +88,8 @@ const TEMPLATE = 'ips';
 const DEFAULT_DATABASE = 'ips/ips-content.db';
 // how far apart the system signs documents for any one address (modules.ips.signing.systemSeconds)
 const DEFAULT_SYSTEM_SIGNING_SECONDS = 10;
+// how long signatures.js sign() has
+const SIGN_TIMEOUT_MS = 30000;
 
 /** A form's checkbox-like field: on? */
 function isOn(v) {
@@ -1626,7 +1628,8 @@ class IpsModule {
    * @returns {{types: string[], user: {name: string, keyId: string|null}|null, system: {keyId: string|null}}|null}
    */
   signingState(req) {
-    if (!keystore.initialized) {
+    // no key store, or no public URL for the keys' links (signedCopy): no signing
+    if (!keystore.initialized || !auth.configuredUrl()) {
       return null;
     }
     const types = signatures.signingKeyTypes;
@@ -1644,21 +1647,27 @@ class IpsModule {
    * Sign a copy of a document with signatures.js sign(): the logged in user's key pair, the
    * system's, or both - the first of signatures.signingKeyTypes each has. The system signs for
    * anyone, but no more often than modules.ips.signing.systemSeconds (10) apart for any one
-   * address. Throws an error with a status (401, 404, 409, 429, 500) when it can't
+   * address. Throws an error with a status (401, 404, 409, 422, 429, 500, 503) when it can't
    */
   async signedCopy(req, doc, wanted) {
     const err = (status, message) => Object.assign(new Error(message), { status });
     if (!keystore.initialized) {
       throw err(404, 'Signing is not available on this server: the key store is off');
     }
+    // the keys' permalinks go into signed documents: from the configuration only, never from the
+    // request, whose Host header anyone can set - a signed document must not point at their site
+    const base = auth.configuredUrl();
+    if (!base) {
+      throw err(503, 'Signing is not available on this server: it has no public URL (auth.publicUrl, or hostName) for the keys\' links');
+    }
     const types = signatures.signingKeyTypes;
     const words = types.map(t => keystore.KEY_TYPES[t]?.label || t).join(' or ');
     const provider = new KeyStoreKeyProvider(keystore);
-    const base = auth.publicUrl(req);
-    const signer = (loaded) => ({
+    const signer = (loaded, identity = null) => ({
       key: provider.describe(loaded.row),
       privateKey: loaded.privateKey,
-      url: `${base}/keys/key/${encodeURIComponent(loaded.row.key_id)}`
+      url: `${base}/keys/key/${encodeURIComponent(loaded.row.key_id)}`,
+      identity
     });
     const purpose = 'ips:sign-document';
     let user = null;
@@ -1672,7 +1681,9 @@ class IpsModule {
       if (!loaded) {
         throw err(409, `You have no ${words} key pair to sign with: make one on your keys page (/keys/mine)`);
       }
-      user = signer(loaded);
+      // signing as yourself identifies you in the signature
+      const u = auth.user(me.id);
+      user = signer(loaded, { name: me.name || me.login, login: me.login, email: (u && u.email) || null });
     }
     if (wanted.system) {
       const wait = this.systemSigningWait(req.ip);
@@ -1687,7 +1698,8 @@ class IpsModule {
     }
     let signed;
     try {
-      signed = await signatures.sign(structuredClone(doc), { user, system }, { log: this.log });
+      signed = await withTimeout(signatures.sign(structuredClone(doc), { user, system }, { log: this.log }),
+        this.signTimeoutMs || SIGN_TIMEOUT_MS, `it took more than ${(this.signTimeoutMs || SIGN_TIMEOUT_MS) / 1000} seconds`);
     } catch (e) {
       throw err(422, `The document could not be signed: ${e.message}`);
     }

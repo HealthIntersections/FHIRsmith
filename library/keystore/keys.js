@@ -7,11 +7,14 @@ const crypto = require('crypto');
 
 // The key types the store takes and makes. `alg` is the JOSE algorithm a key of the type
 // signs with, unless the key says otherwise (an uploaded RSA JWK with "alg": "PS256")
+// Keys are made with crypto.generateKeyPair, which works in libuv's thread pool: an RSA key
+// takes up to seconds to make, and must not hold the event loop that long
+const generateKeyPair = require('util').promisify(crypto.generateKeyPair);
 const KEY_TYPES = {
-  'EC-P256': { label: 'EC P-256', alg: 'ES256', hash: 'sha256', generate: () => crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' }) },
-  'EC-P384': { label: 'EC P-384', alg: 'ES384', hash: 'sha384', generate: () => crypto.generateKeyPairSync('ec', { namedCurve: 'P-384' }) },
-  'RSA': { label: 'RSA', alg: 'RS256', hash: 'sha256', generate: (bits) => crypto.generateKeyPairSync('rsa', { modulusLength: bits || 3072 }) },
-  'Ed25519': { label: 'Ed25519', alg: 'EdDSA', hash: null, generate: () => crypto.generateKeyPairSync('ed25519') }
+  'EC-P256': { label: 'EC P-256', alg: 'ES256', hash: 'sha256', generate: () => generateKeyPair('ec', { namedCurve: 'P-256' }) },
+  'EC-P384': { label: 'EC P-384', alg: 'ES384', hash: 'sha384', generate: () => generateKeyPair('ec', { namedCurve: 'P-384' }) },
+  'RSA': { label: 'RSA', alg: 'RS256', hash: 'sha256', generate: (bits) => generateKeyPair('rsa', { modulusLength: bits || 3072 }) },
+  'Ed25519': { label: 'Ed25519', alg: 'EdDSA', hash: null, generate: () => generateKeyPair('ed25519') }
 };
 
 // the JOSE algorithms each type may sign with
@@ -397,13 +400,13 @@ function parseUpload(input) {
 
 // ---- making keys, and signing ----
 
-/** A new key pair of a type: {kty, bits, spki, pkcs8} */
-function generate(kty, { rsaBits = 3072 } = {}) {
+/** A new key pair of a type (a promise): {kty, bits, spki, pkcs8} */
+async function generate(kty, { rsaBits = 3072 } = {}) {
   const t = KEY_TYPES[kty];
   if (!t) {
     throw new KeyError(`Unknown key type ${kty}`);
   }
-  const { publicKey, privateKey } = t.generate(rsaBits);
+  const { publicKey, privateKey } = await t.generate(rsaBits);
   return { ...describe(publicKey), pkcs8: privateKey.export({ type: 'pkcs8', format: 'der' }) };
 }
 

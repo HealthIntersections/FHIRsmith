@@ -2246,6 +2246,7 @@ describe('sharing as SHL / VHL', () => {
     const signatures = require('../../ips/signatures');
     const keystore = require('../../library/keystore');
     keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    auth.config.publicUrl = 'https://fhir.example.org';
     try {
       await post(app, 'demo', ips());
       const share = (extra) => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org')
@@ -2253,14 +2254,16 @@ describe('sharing as SHL / VHL', () => {
       const none = await share({ signSystem: '1' });
       expect(none.status).toBe(409);
       expect(none.body.error).toMatch(/The system has no EC P-256 or EC P-384 or Ed25519 or RSA key pair/);
-      keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
+      await keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
       mod.config.signing = { systemSeconds: 0 };
       const spy = jest.spyOn(signatures, 'sign').mockImplementation(async (bundle, signers) => ({ ...bundle, signature: { who: signers.system.url } }));
       const ok = await share({ signSystem: '1' });
       expect(ok.status).toBe(200);
       expect(spy).toHaveBeenCalledTimes(1);
       expect(spy.mock.calls[0][1].user).toBeNull();
-      expect(spy.mock.calls[0][1].system.url).toMatch(/^https?:\/\/[^/]+\/keys\/key\/SHA256%3A/);
+      // the link is from the configuration, not the request's Host (example.org)
+      expect(spy.mock.calls[0][1].system.url).toMatch(/^https:\/\/fhir\.example\.org\/keys\/key\/SHA256%3A/);
+      expect(spy.mock.calls[0][1].system.identity).toBeNull();
       // not signed unless asked
       await share({ signSystem: '' });
       expect(spy).toHaveBeenCalledTimes(1);
@@ -4012,20 +4015,20 @@ describe('the signatures step', () => {
     keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
     try {
       const owner = auth.principalById(await makeUser('signer', null, { name: 'Sam Signer' }));
-      const made = keystore.create(owner, 'EC-P256');
+      const made = await keystore.create(owner, 'EC-P256');
       const { publicKey } = crypto.generateKeyPairSync('ed25519');
       const [uploaded] = keystore.upload(owner, publicKey.export({ type: 'spki', format: 'pem' }), { kid: 'sam-ed' });
       keystore.revoke(owner, uploaded.id, { reason: 'lost', expires: '2026-10-01T00:00:00Z' });
       const p = new KeyStoreKeyProvider();
       const k = await p.getKeyById(made.key_id);
-      expect(k).toMatchObject({ keyId: made.key_id, alg: 'ES256', status: 'active', expires: null, owner: 'created by Sam Signer', origin: 'created', source: 'keystore' });
+      expect(k).toMatchObject({ keyId: made.key_id, alg: 'ES256', status: 'active', expires: null, owner: 'created by User: Sam Signer', ownerKind: 'user', origin: 'created', source: 'keystore' });
       expect(k.key.asymmetricKeyType).toBe('ec');
       expect(k.jwk).toMatchObject({ kty: 'EC', crv: 'P-256', kid: made.key_id });
       // a signature made with it checks out with the key as given
       const s = keystore.sign({ owner: owner.id, purpose: 'test:ips', payload: 'abc' });
       expect(crypto.verify('sha256', Buffer.from('abc'), { key: k.key, dsaEncoding: 'ieee-p1363' }, s.signature)).toBe(true);
       // a key that came in a signature's certificate: found by the key itself, revoked
-      expect(await p.getKeyByPublicKey(publicKey)).toMatchObject({ keyId: 'sam-ed', status: 'revoked', expires: '2026-10-01T00:00:00.000Z', reason: 'lost', alg: 'EdDSA', owner: 'uploaded by Sam Signer' });
+      expect(await p.getKeyByPublicKey(publicKey)).toMatchObject({ keyId: 'sam-ed', status: 'revoked', expires: '2026-10-01T00:00:00.000Z', reason: 'lost', alg: 'EdDSA', owner: 'uploaded by User: Sam Signer' });
       expect(await p.getKeyByPublicKey(crypto.generateKeyPairSync('ed25519').publicKey)).toBeNull();
       expect(await p.getKeyById('nope')).toBeNull();
     } finally {
@@ -4042,6 +4045,8 @@ describe('signing a document for download', () => {
   beforeEach(async () => {
     ({ app, mod } = await makeApp());
     keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    // signed documents link to the keys at the server's public URL
+    auth.config.publicUrl = 'https://fhir.example.org';
     mod.store.createProject('demo', 'Demo', null);
     await post(app, 'demo', ips());
   });
@@ -4066,12 +4071,12 @@ describe('signing a document for download', () => {
     // not on the other views
     expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Sign document');
     const admin = auth.principalById(auth.store.userByLogin('admin').id);
-    const sys = keystore.create(admin, 'EC-P256', { system: true });
+    const sys = await keystore.create(admin, 'EC-P256', { system: true });
     const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
     page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
     expect(page.text).toContain('<input type="checkbox" name="sign-user" disabled/> Administrator</label> <span class="ips-small">(you have no EC-P256 or EC-P384 or Ed25519 or RSA key pair: <a href="/keys/mine">make one</a>)');
     expect(page.text).toContain(`<input type="checkbox" name="sign-system" data-key="${sys.key_id}"/> System</label>`);
-    const mine = keystore.create(admin, 'Ed25519');
+    const mine = await keystore.create(admin, 'Ed25519');
     page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
     expect(page.text).toContain(`<input type="checkbox" name="sign-user" data-key="${mine.key_id}"/> Administrator</label>`);
     // the key store off: no Sign choices
@@ -4082,8 +4087,8 @@ describe('signing a document for download', () => {
 
   test('a signed copy: sign() gets a copy, and the signers - their public keys, private keys and permalinks; not kept', async () => {
     const admin = auth.principalById(auth.store.userByLogin('admin').id);
-    keystore.create(admin, 'EC-P256', { system: true });
-    const mine = keystore.create(admin, 'RSA');
+    await keystore.create(admin, 'EC-P256', { system: true });
+    const mine = await keystore.create(admin, 'RSA');
     const spy = jest.spyOn(signatures, 'sign');
     // anybody: the system, once in a while
     let r = await signed(request(app), { source: 'original', system: true });
@@ -4092,7 +4097,7 @@ describe('signing a document for download', () => {
     const [doc, signers] = spy.mock.calls[0];
     expect(doc).toEqual(mod.store.read(1).bundle);
     expect(signers.user).toBeNull();
-    expect(signers.system.key).toMatchObject({ status: 'active', origin: 'created', owner: 'created by System', alg: 'ES256' });
+    expect(signers.system.key).toMatchObject({ status: 'active', origin: 'created', owner: 'created by System', ownerKind: 'system', alg: 'ES256' });
     expect(signers.system.privateKey.type).toBe('private');
     expect(signers.system.url).toMatch(/\/keys\/key\/SHA256%3A/);
     r = await signed(request(app), { source: 'original', system: true });
@@ -4107,8 +4112,11 @@ describe('signing a document for download', () => {
     expect(r.status).toBe(200);
     const [, both] = spy.mock.calls[1];
     expect(both.system).toBeNull();
-    expect(both.user.key).toMatchObject({ keyId: mine.key_id, alg: 'RS256', owner: 'created by Administrator' });
+    expect(both.user.key).toMatchObject({ keyId: mine.key_id, alg: 'RS256', owner: 'created by User: Administrator' });
     expect(both.user.privateKey.asymmetricKeyType).toBe('rsa');
+    // signing as yourself names you
+    expect(both.user.identity).toEqual({ name: 'Administrator', login: 'admin', email: null });
+    expect(both.user.url).toBe(`https://fhir.example.org/keys/key/${encodeURIComponent(mine.key_id)}`);
     // every load is logged
     expect(keystore.db.db.prepare("SELECT COUNT(*) AS n FROM key_events WHERE kind = 'load' AND operation = 'ips:sign-document'").get().n).toBe(2);
     // the modified copy: not before it is processed
@@ -4119,5 +4127,48 @@ describe('signing a document for download', () => {
     r = await signed(agent, { source: 'original', user: true }, csrf);
     expect(r.status).toBe(422);
     expect(r.body.error).toBe('The document could not be signed: cannot canonicalize');
+  });
+});
+
+describe('signing and checking: the safeguards', () => {
+  const signatures = require('../../ips/signatures');
+  const keystore = require('../../library/keystore');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    mod.store.createProject('demo', 'Demo', null);
+    await post(app, 'demo', ips());
+    await keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    keystore.shutdown();
+    mod.shutdown();
+  });
+
+  test('no public URL configured: no signing (the keys\' links would come from the request\'s Host)', async () => {
+    delete auth.config.publicUrl;
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).not.toContain('Sign document');
+    const r = await request(app).post('/ips/demo/Bundle/1/signed').set('Host', 'evil.example.com').send({ source: 'original', system: true });
+    expect(r.status).toBe(503);
+    expect(r.body.error).toMatch(/no public URL/);
+  });
+
+  test('sign() and verify() have time limits', async () => {
+    auth.config.publicUrl = 'https://fhir.example.org';
+    mod.signTimeoutMs = 50;
+    jest.spyOn(signatures, 'sign').mockImplementation(() => new Promise(() => {}));
+    const r = await request(app).post('/ips/demo/Bundle/1/signed').send({ source: 'original', system: true });
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('The document could not be signed: it took more than 0.05 seconds');
+    mod.verifyTimeoutMs = 50;
+    jest.spyOn(signatures, 'verify').mockImplementation(() => new Promise(() => {}));
+    mod.steps = [...STEPS.filter(s => s.name === 'signatures'), { name: 'after', run: async () => 'after ran' }];
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'after ran' });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'error', keyId: null, description: 'The signature check failed: it took more than 0.05 seconds' }]);
   });
 });
