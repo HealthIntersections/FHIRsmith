@@ -14,7 +14,8 @@
 //                   (description-id order) - the rule of tx/cs/cs-snomed.js.
 //   relationships   sct2_Relationship (inferred; stated is not read), active and inactive rows:
 //                   116680003 |Is a| is the hierarchy, every other typeId a concept-valued
-//                   property keyed by typeId, role group in group_id.
+//                   property keyed by typeId, role group in group_id. Inactive rows whose typeId is
+//                   a concrete-value attribute (below) are left out: a property has one value kind.
 //   concrete values sct2_RelationshipConcreteValues, active inferred rows: literal properties
 //                   keyed by typeId (#n -> decimal, "s" -> string, true/false -> boolean).
 //   identifiers     sct2_Identifier, active rows -> alternate_identifier.
@@ -176,7 +177,8 @@ async function importSnomedV2(cfg) {
     uri: SCT, version: versionUri, name, title: name, edition: cfg.edition, releaseDate: isoDate(cfg.version),
     description: `SNOMED CT RF2 Snapshot, module ${cfg.edition}, version ${cfg.version}`,
   });
-  const stats = { descriptionsSkipped: 0, relationshipsSkipped: 0, refsetDescriptionRows: 0, refsetUnknownRows: 0 };
+  const stats = { descriptionsSkipped: 0, relationshipsSkipped: 0, refsetDescriptionRows: 0, refsetUnknownRows: 0,
+    inactiveConcreteTypeRelationshipsSkipped: 0 };
 
   const isA = b.property({ code: IS_A, uri: `${SCT}/${IS_A}`, fhirType: 'code', valueKind: 'concept', isHierarchy: true });
   const moduleProp = b.property({ code: 'module', fhirType: 'code', valueKind: 'concept', display: 'Module' });
@@ -276,12 +278,23 @@ async function importSnomedV2(cfg) {
   accDesc.length = accRefset.length = accValue.length = 0;
   for (const u of b.uses.values()) { const i = b.idx(u.code); if (i !== undefined) u.display = b.display[i]; }
 
+  // The concrete-value attribute types (the literal properties of the concrete values stage). An
+  // inactive relationship row with one of these types and a concept target (UK Edition: retired
+  // pre-concrete-domain drug rows) is left out: a property has one value kind, and main's provider
+  // never reads inactive relationships (cs-snomed.js getConceptRelationships).
+  const concreteTypes = new Set();
+  if (files.concrete) {
+    for await (const r of tsvRows(files.concrete)) {
+      if (r[2] === '1' && r[8] === INFERRED && b.idx(r[4]) !== undefined) concreteTypes.add(r[7]);
+    }
+  }
   await b.stage('parse relationships', async () => {
     let n = 0;
     for await (const r of tsvRows(files.relationship)) {
       const s = b.idx(r[4]), t = b.idx(r[5]);
       if (s === undefined || t === undefined) { stats.relationshipsSkipped++; continue; }
       const type = r[7];
+      if (r[2] !== '1' && concreteTypes.has(type)) { stats.inactiveConcreteTypeRelationshipsSkipped++; continue; }
       const p = type === IS_A ? isA : b.property({ code: type, uri: `${SCT}/${type}`, fhirType: 'code', valueKind: 'concept' });
       // seq: the row, the order cs-snomed.js lists parents, children and relationships in
       b.link(s, p, t, { group: Number(r[6]) || 0, active: r[2] === '1', seq: n });

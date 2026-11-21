@@ -13,6 +13,7 @@
 //                   first active description (description-id order) - the rule of the RF2 importer
 //   relationships   every relationship record, active and inactive (the cache importer reads the same
 //                   non-stated sct2_Relationship rows as the RF2 importer), in record order (link_order)
+//                   - except inactive records typed by a concrete-value attribute (see below)
 //   concrete values cache v19 only (active inferred rows)
 //   identifiers     cache v18+ only (active rows)
 //   language refsets (members referencing descriptions, refset under 900000000000506000) ->
@@ -237,7 +238,7 @@ async function importSnomedV2FromCache(cfg) {
   const stats = {
     cacheVersion: d.cacheVersion, dateShiftDays: shift, cacheWarnings: quality.warnings, cacheCounts: quality.counts, descriptionRefsetRowsSkipped: 0, refsetsWithoutConcept: 0,
     otherRefsetRowsSkipped: 0, unknownFieldValues: 0, languageRefsets: [], concreteValues: 0, identifiers: 0,
-    conceptsWithoutModule: 0,
+    conceptsWithoutModule: 0, inactiveConcreteTypeRelationshipsSkipped: 0,
   };
 
   const isA = b.property({ code: IS_A, uri: `${SCT}/${IS_A}`, fhirType: 'code', valueKind: 'concept', isHierarchy: true });
@@ -376,11 +377,20 @@ async function importSnomedV2FromCache(cfg) {
   best.clear(); accD.length = accR.length = accV.length = 0;
   for (const u of b.uses.values()) { const i = b.idx(u.code); if (i !== undefined) u.display = b.display[i]; }
 
+  // The concrete-value attribute types (stored below as literal properties). An inactive
+  // relationship record with one of these types and a concept target (UK Edition: retired
+  // pre-concrete-domain drug rows) is left out: a property has one value kind, and main's provider
+  // never reads inactive relationships (cs-snomed.js getConceptRelationships).
+  const concreteTypes = new Set();
+  for (const [src, type] of d.concreteValues || []) if (known(String(src)) !== undefined) concreteTypes.add(String(type));
   await b.stage('decode relationships', async () => {
     const props = new Map();
+    let n = 0;
     for (let k = 0; k < nR; k++) {
       const o = k * R;
       const s = ord(rbuf.readUInt32LE(o)), t = ord(rbuf.readUInt32LE(o + 4)), ty = ord(rbuf.readUInt32LE(o + 8));
+      const active = rbuf.readUInt8(o + 26) !== 0;
+      if (!active && concreteTypes.has(code[ty])) { stats.inactiveConcreteTypeRelationshipsSkipped++; continue; }
       let p = props.get(ty);
       if (p === undefined) {
         const tc = code[ty];
@@ -389,9 +399,10 @@ async function importSnomedV2FromCache(cfg) {
       }
       // seq: the record's place in the cache, the order cs-snomed.js lists parents, children and
       // relationships in (each concept's inbound and outbound lists are in record order)
-      b.link(s, p, t, { group: rbuf.readInt32LE(o + 28) || 0, active: rbuf.readUInt8(o + 26) !== 0, seq: k });
+      b.link(s, p, t, { group: rbuf.readInt32LE(o + 28) || 0, active, seq: k });
+      n++;
     }
-    return nR;
+    return n;
   });
 
   if (d.concreteValues && d.concreteValues.length) {
