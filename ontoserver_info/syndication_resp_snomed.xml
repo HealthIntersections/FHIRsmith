@@ -1,0 +1,54 @@
+HTTP/1.1 200 
+Date: Thu, 28 May 2026 11:51:05 GMT
+Server: Apache
+Content-Security-Policy: frame-ancestors 'self' https://*.health.fgov.be https://*.health.belgium.be https://fpshealth.atlassian.net
+X-Content-Type-Options: nosniff, nosniff
+Vary: Origin,Access-Control-Request-Method,Access-Control-Request-Headers,*
+X-Request-Id: 1be6cfe7-c690-461c-aae1-75823696cd3a
+X-Correlation-Id: 1be6cfe7-c690-461c-aae1-75823696cd3a
+Cache-Control: no-cache, no-store, max-age=0, must-revalidate
+Pragma: no-cache
+Expires: Thu, 01 Jan 1970 00:00:00 GMT
+X-XSS-Protection: 1; mode=block
+Strict-Transport-Security: max-age=16070400
+X-Frame-Options: DENY
+Content-Type: application/atom+xml;charset=UTF-8
+Content-Length: 2701
+Connection: close
+
+<?xml version="1.0" encoding="UTF-8"?>
+<feed 
+  xmlns="http://www.w3.org/2005/Atom" 
+  xmlns:ncts="http://ns.electronichealth.net.au/ncts/syndication/asf/extensions/1.0.0">
+  <title>"Belgian Terminology Release Syndication Feed"</title>
+  <link href="https://apps.health.belgium.be/ontoserver/synd/syndication.xml" length="0" rel="self"/>
+  <link href="https://apps.health.belgium.be/ontoserver/synd/syndication.xml" length="0" rel="alternate"/>
+  <updated>2026-02-12T11:23:03.086+01:00</updated>
+  <id>urn:uuid:1195d94b-c299-3cc9-98fd-3873e01e657b</id>
+  <generator version="6.25.1">Ontoserver® 6.25.1, CSIRO</generator>
+  <entry>
+    <title>Binary Index SNOMED_CT</title>
+    <category label="Binary Index" scheme="http://ontoserver.csiro.au/syndication/rf2/2.0.15" term="BINARY"/>
+    <id>urn:uuid:ce59de87-8b52-3e6f-af95-bfa056cc3abe</id>
+    <author>
+      <name>Ontoserver</name>
+    </author>
+    <updated>2026-02-12T11:23:03.086+01:00</updated>
+    <link href="https://apps.health.belgium.be/ontoserver/synd/getBinaryIndexZip?codeSystemId=http%3A%2F%2Fsnomed.info%2Fsct&amp;codeSystemVersion=http%3A%2F%2Fsnomed.info%2Fsct%2F11000172109%2Fversion%2F20251215&amp;indexVersion=2.0.15" length="1594949463" ncts:sha256Hash="d6aa7c00bbc3233a65fe2ccc68d9077fb57d72a1ade119e9514a7be8fb303003" rel="alternate" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20251215</ncts:contentItemVersion>
+  </entry>
+  <entry>
+    <title>Binary Index SNOMED_CT</title>
+    <category label="Binary Index" scheme="http://ontoserver.csiro.au/syndication/rf2/2.0.15" term="BINARY"/>
+    <id>urn:uuid:d4439044-548d-3a94-8237-ada8394dfc0f</id>
+    <author>
+      <name>Ontoserver</name>
+    </author>
+    <updated>2025-09-03T14:27:08.395+02:00</updated>
+    <link href="https://apps.health.belgium.be/ontoserver/synd/getBinaryIndexZip?codeSystemId=http%3A%2F%2Fsnomed.info%2Fsct&amp;codeSystemVersion=http%3A%2F%2Fsnomed.info%2Fsct%2F11000172109%2Fversion%2F20250715&amp;indexVersion=2.0.15" length="1525786893" ncts:sha256Hash="846df8104d92a51bd187eff212bb1e85745769a86b391e49e5ea55aa4dc179b1" rel="alternate" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250715</ncts:contentItemVersion>
+  </entry>
+  <ncts:atomSyndicationFormatProfile>http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0</ncts:atomSyndicationFormatProfile>
+</feed>

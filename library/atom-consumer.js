@@ -7,38 +7,85 @@
 // artifacts. The caller (Library.processSource for `atom:` sources)
 // then runs the existing per-type loaders against those sub-sources.
 //
-// Recognised <category term="..."> values match the Phase 1 producer:
+// Recognised <category term="..."> values:
 //   fhir-package      -> NPM package (.tgz)            -> "npm:<id>#<ver>"
 //   snomed-cache      -> SNOMED .cache binary          -> "snomed:<filename>"
 //   terminology-db    -> SQLite .db binary             -> "<loinc|rxnorm|...>:<filename>"
 //   xml-resource      -> UCUM / similar XML            -> "ucum:<relative-path>"
+//
+// Ontoserver syndication categories (from CSIRO Ontoserver):
+//   SCT_RF2_ALL       -> SNOMED RF2 zip -> extract -> import -> "snomed:<filename>.cache"
+//   FHIR_ValueSet     -> FHIR ValueSet JSON (future)
+//   FHIR_StructureDefinition -> FHIR StructureDefinition JSON (future)
+//   BINARY            -> Ontoserver-proprietary (skipped)
 //
 // Entries with unknown categories are skipped with a warning.
 //
 
 const axios = require('axios');
 const fs = require('fs').promises;
+const fsSync = require('fs');
 const path = require('path');
 const stream = require('stream');
 const zlib = require('zlib');
 const tar = require('tar');
 const { XMLParser } = require('fast-xml-parser');
+const { Rf2Importer } = require('./rf2-importer');
 
 const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const RF2_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000; // 60 minutes for large RF2 files
 
 class AtomConsumer {
   /**
    * @param {string} cacheFolder - absolute path to the terminology-cache folder
    * @param {object} log         - logger with .info/.warn/.error
+   * @param {object} options     - additional options
+   * @param {object} options.auth - authentication config { type: 'bearer', token: '...' }
+   * @param {object} options.mldsAuth - MLDS auth config { username, password } for mlds.ihtsdotools.org
    */
-  constructor(cacheFolder, log) {
+  constructor(cacheFolder, log, options = {}) {
     this.cacheFolder = cacheFolder;
     this.log = log;
+    this.auth = options.auth || null;
+    this.mldsAuth = options.mldsAuth || null;
     this.parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: '@_',
       removeNSPrefix: true, // strip sy:, fs:, atom: prefixes for easier access
     });
+  }
+
+  /**
+   * Get axios config with auth headers if configured
+   * @param {object} extraConfig - additional axios config
+   * @param {boolean} forMlds - if true, use MLDS auth instead of bearer token
+   */
+  #getAxiosConfig(extraConfig = {}, forMlds = false) {
+    const config = {
+      timeout: DOWNLOAD_TIMEOUT_MS,
+      ...extraConfig
+    };
+
+    if (forMlds && this.mldsAuth?.username && this.mldsAuth?.password) {
+      config.auth = {
+        username: this.mldsAuth.username,
+        password: this.mldsAuth.password
+      };
+    } else if (this.auth?.type === 'bearer' && this.auth?.token) {
+      config.headers = {
+        ...config.headers,
+        'Authorization': `Bearer ${this.auth.token}`
+      };
+    }
+
+    return config;
+  }
+
+  /**
+   * Check if a URL points to MLDS
+   */
+  #isMldsUrl(url) {
+    return url && url.includes('mlds.ihtsdotools.org');
   }
 
   /**
@@ -48,10 +95,9 @@ class AtomConsumer {
    */
   async expand(feedUrl) {
     this.log.info(`Atom feed: ${feedUrl}`);
-    const response = await axios.get(feedUrl, {
+    const response = await axios.get(feedUrl, this.#getAxiosConfig({
       responseType: 'text',
-      timeout: DOWNLOAD_TIMEOUT_MS,
-    });
+    }));
     const parsed = this.parser.parse(response.data);
     const entries = this.#asArray(parsed.feed?.entry);
 
@@ -86,6 +132,15 @@ class AtomConsumer {
         return await this.#handleBinary(downloadUrl, this.#guessDbType(downloadUrl));
       case 'xml-resource':
         return await this.#handleBinary(downloadUrl, 'ucum');
+      case 'SCT_RF2_ALL':
+        return await this.#handleRf2(entry, downloadUrl);
+      case 'BINARY':
+        throw new Error('BINARY category is Ontoserver-proprietary and not supported');
+      case 'FHIR_ValueSet':
+      case 'FHIR_StructureDefinition':
+      case 'FHIR_CodeSystem':
+      case 'FHIR_ConceptMap':
+        throw new Error(`FHIR resource category "${category}" not yet implemented`);
       default:
         throw new Error(`unsupported category "${category}"`);
     }
@@ -132,21 +187,107 @@ class AtomConsumer {
     return `${sourceType}:${filename}`;
   }
 
+  /**
+   * Handle SCT_RF2_ALL entries from Ontoserver syndication
+   * Downloads the RF2 zip, extracts it, and converts to .cache format
+   */
+  async #handleRf2(entry, url) {
+    // Extract edition and version from entry metadata
+    // contentItemIdentifier: http://snomed.info/sct/11000172109
+    // contentItemVersion: http://snomed.info/sct/11000172109/version/20260415
+    const versionUri = entry.contentItemVersion;
+    const canonical = entry.contentItemIdentifier;
+
+    if (!versionUri) {
+      throw new Error('RF2 entry missing contentItemVersion');
+    }
+
+    // Parse version URI to get edition and version date
+    const match = versionUri.match(/sct\/(\d+)\/version\/(\d+)/);
+    if (!match) {
+      throw new Error(`Cannot parse version URI: ${versionUri}`);
+    }
+
+    const edition = match[1];
+    const version = match[2];
+    const cacheFilename = `sct_${edition}_${version}.cache`;
+    const cachePath = path.join(this.cacheFolder, cacheFilename);
+
+    // Check if already imported
+    if (await this.#exists(cachePath)) {
+      this.log.info(`  cached: ${cacheFilename}`);
+      return `snomed:${cacheFilename}`;
+    }
+
+    // Download the RF2 zip
+    const zipFilename = this.#basename(url) || `sct_${edition}_${version}.zip`;
+    const zipPath = path.join(this.cacheFolder, zipFilename);
+
+    if (!await this.#exists(zipPath)) {
+      // Check if this is an MLDS download
+      const isMlds = this.#isMldsUrl(url);
+
+      if (isMlds && !this.mldsAuth?.username) {
+        throw new Error(
+          `RF2 download requires MLDS credentials.\n` +
+          `  URL: ${url}\n` +
+          `  Register at https://mlds.ihtsdotools.org and provide mldsAuth config.\n` +
+          `  Or download manually and place at: ${zipPath}`
+        );
+      }
+
+      this.log.info(`  fetching RF2: ${zipFilename}`);
+      this.log.info(`    from: ${url}`);
+      if (isMlds) {
+        this.log.info(`    using MLDS credentials`);
+      }
+
+      await this.#downloadToFile(url, zipPath, {
+        timeout: RF2_DOWNLOAD_TIMEOUT_MS,
+        forMlds: isMlds
+      });
+    } else {
+      this.log.info(`  RF2 zip cached: ${zipFilename}`);
+    }
+
+    // Import RF2 to cache format
+    this.log.info(`  importing RF2 -> ${cacheFilename}`);
+    const importer = new Rf2Importer({ log: this.log });
+
+    try {
+      const result = await importer.importZip(zipPath, cachePath, {
+        edition,
+        version,
+        uri: versionUri
+      });
+      this.log.info(`  imported: ${result.editionName} ${version}`);
+    } catch (err) {
+      // Cleanup partial cache file on failure
+      if (await this.#exists(cachePath)) {
+        await fs.unlink(cachePath);
+      }
+      throw new Error(`RF2 import failed: ${err.message}`);
+    }
+
+    return `snomed:${cacheFilename}`;
+  }
+
   // ---------- IO ----------
 
-  async #downloadToFile(url, dest) {
-    const response = await axios.get(url, {
+  async #downloadToFile(url, dest, options = {}) {
+    const timeout = options.timeout || DOWNLOAD_TIMEOUT_MS;
+    const forMlds = options.forMlds || false;
+    const response = await axios.get(url, this.#getAxiosConfig({
       responseType: 'arraybuffer',
-      timeout: DOWNLOAD_TIMEOUT_MS,
-    });
+      timeout,
+    }, forMlds));
     await fs.writeFile(dest, Buffer.from(response.data));
   }
 
   async #downloadAndExtractTgz(url, destDir) {
-    const response = await axios.get(url, {
+    const response = await axios.get(url, this.#getAxiosConfig({
       responseType: 'arraybuffer',
-      timeout: DOWNLOAD_TIMEOUT_MS,
-    });
+    }));
     await fs.mkdir(destDir, { recursive: true });
     await new Promise((resolve, reject) => {
       const gunzip = zlib.createGunzip();

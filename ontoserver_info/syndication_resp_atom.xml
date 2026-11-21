@@ -1,0 +1,804 @@
+HTTP/1.1 200 
+Date: Thu, 28 May 2026 11:49:34 GMT
+Server: Apache
+Content-Security-Policy: frame-ancestors 'self' https://*.health.fgov.be https://*.health.belgium.be https://fpshealth.atlassian.net
+X-Content-Type-Options: nosniff, nosniff
+Vary: Origin,Access-Control-Request-Method,Access-Control-Request-Headers,*
+X-Request-Id: 7d51250e-3b93-47a2-8ade-610521e6faca
+X-Correlation-Id: 7d51250e-3b93-47a2-8ade-610521e6faca
+Cache-Control: no-cache, no-store, max-age=0, must-revalidate
+Pragma: no-cache
+Expires: Thu, 01 Jan 1970 00:00:00 GMT
+X-XSS-Protection: 1; mode=block
+Strict-Transport-Security: max-age=16070400
+X-Frame-Options: DENY
+Content-Type: application/atom+xml;charset=UTF-8
+Content-Length: 72418
+Connection: close
+
+<?xml version="1.0" encoding="UTF-8"?>
+<feed 
+  xmlns="http://www.w3.org/2005/Atom" 
+  xmlns:ncts="http://ns.electronichealth.net.au/ncts/syndication/asf/extensions/1.0.0" 
+  xmlns:sct="http://snomed.info/syndication/sct-extension/1.0.0">
+  <title>"Belgian Terminology Release Syndication Feed"</title>
+  <link href="https://apps.health.belgium.be/ontoserver/synd/syndication.xml" length="0" rel="self"/>
+  <link href="https://apps.health.belgium.be/ontoserver/synd/syndication.xml" length="0" rel="alternate"/>
+  <updated>2026-05-13T15:04:57+02:00</updated>
+  <id>urn:uuid:1195d94b-c299-3cc9-98fd-3873e01e657b</id>
+  <generator version="6.25.1">Ontoserver® 6.25.1, CSIRO</generator>
+  <entry>
+    <title>Belgian National Edition-May 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:43b92449-6f56-4e8d-a918-b3d31e8d4da2</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:01+02:00</updated>
+    <published>2025-05-15T02:00:00+02:00</published>
+    <summary>May 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1449560/releaseFiles/1449562/download" length="694344034" rel="alternate" sct:md5Hash="9dafb19644b1bf4beaed9ded706b1de0" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1449560/releaseFiles/1450723/download" length="83430" rel="related" sct:md5Hash="e68396d9e8195fe384515c611a5cfee3" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250515</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250501</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-November 2023 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:2c69a159-88b8-48a3-bc90-11f33ad0f95e</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:11+02:00</updated>
+    <published>2023-11-15T01:00:00+01:00</published>
+    <summary>November 2023 SNOMED CT Managed Service Belgium Extension release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1099198/releaseFiles/1101197/download" length="81467" rel="related" sct:md5Hash="e5a1d9fc3270c68228e3802b91aaf758" type="application/pdf"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1099198/releaseFiles/1101199/download" length="89627324" rel="alternate" sct:md5Hash="b4057a9488722d9f0fd3b204bfefe9e4" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20231115</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20230930</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-April 2026 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:a8fabbcc-04a1-45f6-a482-2b39c2909769</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2026-04-15T06:43:15+02:00</updated>
+    <published>2026-04-15T02:00:00+02:00</published>
+    <summary>April 2026 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1598614/releaseFiles/1598616/download" length="727242443" rel="alternate" sct:md5Hash="4ac31e392fbb22cf30e700fc2f49b0b7" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1598614/releaseFiles/1601580/download" length="321313" rel="related" sct:md5Hash="c40e26b3f22eab867da7307a1c6154b8" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20260415</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20260401</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-November 2024 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:42559942-a533-44f7-a381-ad5d8f32b46b</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:32+02:00</updated>
+    <published>2024-11-15T01:00:00+01:00</published>
+    <summary>November 2024 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1393709/releaseFiles/1393719/download" length="77249" rel="related" sct:md5Hash="252c0c56a07b1cb8ac94542f25a3cdbe" type="application/pdf"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1393709/releaseFiles/1406999/download" length="677559516" rel="alternate" sct:md5Hash="62225acfde5b2c7a6d6af091b6f0ddf4" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20241115</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20241101</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-September 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:2578d6e8-5419-49be-8286-b09ac88d853c</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-09T11:45:35+02:00</updated>
+    <published>2025-09-15T02:00:00+02:00</published>
+    <summary>September 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1494700/releaseFiles/1494702/download" length="704398873" rel="alternate" sct:md5Hash="219f85685bb6c22a5d09c3c023591331" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1494700/releaseFiles/1495197/download" length="400496" rel="related" sct:md5Hash="4231e5dd7e1dd1b171bdfddad81db5b0" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250915</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250901</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-May 2024 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:48969e96-5fb9-47f8-ac99-7adeec256180</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:07+02:00</updated>
+    <published>2024-05-22T02:00:00+02:00</published>
+    <summary>May 2024 SNOMED CT Managed Service Belgium Extension release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1253909/releaseFiles/1253911/download" length="101743865" rel="alternate" sct:md5Hash="1a052bee48926e1329f7b6fad258c84e" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1253909/releaseFiles/1253916/download" length="76232" rel="related" sct:md5Hash="a76621c05ff4ad2c8fb7acc1190f0bc7" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20240515</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20230201</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-December 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:23fc68f6-1386-448c-b60d-ecfec4152bbf</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-12-15T10:37:28+01:00</updated>
+    <published>2025-12-15T01:00:00+01:00</published>
+    <summary>December 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1536754/releaseFiles/1536756/download" length="713727133" rel="alternate" sct:md5Hash="e49920434dfd25c65dcdc3157e4b1ec9" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1536754/releaseFiles/1537232/download" length="497058" rel="related" sct:md5Hash="c6a26414c6ba9e3509ccce303c84d6a3" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20251215</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20251201</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-June 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:9e5ba6ad-9f0f-47df-9975-7f06a720b694</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:17+02:00</updated>
+    <published>2025-06-15T02:00:00+02:00</published>
+    <summary>June 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1461830/releaseFiles/1461832/download" length="695369517" rel="alternate" sct:md5Hash="7b77aef4a1353b0fdba3ecf93affd987" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1461830/releaseFiles/1462396/download" length="109148" rel="related" sct:md5Hash="f892580cb9e5bd9be1b927c3f9333bd0" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250615</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250601</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-March 2026 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:900ca814-8d07-495f-b5e6-a1e65e2e04d8</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2026-03-13T15:06:06+01:00</updated>
+    <published>2026-03-15T01:00:00+01:00</published>
+    <summary>March 2026 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1579838/releaseFiles/1579840/download" length="726068704" rel="alternate" sct:md5Hash="38267f63e839ca692d51614fed0aab36" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1579838/releaseFiles/1580144/download" length="333550" rel="related" sct:md5Hash="ab6af636b3c3dea65ecd6cb0aa60ab26" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20260315</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20260301</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-February 2026 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:0fd0f809-4cc2-4509-9a61-0ccf886b3f2f</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2026-03-11T11:50:03+01:00</updated>
+    <published>2026-02-15T01:00:00+01:00</published>
+    <summary>February 2026 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1565972/releaseFiles/1565974/download" length="718252429" rel="alternate" sct:md5Hash="59a222e6ced00ec4152a51d3961ccf2c" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1565972/releaseFiles/1566826/download" length="414876" rel="related" sct:md5Hash="77fd4d7d2f6ac95a046f338bf3bee797" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20260215</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20260201</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-March 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:9cde5b44-f346-4b7f-8f2a-2ae1cac6fdf4</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:25+02:00</updated>
+    <published>2025-03-15T01:00:00+01:00</published>
+    <summary>March 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1433217/releaseFiles/1433220/download" length="690104036" rel="alternate" sct:md5Hash="69319deb0bdb31bd8e72ee057df5b9a5" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1433217/releaseFiles/1433450/download" length="108550" rel="related" sct:md5Hash="1c2e9c571cd27e2518d2b62aa218346d" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250315</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250301</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-December 2024 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:b10abfd0-aab2-4132-8d6c-a615dd89668c</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:30+02:00</updated>
+    <published>2024-12-15T01:00:00+01:00</published>
+    <summary>December 2024 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1412078/releaseFiles/1412080/download" length="680819643" rel="alternate" sct:md5Hash="4c56955e600ce8e18d42cafde746b6a1" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1412078/releaseFiles/1413425/download" length="107648" rel="related" sct:md5Hash="3948466e5513a0afe4a2d0dc2f885d95" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20241215</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20241201</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-July 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:9405e883-7473-446b-9e1c-0090b7e6bc32</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-09T11:58:05+02:00</updated>
+    <published>2025-07-15T02:00:00+02:00</published>
+    <summary>July 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1472490/releaseFiles/1472492/download" length="698249038" rel="alternate" sct:md5Hash="035707a9ebbdf6c33457ffd858f1cf3c" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1472490/releaseFiles/1474915/download" length="111476" rel="related" sct:md5Hash="691436d7759092ac4278102dfbfca5e8" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250715</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250701</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-November 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:faf133c8-864a-4b96-9765-41d0c3cb592c</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-11-14T10:41:25+01:00</updated>
+    <published>2025-11-15T01:00:00+01:00</published>
+    <summary>November 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1522663/releaseFiles/1522666/download" length="709950184" rel="alternate" sct:md5Hash="98f1bcb30cb5108e29c436af0fbb6e0e" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1522663/releaseFiles/1523974/download" length="399062" rel="related" sct:md5Hash="6aef99de4c73d53a994ccedd6d4eff92" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20251115</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20251101</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-February 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:f30fd3c1-2552-4ac6-83eb-fddb7a491f19</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-08T13:03:09+02:00</updated>
+    <published>2025-02-15T01:00:00+01:00</published>
+    <summary>February 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1426655/releaseFiles/1426670/download" length="685200203" rel="alternate" sct:md5Hash="9fb53eeb90a5bf654f0d2183650b56b6" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1426655/releaseFiles/1427467/download" length="94298" rel="related" sct:md5Hash="1c2e9c571cd27e2518d2b62aa218346d" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250215</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20250201</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-October 2025 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:de26db80-c7be-48e1-82e8-cee62ad62832</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2025-10-29T11:17:54+01:00</updated>
+    <published>2025-10-15T02:00:00+02:00</published>
+    <summary>October 2025 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1508419/releaseFiles/1508421/download" length="707377889" rel="alternate" sct:md5Hash="7bac98af7e1c2dfb9728e4f4ebb0479a" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1508419/releaseFiles/1510091/download" length="303520" rel="related" sct:md5Hash="bdf07a7c16dd6cee772fbff1074f2695" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20251015</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20251001</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>Belgian National Edition-May 2026 v1.0</title>
+    <category label="SNOMED CT RF2 All" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="SCT_RF2_ALL"/>
+    <id>urn:uuid:a886d280-f3d2-4269-9552-e44559a0715e</id>
+    <author>
+      <email>terminologie@health.belgium.be</email>
+      <name>Terminology Center Belgium</name>
+      <uri>www.health.belgium.be</uri>
+    </author>
+    <rights>© International Health Terminology Standards Development Organisation 2002-2023.  All rights reserved.  SNOMED CT® was originally created by the College of American Pathologists.  "SNOMED" and "SNOMED CT" are registered trademarks of International Health Terminology Standards Development Organisation, trading as SNOMED International.</rights>
+    <updated>2026-05-13T15:04:57+02:00</updated>
+    <published>2026-05-15T02:00:00+02:00</published>
+    <summary>May 2026 SNOMED CT Managed Service Belgium Edition release</summary>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1626045/releaseFiles/1626047/download" length="742404313" rel="alternate" sct:md5Hash="d56b32db500646340d57777f58bcc28d" type="application/zip"/>
+    <link href="https://mlds.ihtsdotools.org/api/releasePackages/190440/releaseVersions/1626045/releaseFiles/1626053/download" length="326479" rel="related" sct:md5Hash="af969b3ef2fd95f00e0e5051f6a5a61f" type="application/pdf"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct/11000172109</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20260515</ncts:contentItemVersion>
+    <sct:packageDependency>
+      <sct:editionDependency>http://snomed.info/sct/900000000000207008/version/20260501</sct:editionDependency>
+    </sct:packageDependency>
+    <source>
+      <title>SNOMED International MLDS Terminology Release Syndication Feed</title>
+      <id>urn:uuid:5c26c3ca-c21c-476e-b0a4-096679529f2e</id>
+      <link href="http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0" length="0" rel="alternate" type="application/atom+xml"/>
+    </source>
+  </entry>
+  <entry>
+    <title>BeRiskManifestation</title>
+    <category label="FHIR Value Set" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_ValueSet"/>
+    <id>urn:uuid:47fc1fbb-74ba-301b-adab-ce39de42afdd</id>
+    <author>
+      <name>eHealth Platform</name>
+    </author>
+    <updated>2025-06-17T11:09:37.838+02:00</updated>
+    <published>2023-12-18T12:02:54+01:00</published>
+    <summary type="text">Codes as communicated by NIHDI and the FPS Terminology Center differentiating types of risk manifestation. This valueset supports the Belgian federal FHIR profiling effort.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-riskmanifestation/_history/1?_format=json" length="14249" ncts:sha256Hash="33dfd5356692f28912950fc5bc158f94fbf91fb10b486684d6e7cc0b86c28c20" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-riskmanifestation/_history/1?_format=xml" length="18644" ncts:sha256Hash="4f27986a2710edcaf878d458cbae58cbc062b880f4c457a4054506af74375b60" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://www.ehealth.fgov.be/standards/fhir/allergy/ValueSet/be-riskmanifestation</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.2.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>BeNoAllergy</title>
+    <category label="FHIR Value Set" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_ValueSet"/>
+    <id>urn:uuid:3bff7bb6-39d9-3e5c-a75f-5e3e50ab2354</id>
+    <author>
+      <name>eHealth Platform</name>
+    </author>
+    <updated>2025-06-17T13:19:21.241+02:00</updated>
+    <published>2023-12-18T12:02:54+01:00</published>
+    <summary type="text">Codes as communicated by the FOD Terminology Center differentiating types of no allergies. This valueset supports the Belgian federal FHIR profiling effort.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-noallergy/_history/1?_format=json" length="2240" ncts:sha256Hash="bb08e1a4e5563cec705cb6f9727b430f09951a795cd661643850ed7301c185ef" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-noallergy/_history/1?_format=xml" length="2661" ncts:sha256Hash="6e572af291530c97c53487d6bbc33342efbab6065b68ca11bcd87d80d493fefa" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://www.ehealth.fgov.be/standards/fhir/allergy/ValueSet/be-noallergy</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.2.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>BeVSVaccineCode</title>
+    <category label="FHIR Value Set" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_ValueSet"/>
+    <id>urn:uuid:9e3b35f9-611c-3b15-8134-9a5b1e8dce48</id>
+    <author>
+      <name>eHealth Platform</name>
+    </author>
+    <rights>*   This value set includes content from SNOMED CT, which is copyright © 2002+ International Health Terminology Standards Development Organisation (IHTSDO), and distributed by agreement between IHTSDO and HL7. Implementer use of SNOMED CT is not covered by this agreement
+
+*   The SNOMED International IPS Terminology is distributed by International Health Terminology Standards Development Organisation, trading as SNOMED International, and is subject the terms of the [Creative Commons Attribution 4.0 International Public License](https://creativecommons.org/licenses/by/4.0/). For more information, see [SNOMED IPS Terminology](https://www.snomed.org/snomed-ct/Other-SNOMED-products/international-patient-summary-terminology)
+
+*   The HL7 International IPS implementation guides incorporate SNOMED CT®, used by permission of the International Health Terminology Standards Development Organisation, trading as SNOMED International. SNOMED CT was originally created by the College of American Pathologists. SNOMED CT is a registered trademark of the International Health Terminology Standards Development Organisation, all rights reserved. Implementers of SNOMED CT should review [usage terms](https://www.snomed.org/get-snomed) or directly contact SNOMED International: info@snomed.org</rights>
+    <updated>2025-06-17T13:38:20.045+02:00</updated>
+    <published>2025-03-24T16:01:36+01:00</published>
+    <summary type="text">Vaccine Code Value Set - the types of vaccines that are administered in Belgium</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-vs-vaccine-code/_history/1?_format=json" length="45607" ncts:sha256Hash="dd465f0398a99069f9cffd99c14f6fc252469295b4a646e8ed9d8c9a8edb778d" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-vs-vaccine-code/_history/1?_format=xml" length="53092" ncts:sha256Hash="9767a51401096e87ba8ba064c88f9487d84a7cc4737f85f17363bfef82e9bfa9" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://www.ehealth.fgov.be/standards/fhir/vaccination/ValueSet/be-vs-vaccine-code</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.1.1</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>BeCausativeAgent</title>
+    <category label="FHIR Value Set" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_ValueSet"/>
+    <id>urn:uuid:f7d95157-9c05-3fdc-9d3e-fa7b9a0234ab</id>
+    <author>
+      <name>eHealth Platform</name>
+    </author>
+    <rights>This value set includes content from SNOMED CT, which is copyright © 2002+ International Health Terminology Standards Development Organisation (SNOMED International), and distributed by agreement between SNOMED International and HL7. Implementer use of SNOMED CT is not covered by this agreement</rights>
+    <updated>2025-06-17T11:01:10.534+02:00</updated>
+    <published>2023-12-18T12:02:54+01:00</published>
+    <summary type="text">Causative Agents for Allergy (non medication)</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-causativeagent/_history/4?_format=json" length="2181" ncts:sha256Hash="45e08f22aef88afe9cc7a1b7e5f5a6a2550b4bf5fd4d5197bc76493320222e85" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/ValueSet/be-causativeagent/_history/4?_format=xml" length="2527" ncts:sha256Hash="5eccf9204939b5bb923883a425cd536e8b998af1b7136cb245bc0fea4b407ca9" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://www.ehealth.fgov.be/standards/fhir/allergy/ValueSet/be-causativeagent</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.2.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Length of attachment</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:1567d3df-58fb-3190-9ff6-f279749c39f6</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:34.604+01:00</updated>
+    <published>2020-12-11T13:29:10+01:00</published>
+    <summary type="text">The length of the referenced attachment.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-len/_history/1?_format=json" length="40153" ncts:sha256Hash="fbb6c5e0ac0393c5c04189f20d6803457bef512c48fee51d5924b76c94711fe2" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-len/_history/1?_format=xml" length="43516" ncts:sha256Hash="7ae0c028cb39ab17e6a3d3c4c3df66633c07b871871d0550b30f16952a2c46b5" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/profiles/attachment-len</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>6.1.4</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Default SNOMED Edition</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:23710397-20c0-3f22-88d5-e680636f76c6</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:35.216+01:00</updated>
+    <published>2020-07-14T09:01:39+02:00</published>
+    <summary type="text">The default SNOMED edition used by the server</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/defaultsnomededition/_history/1?_format=json" length="13753" ncts:sha256Hash="edd9f0c1932310d135f39b37d2e75c280d92b01682c7e083085dba898ff44b2b" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/defaultsnomededition/_history/1?_format=xml" length="14601" ncts:sha256Hash="a5badb2ae9779c7bb00c4b165f54cd02dd208a2f25fe48821150ccd10c94c950" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/fhir/StructureDefinition/defaultsnomededition</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>0.1.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Minimal Ontoserver CodeSystem</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:b782b8a5-ed34-32a8-8170-9b818e1e57d9</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:33.677+01:00</updated>
+    <published>2020-07-16T00:00:00+02:00</published>
+    <summary type="text">Every CodeSystem in Ontoserver MUST have a url</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalcodesystem/_history/1?_format=json" length="83301" ncts:sha256Hash="fe6d84f0437c68a3b9f9eab241dd61ca9b1ea3891ffb9029d8ddd7f7090b013c" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalcodesystem/_history/1?_format=xml" length="96580" ncts:sha256Hash="fe2bef44c7d3a3884cb3ad5db044afd464ed624482e32acf6ca4f8ee9a5d3244" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/fhir/StructureDefinition/minimalcodesystem</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.0.3</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Minimal Ontoserver ConceptMap</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:2579e547-0590-3116-a560-ab34b799aa7c</id>
+    <updated>2025-03-27T16:20:34.040+01:00</updated>
+    <published>2020-07-16T00:00:00+02:00</published>
+    <summary type="text">Every ConceptMap in Ontoserver MUST have a url</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalconceptmap/_history/1?_format=json" length="80469" ncts:sha256Hash="c626525eed831796f66e60bb561e86058849e2f1f91ef6f7bdc0ff31759f189e" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalconceptmap/_history/1?_format=xml" length="93064" ncts:sha256Hash="ee04770dbda38f2aa29fc0c211f456447730a165cf779255dc01c8e3c8d5865f" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/fhir/StructureDefinition/minimalconceptmap</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.0.3</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Minimal Ontoserver ValueSet</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:546df236-00ef-3f30-a603-ecddaf7a4fe4</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:34.235+01:00</updated>
+    <published>2020-07-16T00:00:00+02:00</published>
+    <summary type="text">Every ValueSet in Ontoserver MUST have a url</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalvalueset/_history/1?_format=json" length="111675" ncts:sha256Hash="48e9ec3f9c09166143f70bb01dc415a616398301c65ae217e392c083731a84a9" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/minimalvalueset/_history/1?_format=xml" length="128519" ncts:sha256Hash="503f3e65d0cbdc8255bec9f65ca7cf02a1d85d91fc6f4728afdeff1103eeae79" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/fhir/StructureDefinition/minimalvalueset</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.0.3</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>CodeSystem Provenance</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:a327e4f4-51f5-3c16-97a5-ed9fc8e837bb</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:34.360+01:00</updated>
+    <published>2020-12-11T06:38:23+01:00</published>
+    <summary type="text">Link from a generated CodeSystem resource (usually for SNOMED CT) to Provenance information with details of the input data and system that were used to generate the CodeSystem resource.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/cs-provenance/_history/1?_format=json" length="20492" ncts:sha256Hash="1c7a8c1be37ce71c96766b9e64d21f249e59407fdc8aa688dad1af9899d9cd07" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/cs-provenance/_history/1?_format=xml" length="25669" ncts:sha256Hash="b4eab2e620b0aaf0216465dde12c99056495873df5f1b076a12c5cd895b741b4" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/profiles/cs-provenance</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.0.1</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>SHA256 of attachment</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:1e39bd40-0d81-380e-80d6-5f827723c215</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:34.726+01:00</updated>
+    <published>2020-12-11T13:29:10+01:00</published>
+    <summary type="text">The SHA256 of the referenced attachment.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-sha256/_history/1?_format=json" length="40364" ncts:sha256Hash="b8c0ecbaf07c7f42b5e2d0d41c216aca6b883aa4672ab8cf25b413b28bf96a43" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-sha256/_history/1?_format=xml" length="43727" ncts:sha256Hash="a0a40bcbd6675441fbae5967432a95d5fcbe7e33d20fd990003406f72abd6397" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/profiles/attachment-sha256</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>6.1.4</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Provenance Attachment Metadata</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:de033a6d-5db9-3092-a9e9-fcf87260a93a</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2025-03-27T16:20:34.827+01:00</updated>
+    <published>2020-12-11T13:29:10+01:00</published>
+    <summary type="text">Metadata (len, SHA256) of Attachment used in CodeSystem Provenance extension.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-provenance/_history/1?_format=json" length="22772" ncts:sha256Hash="a217b66e7f4a49de81b7d08c0166cea0654a5349aa1bc0326a316b832c742253" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/attachment-provenance/_history/1?_format=xml" length="25710" ncts:sha256Hash="bd3aa5840b482b68965535eba530ca6dc963019575e22054ec2b0653bb947d80" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/profiles/attachment-provenance</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>6.1.4</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Shareable CodeSystem</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:232cbc11-68c8-3062-b804-1b245f7141e5</id>
+    <author>
+      <name>HL7</name>
+    </author>
+    <updated>2025-03-27T16:20:34.957+01:00</updated>
+    <published>2019-10-31T23:29:23+01:00</published>
+    <summary type="text">Enforces the minimum information set for the value set metadata required by HL7 and other organizations that share and publish value sets</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/shareablecodesystem/_history/1?_format=json" length="85485" ncts:sha256Hash="f347eb39dbc0f3406a6c4581d0a0307649d5535dd8f0fc9d6b0e093164ef90c9" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/shareablecodesystem/_history/1?_format=xml" length="99543" ncts:sha256Hash="18ed64c2577173d21477bf8f3ebc2aedc2eb15e5c8b210e968dd90d45265d91f" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://hl7.org/fhir/StructureDefinition/shareablecodesystem</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.0.1</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Shareable ValueSet</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:1f61dd5e-354d-39f2-b5d0-2558f366d268</id>
+    <author>
+      <name>HL7</name>
+    </author>
+    <updated>2025-03-27T16:20:35.107+01:00</updated>
+    <published>2019-10-31T23:29:23+01:00</published>
+    <summary type="text">Enforces the minimum information set for the value set metadata required by HL7 and other organizations that share and publish value sets</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/shareablevalueset/_history/1?_format=json" length="113159" ncts:sha256Hash="fcbd929e35f860b91d0e875c87676fb776aa98a815d227cf73c338ff4831f7c1" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/shareablevalueset/_history/1?_format=xml" length="130534" ncts:sha256Hash="a612646b2c8f2e8a6e1bfa526e2fefea749628c809a6da6e51d512276f6e56e5" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://hl7.org/fhir/StructureDefinition/shareablevalueset</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.0.1</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>NCTS Complete Code System</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:b7dc2652-e100-393e-b0f8-e937c3f69874</id>
+    <author>
+      <name>Australian Digital Health Agency</name>
+    </author>
+    <updated>2026-02-12T13:58:09.035+01:00</updated>
+    <published>2020-01-30T15:00:00+01:00</published>
+    <summary type="text">This StructureDefinition describes the NCTS Complete Code System, a profile of the FHIR&amp;reg; CodeSystem resource. The NCTS Complete Code System is designed to represent terminologies published as part of the National Clinical Terminology Service, and maximise interoperability within the NCTS ecosystem.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/complete-code-system-4/_history/14?_format=json" length="131672" ncts:sha256Hash="c0fea584970e57ea5652f17df9a5c6a63da54fa0ccdf4b1775c123da1a91454c" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/complete-code-system-4/_history/14?_format=xml" length="148181" ncts:sha256Hash="811b9ed02aad4068041e804400a737740edcc92a015af957ba8a0de99bcd35e7" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://healthterminologies.gov.au/fhir/StructureDefinition/complete-code-system-4</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.0.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>NCTS Composed Value Set</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:37781a46-ff01-3c7d-bde3-3443c5d118d0</id>
+    <author>
+      <name>Australian Digital Health Agency</name>
+    </author>
+    <updated>2026-02-12T13:58:09.643+01:00</updated>
+    <published>2023-07-30T16:00:00+02:00</published>
+    <summary type="text">This StructureDefinition describes the NCTS Composed Value Set, a profile of the FHIR&amp;reg; ValueSet resource. The NCTS Composed Value Set is designed to represent value sets published as part of the National Clinical Terminology Service, and maximise interoperability within the NCTS ecosystem.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/composed-value-set-4/_history/14?_format=json" length="168599" ncts:sha256Hash="68b65b829229c414899bbe712442af2fcb456b3c808eef0bbc2a32474cc5c833" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/composed-value-set-4/_history/14?_format=xml" length="188134" ncts:sha256Hash="339748b9e33b04f887c1013adc892be62fc87b317aa392ec22d1dc40f7e3dd0f" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://healthterminologies.gov.au/fhir/StructureDefinition/composed-value-set-4</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.1.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>NCTS Expanded Value Set</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:e5600c22-476f-34bb-a9f1-cb424f78571d</id>
+    <author>
+      <name>Australian Digital Health Agency</name>
+    </author>
+    <updated>2026-02-12T13:58:09.971+01:00</updated>
+    <published>2020-01-30T15:00:00+01:00</published>
+    <summary type="text">This StructureDefinition describes the NCTS Expanded Value Set, a profile of the FHIR&amp;reg; ValueSet resource. The NCTS Expanded Value Set is designed to describe expansions of value sets published as part of the National Clinical Terminology Service, and maximise interoperability within the NCTS ecosystem.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/expanded-value-set-4/_history/14?_format=json" length="148492" ncts:sha256Hash="b9220ea2e4b20c4a6f2f2e3b7d3d899e3939d4fe1b01a3f2d423bcbbdb9433ff" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/expanded-value-set-4/_history/14?_format=xml" length="165111" ncts:sha256Hash="c511f54a074a0a5fedd9755511426c83682cff86a85cc421f13eda6f3f30fe81" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://healthterminologies.gov.au/fhir/StructureDefinition/expanded-value-set-4</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.0.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>NCTS General Concept Map</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:a8c5a58d-ae5b-3c80-aebd-08af2c97d94b</id>
+    <author>
+      <name>Australian Digital Health Agency</name>
+    </author>
+    <updated>2026-02-12T13:58:10.224+01:00</updated>
+    <published>2020-01-30T15:00:00+01:00</published>
+    <summary type="text">This StructureDefinition describes the NCTS General Concept Map, a profile of the FHIR&amp;reg; CodeSystem resource. The NCTS General Concept Map is designed to represent mappings between terminologies published as part of the National Clinical Terminology Service, and maximise interoperability within the NCTS ecosystem.</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/general-concept-map-4/_history/14?_format=json" length="134432" ncts:sha256Hash="014a28a774b5aa6a5140694b2446a180cf477a32e75e84816938ecee8ceec202" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/general-concept-map-4/_history/14?_format=xml" length="150109" ncts:sha256Hash="124fdda6970049e57fe48c924f520f340acf58f322d098adaaabf83e50fb0f13" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>https://healthterminologies.gov.au/fhir/StructureDefinition/general-concept-map-4</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>4.0.0</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Ontoserver Subscription Profile</title>
+    <category label="FHIR Structure Definition" scheme="http://ns.electronichealth.net.au/ncts/syndication/asf/scheme/1.0.0" term="FHIR_StructureDefinition"/>
+    <id>urn:uuid:9824a942-a257-3eac-ac88-ef1bb951f409</id>
+    <author>
+      <name>CSIRO</name>
+    </author>
+    <updated>2026-04-30T11:58:43.925+02:00</updated>
+    <published>2025-08-27T03:24:55+02:00</published>
+    <summary type="text">Profile for the creation of a Subscription in Ontoserver</summary>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/ontoserversubscription/_history/1?_format=json" length="70324" ncts:sha256Hash="c887c71e8f6b287ef096244f0f7688da668c2ab08933989fea2b8989b977346a" rel="alternate" type="application/fhir+json"/>
+    <link href="https://apps.health.belgium.be/ontoserver/fhir/StructureDefinition/ontoserversubscription/_history/1?_format=xml" length="78342" ncts:sha256Hash="018393fe8bea5a8ccd32185189dbb9d39dd420f3b9bd03a421ad3b50cbab057a" rel="alternate" type="application/fhir+xml"/>
+    <ncts:contentItemIdentifier>http://ontoserver.csiro.au/fhir/StructureDefinition/ontoserversubscription</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>1.0.3</ncts:contentItemVersion>
+    <ncts:fhirVersion>4.0</ncts:fhirVersion>
+  </entry>
+  <entry>
+    <title>Binary Index SNOMED_CT</title>
+    <category label="Binary Index" scheme="http://ontoserver.csiro.au/syndication/rf2/2.0.15" term="BINARY"/>
+    <id>urn:uuid:ce59de87-8b52-3e6f-af95-bfa056cc3abe</id>
+    <author>
+      <name>Ontoserver</name>
+    </author>
+    <updated>2026-02-12T11:23:03.086+01:00</updated>
+    <link href="https://apps.health.belgium.be/ontoserver/synd/getBinaryIndexZip?codeSystemId=http%3A%2F%2Fsnomed.info%2Fsct&amp;codeSystemVersion=http%3A%2F%2Fsnomed.info%2Fsct%2F11000172109%2Fversion%2F20251215&amp;indexVersion=2.0.15" length="1594949463" ncts:sha256Hash="d6aa7c00bbc3233a65fe2ccc68d9077fb57d72a1ade119e9514a7be8fb303003" rel="alternate" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20251215</ncts:contentItemVersion>
+  </entry>
+  <entry>
+    <title>Binary Index SNOMED_CT</title>
+    <category label="Binary Index" scheme="http://ontoserver.csiro.au/syndication/rf2/2.0.15" term="BINARY"/>
+    <id>urn:uuid:d4439044-548d-3a94-8237-ada8394dfc0f</id>
+    <author>
+      <name>Ontoserver</name>
+    </author>
+    <updated>2025-09-03T14:27:08.395+02:00</updated>
+    <link href="https://apps.health.belgium.be/ontoserver/synd/getBinaryIndexZip?codeSystemId=http%3A%2F%2Fsnomed.info%2Fsct&amp;codeSystemVersion=http%3A%2F%2Fsnomed.info%2Fsct%2F11000172109%2Fversion%2F20250715&amp;indexVersion=2.0.15" length="1525786893" ncts:sha256Hash="846df8104d92a51bd187eff212bb1e85745769a86b391e49e5ea55aa4dc179b1" rel="alternate" type="application/zip"/>
+    <ncts:contentItemIdentifier>http://snomed.info/sct</ncts:contentItemIdentifier>
+    <ncts:contentItemVersion>http://snomed.info/sct/11000172109/version/20250715</ncts:contentItemVersion>
+  </entry>
+  <ncts:atomSyndicationFormatProfile>http://ns.electronichealth.net.au/ncts/syndication/asf/profile/1.0.0</ncts:atomSyndicationFormatProfile>
+</feed>

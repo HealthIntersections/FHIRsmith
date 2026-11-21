@@ -1,0 +1,54 @@
+@token = {{$dotenv TOKEN}}
+@base = https://apps.health.belgium.be/ontoserver/fhir
+@syndBase = https://apps.health.belgium.be/ontoserver/synd
+
+
+### Ontoserver CapabilityStatement
+GET {{base}}/metadata
+Authorization: Bearer {{token}}
+Accept: application/fhir+json
+
+### List CodeSystems
+GET {{base}}/CodeSystem?_count=5
+Authorization: Bearer {{token}}
+Accept: application/fhir+json
+
+### List CodeSystems
+GET {{base}}/CodeSystem?_elements=name,url&_count=10
+Authorization: Bearer {{token}}
+Accept: application/fhir+json
+
+
+### List CodeSystems
+GET {{base}}/CodeSystem?_summary=true
+Authorization: Bearer {{token}}
+Accept: application/fhir+json
+
+
+
+
+### SNOMED CT lookup
+GET {{base}}/CodeSystem/$lookup?system=http://snomed.info/sct&code=22298006
+Authorization: Bearer {{token}}
+Accept: application/fhir+json
+
+
+### Syndication feed (Atom) — full feed
+GET {{syndBase}}/syndication.xml
+Authorization: Bearer {{token}}
+Accept: application/atom+xml
+
+### Syndication feed — Belgian SNOMED CT edition (RF2 packages)
+GET {{syndBase}}/syndication.xml?canonical=http://snomed.info/sct/11000172109
+Authorization: Bearer {{token}}
+Accept: application/atom+xml
+
+### Syndication feed — only Belgian FHIR ValueSets
+GET {{syndBase}}/syndication.xml?category=FHIR_ValueSet
+Authorization: Bearer {{token}}
+Accept: application/atom+xml
+
+### Syndication feed — only SNOMED CT binary indexes (Ontoserver native)
+GET {{syndBase}}/syndication.xml?canonical=http://snomed.info/sct
+Authorization: Bearer {{token}}
+Accept: application/atom+xml
