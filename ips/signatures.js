@@ -39,6 +39,13 @@
  * document's processing goes on: a signature that can't be checked doesn't stop the analysis.
  * Outcomes that aren't of this form are shown as errors too.
  *
+ * Notes:
+ *   - verify should attempt to describe what is wrong with a signature if it can, but it is not actually a validator
+ *   - even if the certificate is self-contained, the verification should still consult the Key provider
+ *     for the key to cross-check details and check for revocation
+ *   - the UI presenting results will match key ids to known keys in the web interface when presenting the outcomes
+ *   
+ *
  * ## KeyProvider
  *
  * Both methods are async, and return null when the key isn't known:
