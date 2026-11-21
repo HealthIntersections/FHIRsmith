@@ -386,11 +386,13 @@ describe('sqlite-v2 RxNorm REL filters', () => {
     expect(expand(rx, [rxinc([f('RO', '=', 'CUI:1')])]).codes.sort()).toEqual(['2', '3', '4']);
     expect(expand(rx, [rxinc([f('TTY', '=', 'SCD')])]).codes.sort()).toEqual(['2', '3']);
     expect(() => expand(rx, [rxinc([f('XX', '=', 'CUI:1')])])).toThrow('The filter "XX = CUI:1" is not understood or supported');
-    // every FHIR operator the data can answer, beyond upstream's set
     expect(expand(rx, [rxinc([f('has_ingredient', 'in', 'CUI:1,CUI:3')])]).codes).toEqual(['4']);
     expect(expand(rx, [rxinc([f('concept', 'in', '2,4,5')])]).codes.sort()).toEqual(['2', '4']);
-    expect(expand(rx, [rxinc([f('tty', 'not-in', 'SCD')])]).codes.sort()).toEqual(['1', '4']);
-    expect(expand(rx, [rxinc([f('display', 'regex', 'drug [23]')])]).codes.sort()).toEqual(['2', '3']);
+    // upstream's set only (cs-rxnorm.js doesFilter): = and in, relationship values CUI: or AUI:
+    // (sqlite-v2-rxnorm-filters.test.js runs each against cs-rxnorm.js)
+    expect(() => expand(rx, [rxinc([f('tty', 'not-in', 'SCD')])])).toThrow('The filter "tty not-in SCD" is not understood or supported');
+    expect(() => expand(rx, [rxinc([f('display', 'regex', 'drug [23]')])])).toThrow('not understood or supported');
+    expect(() => expand(rx, [rxinc([f('has_ingredient', '=', '1')])])).toThrow('not understood or supported');
   });
 });
 

@@ -1,5 +1,5 @@
 'use strict';
-// The built-in providers' answer orders for LOINC and SNOMED CT, as typed arrays over concept_id:
+// The built-in providers' answer orders for LOINC, SNOMED CT and RxNorm, as typed arrays over concept_id:
 //   rank[id]  the concept's place in the system order (rank.length = concept count + 1)
 //   ids[r]    the concept at place r
 //   walk      the whole system in the built-in walk order (SNOMED CT: walk.reached is how many
@@ -18,7 +18,7 @@ const LITTLE = os.endianness() === 'LE';
 
 /** the order kind of a code system (by its dialect name), or null for a system without one */
 function orderKind(dialectName) {
-  return dialectName === 'loinc' || dialectName === 'snomed' ? dialectName : null;
+  return dialectName === 'loinc' || dialectName === 'snomed' || dialectName === 'rxnorm' ? dialectName : null;
 }
 
 function hasTable(db, name) {
@@ -35,6 +35,7 @@ function hasTable(db, name) {
 function computeOrder(db, kind, n = db.prepare('SELECT concept_count FROM code_system WHERE id = 1').pluck().get()) {
   if (kind === 'loinc') return loincOrder(db, n);
   if (kind === 'snomed') return snomedOrder(db, n);
+  if (kind === 'rxnorm') return rxnormOrder(db, n);
   throw new Error(`no system order for ${kind}`);
 }
 
@@ -60,6 +61,20 @@ function loincOrder(db, n) {
   const kindOf = (c) => (c.startsWith('LP') ? 1 : c.startsWith('LL') ? 2 : c.startsWith('LA') ? 3 : 0);
   for (const r of rows) r.push(kindOf(r[1]), r[1].replace(/-/g, ''));
   rows.sort((a, b) => (a[2] - b[2]) || (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
+  return { rank, ids, walk: null, selfFirst: false };
+}
+
+/**
+ * RxNorm results in cs-rxnorm.js's order: by RXCUI as text ('10' before '9'). Its filter queries
+ * group by RXCUI (a text column), and the whole system is ORDER BY RXCUI. concept_id is the
+ * importer's (TTY rank, ingredient group) order here
+ */
+function rxnormOrder(db, n) {
+  const rows = db.prepare('SELECT concept_id, code FROM concept').raw().all();
+  rows.sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+  const rank = new Uint32Array(n + 1);
+  const ids = new Uint32Array(n + 1);
   rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
   return { rank, ids, walk: null, selfFirst: false };
 }

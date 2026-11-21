@@ -223,36 +223,69 @@ const rxnorm = {
   notSupported(prop, op, value) {
     return notUnderstood(prop, op, value);
   },
+  /**
+   * cs-rxnorm.js doesFilter / filter: `=` and `in` only, with at least one value; on TTY, STY and
+   * SAB (any case), on concept and code, and on a relationship - a REL or RELA that RXNREL has,
+   * from any source - whose values are all CUI:<rxcui> or AUI:<rxaui>. Anything else is
+   * FILTER_NOT_UNDERSTOOD, 422. A filter on a property a supplement in use defines is left to the
+   * supplement layer, as before.
+   */
   filter(c, prop, op, value) {
     const S = c.store;
     const up = String(prop).toUpperCase();
-    if ((up === 'TTY' || up === 'STY' || up === 'SAB') && !S.props.has(prop)) {
-      // property names are case-insensitive upstream
-      return c.filter(up, op, value);
+    const refuse = () => {
+      const n = c.term && c.term.layers && !S.props.has(prop) ? c.term.layers.filterNode(c, prop, op, value) : null;
+      if (n) return n;
+      throw rxnorm.notSupported(prop, op, value);
+    };
+    if (op !== '=' && op !== 'in') return refuse();
+    // cs-rxnorm.js #filterValues
+    const vals = op === 'in' ? splitList(value) : (value != null && String(value).trim() ? [String(value).trim()] : []);
+    if (!vals.length) return refuse();
+    if (up === 'TTY' || up === 'STY' || up === 'SAB') {
+      // property names are case-insensitive upstream; the generic rule matches the literal
+      const v = op === '=' ? vals[0] : value;
+      if (prop !== up || !S.props.has(up) || v !== value) return c.filter(up, op, v);
+      return null;
     }
-    const rels = S.config.relaByRel || {};
-    const isRel = !!rels[prop];
-    if (isRel || (S.props.has(prop) && S.props.get(prop).kind === 'concept')) {
-      // relationship values are CUI:<rxcui> (upstream); a bare RXCUI is accepted too
-      const pids = isRel ? rels[prop].map((a) => S.props.get(a)).filter(Boolean).map((p) => p.id) : [S.props.get(prop).id];
-      const any = (n) => (n.length === 1 ? n[0] : { t: 'or', items: n });
-      if (op === 'exists') {
-        const v = String(value).toLowerCase();
-        if (v !== 'true' && v !== 'false') throw rxnorm.notSupported(prop, op, value);
-        const n = any(pids.map((pid) => ({ t: 'set', kind: KIND.hasProp, pid, value: 0 })));
-        return v === 'true' ? n : { t: 'minus', a: { t: 'all' }, b: n };
-      }
-      if (op !== '=' && op !== 'in' && op !== 'not-in') throw rxnorm.notSupported(prop, op, value);
-      const vals = op === '=' ? [String(value)] : splitList(value);
-      if (vals.some((v) => v.startsWith('AUI:'))) throw new Unsupported('rxnorm-aui');
-      const m = c.ids(vals.map((v) => (v.startsWith('CUI:') ? v.substring(4) : v)));
+    if (prop === 'concept' || prop === 'code') return null; // the generic rule: the codes listed
+    const rels = S.config.rxRels || Object.keys(S.config.relaByRel || {});
+    const relas = S.config.rxRelas || [...S.props.values()].filter((p) => p.kind === 'concept').map((p) => p.code);
+    const isRel = rels.includes(prop);
+    if (!isRel && !relas.includes(prop)) return refuse();
+    if (!vals.every((v) => v.startsWith('CUI:') || v.startsWith('AUI:'))) return refuse();
+    const any = (n) => (n.length === 0 ? { t: 'empty' } : n.length === 1 ? n[0] : { t: 'or', items: n });
+    const parts = [];
+    // CUI: RxNorm's own concept-level rows (SAB = RXNORM), as concept-valued properties
+    const cuis = vals.filter((v) => v.startsWith('CUI:')).map((v) => v.substring(4));
+    if (cuis.length) {
+      const relaMap = S.config.relaByRel || {};
+      const pids = (isRel ? (relaMap[prop] || []) : [prop]).map((a) => S.props.get(a)).filter((p) => p && p.kind === 'concept').map((p) => p.id);
+      const m = c.ids(cuis);
       const ids = [...new Set([...m.values()].filter((x) => x != null))];
-      const n = ids.length ? any(pids.flatMap((pid) => ids.map((id) => ({ t: 'set', kind: KIND.prop, pid, value: id })))) : { t: 'empty' };
-      return op === 'not-in' ? { t: 'minus', a: { t: 'all' }, b: n } : n;
+      parts.push(any(pids.flatMap((pid) => ids.map((id) => ({ t: 'set', kind: KIND.prop, pid, value: id })))));
     }
-    return null; // generic rules: concept/code operators, literal properties (TTY, STY, SAB, ...)
+    // AUI: the atom-level rows of every source (rxnorm_atom_rel), to the concept of the target atom
+    const auis = vals.filter((v) => v.startsWith('AUI:')).map((v) => v.substring(4));
+    if (auis.length) parts.push({ t: 'ids', ids: rxAtomTargets(S, isRel ? 'rel' : 'rela', (isRel ? rels : relas).indexOf(prop), auis) });
+    return any(parts);
   }
 };
+
+/**
+ * The concepts the atom-level RXNREL rows lead to from these atoms, for one REL or RELA (an index
+ * into cs_config rxRels / rxRelas): cs-rxnorm.js's AUI query. RXAUIs are numbers; a value that
+ * isn't one is no atom
+ */
+function rxAtomTargets(S, field, index, auis) {
+  if (!S.config.rxRels || !S.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'rxnorm_atom_rel'").get()) {
+    throw new Unsupported('rxnorm-aui', 'the file has no atom-level relationships (built before they were imported): rebuild it with rxnorm-v2 import');
+  }
+  const nums = [...new Set(auis.filter((a) => /^(0|[1-9]\d{0,15})$/.test(a)).map(Number))];
+  if (!nums.length || index < 0) return [];
+  const q = S.stmt(`SELECT DISTINCT concept_id FROM rxnorm_atom_rel WHERE aui IN (${nums.map(() => '?').join(', ')}) AND ${field} = ? ORDER BY concept_id`).pluck();
+  return q.all(...nums, index);
+}
 
 // ---- SNOMED CT -----------------------------------------------------------------------------
 

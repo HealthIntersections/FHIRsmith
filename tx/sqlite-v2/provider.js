@@ -99,7 +99,15 @@ class SqliteV2Provider extends BaseCSServices {
   lookupName() { return this.f.lookupName(); }
   defLang() { return this.f.defLang(); }
   totalCount() { return this.f.totalCount(); }
-  async countAllCodes(excludeInactive) { return excludeInactive ? this.store.active().size : this.totalCount(); }
+  /**
+   * expand.js asks this for count=0 of a whole code system. cs-snomed.js counts the active concepts
+   * for a compose without inactive codes; cs-loinc.js and cs-rxnorm.js don't override cs-api's
+   * default, which ignores the flag (totalCount)
+   */
+  async countAllCodes(excludeInactive) {
+    if (this.dialect.name === 'loinc' || this.dialect.name === 'rxnorm') return this.totalCount();
+    return excludeInactive ? this.store.active().size : this.totalCount();
+  }
   hasParents() { return !!this.store.hierarchy || this.dialect.name === 'rxnorm'; }
   isNotClosed() { return !!this.store.config.notClosed; }
   contentMode() { return this.store.cs.content || 'complete'; }
@@ -505,7 +513,9 @@ class SqliteV2Provider extends BaseCSServices {
 
   _roots() {
     if (this.dialect.name === 'loinc' || this.dialect.name === 'rxnorm') {
-      return (this.dialect.name === 'rxnorm' ? this._rxLive() : this.store.all()).toArray();
+      if (this.dialect.name === 'loinc') return this.store.all().toArray();
+      // cs-rxnorm.js iterator(null): ORDER BY RXCUI
+      return this.engine._order ? this.engine._ordered(this._rxLive()) : this._rxLive().toArray();
     }
     // concepts without an active parent
     const hid = this.store.hierarchy ? this.store.hierarchy.id : -1;
@@ -1028,7 +1038,9 @@ class SqliteV2Provider extends BaseCSServices {
 
   async _executeFilters(prep) {
     if (!prep.nodes.length) return [];
-    const node = prep.nodes.length === 1 ? prep.nodes[0] : { t: 'and', items: prep.nodes };
+    // within the code system's domain, as processSelection's includes are (compile.js domain:
+    // RxNorm never selects a concept found only in RXNATOMARCHIVE)
+    const node = this._compiler().domain(prep.nodes.length === 1 ? prep.nodes[0] : { t: 'and', items: prep.nodes });
     if (prep.forIterate) {
       if (prep.searchText != null) {
         const bm = await this.engine.evaluateAsync(node, this._trace, this._pause());
@@ -1202,8 +1214,11 @@ class SqliteV2Provider extends BaseCSServices {
     // cs-snomed.js the concepts, or the active ones for a compose without inactive codes; cs-loinc.js
     // every code), not the walk's count (activeOnly does not change it; SNOMED CT's walk does not
     // reach the inactive concepts)
-    const total = count === 0 && result.wholeSystem
-      ? (this.dialect.name === 'loinc' ? this.totalCount() : await this.countAllCodes(excludeInactive)) : result.total;
+    // (RxNorm: its whole system is the RXNCONSO concepts, a set, not the walk; the include is the
+    // whole system whatever activeOnly or compose.inactive say, as expand.js counts it)
+    const whole = result.wholeSystem || (this.dialect.name === 'rxnorm' && includes.length === 1 && !excludes.length
+      && ['filter', 'concept', 'valueSet'].every((k) => !(includes[0][k] || []).length));
+    const total = count === 0 && whole ? await this.countAllCodes(excludeInactive) : result.total;
     return { sets: [set], total: result.complete ? total : -1, notClosed: await this.filtersNotClosed({ expressionsFalse, supplementOnly }) };
   }
 
@@ -1331,7 +1346,18 @@ class SqliteV2Factory extends CodeSystemFactoryProvider {
   description() { return this.store.system === LOINC ? 'LOINC' : (this.store.cs.title || this.name()); }
   lookupName() { return this.store.system === LOINC ? 'Logical Observation Identifier Names and Codes (LOINC)' : this.name(); }
   defLang() { return 'en'; }
-  totalCount() { return this.store.conceptCount; }
+  /**
+   * RxNorm: the concepts in RXNCONSO, as cs-rxnorm.js counts them (its totalCodeCount), not those
+   * found only in RXNATOMARCHIVE, which the file also holds (archived) but no answer selects
+   */
+  totalCount() {
+    if (this.dialect.name !== 'rxnorm') return this.store.conceptCount;
+    if (this._liveCount == null) {
+      const p = this.store.props.get('SUPPRESS');
+      this._liveCount = p ? this.store.getSet(KIND.hasProp, p.id, 0).size : this.store.active().size;
+    }
+    return this._liveCount;
+  }
   versionAlgorithm() {
     if (this.store.system === LOINC) return 'natural';
     if (this.store.system === RXNORM) return 'date';
