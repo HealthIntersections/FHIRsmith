@@ -452,7 +452,8 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
   });
 
   test('$expand of an include filter on an unknown concept (#396): no codes, and the same expansion-issue warning as main', async () => {
-    for (const [prop, op, value] of [['concept', 'is-a', 'LP0000-0'], ['concept', 'descendent-of', 'NOPE-1'], ['code', '=', 'NOPE-2'], ['concept', 'is-a', '2345-7']]) {
+    for (const [prop, op, value] of [['concept', 'is-a', 'LP0000-0'], ['concept', 'descendent-of', 'NOPE-1'], ['code', '=', 'NOPE-2'], ['concept', 'is-a', '2345-7'],
+      ['concept', 'in', '6298-4,NOPE-3'], ['code', 'in', '10332-5, NOPE-4'], ['concept', 'in', '6298-4, 10332-5']]) {
       const body = async () => {
         const res = await request(app).post('/tx/r5/ValueSet/$expand').send(params({ valueSet: filterVs([prop, op, value]), count: 20 }));
         const oo = (res.body.contained || []).filter((c) => c.resourceType === 'OperationOutcome').flatMap((c) => c.issue.map((i) => [i.severity, i.details && i.details.text]));
@@ -461,6 +462,16 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
       const r = await both(body);
       expect([prop, op, value, r.v2]).toEqual([prop, op, value, r.classic]);
     }
+  });
+
+  test('processSelection takes a `concept in` list whose codes are all known, and leaves one with an unknown code to the usual path', async () => {
+    const { OperationContext } = require('../../tx/operation-context');
+    const p2 = await v2.build(new OperationContext('en', tx.i18n), []);
+    const inc = (value) => [{ system: L, filter: [{ property: 'concept', op: 'in', value }] }];
+    const known = await p2.processSelection(null, inc('6298-4, 10332-5'), [], false, -1, -1);
+    expect(known).not.toBeNull();
+    expect(known.total).toBe(2);
+    expect(await p2.processSelection(null, inc('6298-4,NOPE-3'), [], false, -1, -1)).toBeNull();
   });
 
   test('$expand whole system: the same codes as main; activeOnly drops the DISCOURAGED terms', async () => {

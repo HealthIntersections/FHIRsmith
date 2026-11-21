@@ -1117,15 +1117,19 @@ class SqliteV2Provider extends BaseCSServices {
    * @returns {{sets: V2FilterSet[], total: number, notClosed: boolean}|null} null = not handled
    *   (expand.js takes its usual path)
    */
-  /** whether an include filter selects by concept on a code the code system doesn't have (expand.js #filterNamesUnknownCode) */
+  /**
+   * whether an include filter selects by concept on a code the code system doesn't have
+   * (expand.js #filterNamesUnknownCode: the value, or for `in`, any code of its list)
+   */
   async _namesUnknownConcept(includes) {
-    const { UNKNOWN_CONCEPT_FILTER_PROPS, UNKNOWN_CONCEPT_FILTER_OPS } = require('../workers/expand');
+    const { filterConceptCodes } = require('../workers/expand');
     for (const cset of includes) {
       for (const fc of cset.filter || []) {
-        if (!fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) continue;
-        let loc = null;
-        try { loc = await this.locate(fc.value); } catch (e) { loc = null; }
-        if (!loc || !loc.context) return true;
+        for (const code of filterConceptCodes(fc)) {
+          let loc = null;
+          try { loc = await this.locate(code); } catch (e) { loc = null; }
+          if (!loc || !loc.context) return true;
+        }
       }
     }
     return false;
