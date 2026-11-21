@@ -8,9 +8,10 @@
 //                   properties, effectiveTime as a dateTime literal.
 //   descriptions    sct2_Description + sct2_TextDefinition (all languages present): designations
 //                   (use = description type), active and inactive.
-//   display         preferred synonym in the edition's display language refset (US English),
-//                   else preferred synonym in any language refset, else FSN, else first active
-//                   description (description-id order) - the rule of tx/cs/cs-snomed.js.
+//   display         preferred synonym in the edition's display language refsets, in their order
+//                   (DISPLAY_REFSETS: US English for the International edition), else preferred
+//                   synonym in any language refset, else FSN, else first active description
+//                   (description-id order) - the rule of tx/cs/cs-snomed.js.
 //   relationships   sct2_Relationship (inferred; stated is not read), active and inactive rows:
 //                   116680003 |Is a| is the hierarchy, every other typeId a concept-valued
 //                   property keyed by typeId, role group in group_id.
@@ -34,6 +35,23 @@ const FSN = '900000000000003001';
 const SYNONYM = '900000000000013009';
 const PREFERRED = '900000000000548007';
 const US_ENGLISH = '900000000000509007';
+const GB_ENGLISH = '900000000000508004';
+// The edition's display language reference sets, in the order they are tried: main's table
+// (tx/cs/cs-snomed.js SnomedServices._displayRefsetOrder), and its default for any other edition.
+// Those the edition doesn't have are left out
+const DISPLAY_REFSETS = {
+  '900000000000207008': [US_ENGLISH], // International
+  '31000003106': [US_ENGLISH], // tx-ecosystem test edition
+  '731000124108': [US_ENGLISH], // US
+  '5991000124107': [US_ENGLISH], // US (with ICD-10-CM maps)
+  '83821000000107': [GB_ENGLISH], // UK
+  '999000021000000109': [GB_ENGLISH], // UK Clinical
+  '32506021000036107': ['32570271000036106', GB_ENGLISH, US_ENGLISH], // Australian
+  '20621000087109': ['19491000087109', US_ENGLISH, GB_ENGLISH], // Canadian (English)
+  '21000210109': ['271000210107', GB_ENGLISH, US_ENGLISH], // New Zealand
+  '11000220105': ['21000220103', GB_ENGLISH, US_ENGLISH] // Irish
+};
+const displayRefsetsFor = (edition) => DISPLAY_REFSETS[edition] || [US_ENGLISH, GB_ENGLISH];
 const INFERRED = '900000000000011006';
 const EDITION_NAMES = {
   '900000000000207008': 'SNOMED CT International Edition',
@@ -187,6 +205,10 @@ async function importSnomedV2(cfg) {
   // Rows are held until the descriptions have staging ids.
   const usPreferred = new Set(); // description ids Preferred in US English
   const anyPreferred = new Set(); // ... Preferred in any language refset
+  // the display refsets the edition has, and each description's best place in them (where Preferred)
+  const displayRefsets = displayRefsetsFor(cfg.edition).filter((c) => b.idx(c) !== undefined);
+  const displayRank = new Map(displayRefsets.map((c, r) => [c, r]));
+  const prefRank = new Map(); // description id -> best display-refset rank where it is Preferred
   const accDesc = [], accRefset = [], accValue = [];
   await b.stage('parse language refsets', async () => {
     let n = 0;
@@ -196,7 +218,12 @@ async function importSnomedV2(cfg) {
         const refset = b.idx(r[4]), acc = b.idx(r[6]);
         if (refset === undefined || acc === undefined) continue;
         accDesc.push(r[5]); accRefset.push(refset); accValue.push(acc);
-        if (r[6] === PREFERRED) { anyPreferred.add(r[5]); if (r[4] === US_ENGLISH) usPreferred.add(r[5]); }
+        if (r[6] === PREFERRED) {
+          anyPreferred.add(r[5]);
+          if (r[4] === US_ENGLISH) usPreferred.add(r[5]);
+          const k = displayRank.get(r[4]);
+          if (k !== undefined && !(prefRank.get(r[5]) <= k)) prefRank.set(r[5], k);
+        }
         n++;
       }
     }
@@ -226,10 +253,11 @@ async function importSnomedV2(cfg) {
         if (!active) continue;
         activeLanguages.add(String(r[5] || '').toLowerCase().split('-')[0]);
         const syn = type === SYNONYM;
-        if (syn && usPreferred.has(r[0])) consider(i, 0, r[0], term);
-        else if (syn && anyPreferred.has(r[0])) consider(i, 1, r[0], term);
-        else if (type === FSN) consider(i, 2, r[0], term);
-        else consider(i, 3, r[0], term);
+        const k = displayRefsets.length;
+        if (syn && prefRank.has(r[0])) consider(i, prefRank.get(r[0]), r[0], term);
+        else if (syn && anyPreferred.has(r[0])) consider(i, k, r[0], term);
+        else if (type === FSN) consider(i, k + 1, r[0], term);
+        else consider(i, k + 2, r[0], term);
         if (type === '900000000000550004') b.setDefinition(i, term);
       }
     }
@@ -324,7 +352,7 @@ async function importSnomedV2(cfg) {
     return n;
   });
 
-  applySnomedConfig(b, [US_ENGLISH]);
+  applySnomedConfig(b, displayRefsets.length ? displayRefsets : [US_ENGLISH]);
   const defLang = rf2DefaultLanguage(cfg, activeLanguages);
   if (defLang) b.setConfig('defaultLanguage', defLang);
   const summary = await b.finish(stats);
@@ -355,4 +383,4 @@ class SnomedV2Module extends BaseTerminologyModule {
   }
 }
 
-module.exports = { SnomedV2Module, importSnomedV2, applySnomedConfig, storeNormalForms, concrete, isoDate, idLess, EDITION_NAMES, EDITION_LANGUAGES, rf2DefaultLanguage };
+module.exports = { SnomedV2Module, importSnomedV2, applySnomedConfig, displayRefsetsFor, DISPLAY_REFSETS, storeNormalForms, concrete, isoDate, idLess, EDITION_NAMES, EDITION_LANGUAGES, rf2DefaultLanguage };

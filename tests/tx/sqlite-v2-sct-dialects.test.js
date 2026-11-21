@@ -6,6 +6,10 @@
 //    preferred term, en-GB the GB one
 //  - a UK edition (display reference set: GB English) - en and en-GB get the GB term, en-US the US one
 //  - a national edition with no entry of its own (display reference sets: US then GB English)
+//  - an Australian edition (main: Australian, GB, then US English; the test data has no Australian
+//    reference set, so GB then US English)
+// Each edition is built twice, from main's cache and from the RF2 files, and both files are
+// compared with cs-snomed.js.
 // 262797004 has the GB synonym "Subcapsular liver haematoma" stored before the US "Subcapsular
 // liver hematoma"; 35566002 has "Hematoma" (US) before "Haematoma" (GB); 64572001 "Disease" is
 // preferred in both.
@@ -17,6 +21,7 @@ const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
 const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
 const { loadSqliteV2Factory } = require('../../tx/sqlite-v2');
 const { OperationContext } = require('../../tx/operation-context');
 const { Designations } = require('../../tx/library/designations');
@@ -24,7 +29,7 @@ const { Languages } = require('../../library/languages');
 const { TestUtilities } = require('../test-utilities');
 
 const SRC = path.resolve(__dirname, '../../tx/data/snomed');
-const EDITIONS = { intl: '31000003106', uk: '83821000000107', national: '11000146104' };
+const EDITIONS = { intl: '31000003106', uk: '83821000000107', national: '11000146104', au: '32506021000036107' };
 let dir, op, langDefs;
 const main = {}, engine = {};
 
@@ -62,6 +67,8 @@ beforeAll(async () => {
     await main[name].load();
     await importSnomedV2FromCache({ source: cache, dest: path.join(dir, name + '.db'), overwrite: true, normalForms: false, log: () => {} });
     engine[name] = await loadSqliteV2Factory(op.i18n, path.join(dir, name + '.db'));
+    await importSnomedV2({ source: snap, dest: path.join(dir, name + '-rf2.db'), edition, version: '20250909', overwrite: true, normalForms: false, log: () => {} });
+    engine[name + '-rf2'] = await loadSqliteV2Factory(op.i18n, path.join(dir, name + '-rf2.db'));
   }
 }, 240000);
 
@@ -91,6 +98,8 @@ describe('SNOMED CT English dialects (engine)', () => {
     expect(codes(engine.intl)).toEqual(['900000000000509007']);
     expect(codes(engine.uk)).toEqual(['900000000000508004']);
     expect(codes(engine.national)).toEqual(['900000000000509007', '900000000000508004']);
+    expect(codes(engine.au)).toEqual(['900000000000508004', '900000000000509007']);
+    for (const name of Object.keys(EDITIONS)) expect(codes(engine[name + '-rf2'])).toEqual(codes(engine[name]));
     expect(engine.intl.store.hasRank).toBe(true); // a v5 file: acceptability is read only where needed
   });
 
@@ -118,13 +127,17 @@ describe('SNOMED CT English dialects (engine)', () => {
       expect(await display(engine.uk, '35566002', 'en-US', significantOnly)).toBe('Hematoma');
     });
 
-    test(op2 + ' designations: every concept, each edition, as cs-snomed.js reports them', async () => {
-      for (const name of Object.keys(EDITIONS)) {
+    // the RF2-built files on $expand only: on $lookup, the designations that no display rule orders
+    // (FSNs, definitions, acceptable synonyms) come in the order the importer read them, which for
+    // this merged test snapshot is not the order main's cache stores them in
+    const names = [...Object.keys(EDITIONS), ...(significantOnly ? Object.keys(EDITIONS).map((n) => n + '-rf2') : [])];
+    test.each(names)(op2 + ' designations: every concept, %s, as cs-snomed.js reports them', async (name) => {
+      {
         const codes = engine[name].store.db.prepare('SELECT code FROM concept ORDER BY concept_id').pluck().all();
         expect(codes.length).toBeGreaterThan(2000);
         let dialectTagged = 0;
         for (const code of codes) {
-          const want = rows(await designations(main[name], code, significantOnly));
+          const want = rows(await designations(main[name.replace(/-rf2$/, '')], code, significantOnly));
           const got = rows(await designations(engine[name], code, significantOnly));
           expect([name, code, got]).toEqual([name, code, want]);
           if (want.some((r) => /^en-GB\|900000000000013009/.test(r) || /^en-US\|900000000000013009/.test(r))) dialectTagged++;
@@ -160,5 +173,12 @@ describe('SNOMED CT English dialects (engine)', () => {
     expect(await ask(engine.uk, 'en')).toBe('Subcapsular liver haematoma');
     expect(await ask(engine.intl, 'en-US')).toBe('Subcapsular liver hematoma');
     expect(await ask(engine.intl, 'en')).toBe('Subcapsular liver hematoma');
+  });
+
+  test('an Australian edition with no Australian reference set displays GB English, as cs-snomed.js does', async () => {
+    for (const f of [engine.au, engine['au-rf2'], main.au]) {
+      expect(await display(f, '262797004', null, true)).toBe('Subcapsular liver haematoma');
+      expect(await display(f, '262797004', 'en-US', true)).toBe('Subcapsular liver hematoma');
+    }
   });
 });

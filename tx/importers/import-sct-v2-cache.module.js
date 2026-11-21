@@ -30,7 +30,8 @@ const {
   SnomedStrings, SnomedReferences, SnomedDescriptions, SnomedConceptList, SnomedRelationshipList,
   SnomedReferenceSetMembers, SnomedReferenceSetIndex, SnomedFileReader, SNOMED_CACHE_VERSION,
 } = require('../sct/structures');
-const { applySnomedConfig, storeNormalForms, concrete, isoDate, idLess } = require('./import-sct-v2.module');
+// main's display refset order per edition (tx/cs/cs-snomed.js _displayRefsetOrder)
+const { applySnomedConfig, storeNormalForms, concrete, isoDate, idLess, displayRefsetsFor, DISPLAY_REFSETS } = require('./import-sct-v2.module');
 const { editionName } = require('../sct/editions');
 
 const SCT = 'http://snomed.info/sct';
@@ -42,13 +43,6 @@ const PREFERRED = '900000000000548007';
 const LANGUAGE_TYPE_REFSET = '900000000000506000';
 const PRIMITIVE = '900000000000074008';
 const DEFINED = '900000000000073002';
-const US = '900000000000509007';
-const GB = '900000000000508004';
-// main's display refset order per edition (tx/cs/cs-snomed.js _displayRefsetOrder)
-const DISPLAY_REFSETS = {
-  '900000000000207008': [US], '31000003106': [US], '731000124108': [US], '5991000124107': [US],
-  '83821000000107': [GB], '999000021000000109': [GB],
-};
 // the cache's language byte -> ISO 639-1 code: main's one table (tx/sct/languages.js; before cache
 // format 20 only 1-9 were written, anything else as 1)
 const { LANGUAGE_CODES: LANGUAGE } = require('../sct/languages');
@@ -221,7 +215,7 @@ async function importSnomedV2FromCache(cfg) {
     const dup = [...defs].filter(([, n]) => n > 1);
     if (dup.length) fatal.push(`refset index names ${dup.map(([o, n]) => `${code[o / C]} x${n}`).join(', ')} (refsets collapsed onto one concept)`);
     counts.refsetMembers = [...members.values()].reduce((a, b) => a + b, 0);
-    for (const r of DISPLAY_REFSETS[edition] || [US, GB]) {
+    for (const r of displayRefsetsFor(edition)) {
       if (known(r) === undefined) continue;
       const n = members.get(known(r) * C) || 0;
       if (n === 0 && (DISPLAY_REFSETS[edition] || []).includes(r)) fatal.push(`display language refset ${r} has no members`);
@@ -287,7 +281,7 @@ async function importSnomedV2FromCache(cfg) {
   };
 
   // Refset index -> language refsets (acceptability per description ordinal) and the rest.
-  const displayRefsets = (DISPLAY_REFSETS[edition] || [US, GB]).filter((c) => known(c) !== undefined);
+  const displayRefsets = displayRefsetsFor(edition).filter((c) => known(c) !== undefined);
   const displayRank = new Map(displayRefsets.map((c, r) => [known(c), r]));
   const prefIdx = known(PREFERRED);
   const prefRank = new Int8Array(nD).fill(127); // best display-refset rank where the description is Preferred
