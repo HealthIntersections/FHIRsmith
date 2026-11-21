@@ -1,0 +1,25 @@
+{
+  "meta": {
+    "disclaimer": "test fixture",
+    "last_updated": "2026-01-16",
+    "results": { "skip": 0, "limit": 3, "total": 3 }
+  },
+  "results": [
+    {
+      "product_ndc": "1111-2222",
+      "brand_name": "CurrentName {with braces} and \"quotes\"",
+      "openfda": { "rxcui": ["111", "112"], "spl_set_id": ["set-1111"], "unii": ["UNII1111"], "is_original_packager": [true] },
+      "packaging": [ { "package_ndc": "1111-2222-01", "description": "10 TABLET in 1 BOTTLE (1111-2222-01)", "sample": false } ]
+    },
+    {
+      "product_ndc": "44444-555",
+      "openfda": { "rxcui": ["444"] },
+      "packaging": []
+    },
+    {
+      "product_ndc": "99999-999",
+      "openfda": { "rxcui": ["999"] },
+      "packaging": []
+    }
+  ]
+}

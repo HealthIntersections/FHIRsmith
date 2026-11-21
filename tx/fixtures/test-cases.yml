@@ -10,6 +10,7 @@ sources:
   - internal:usstates
   - internal:hgvs
   - internal:urls
+  - ndc:ndc-20261117.db
   - ucum:tx/data/ucum-essence.xml
   - loinc!:Loinc_2.83f.db
   - snomed!:sct_intl_20260701-21.cache

@@ -27,8 +27,10 @@ const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
 const { resourceToJson } = require('./json-serialise');
 const { SupplementTextIndex } = require('./library/supplement-text-index');
 const memoryGuard = require('../library/memory-guard');
-const { prepareTextIndexes, registerCaches, buildCachesPage } = require('./tx-caches');
-const { tokenMatches, tokenConfigured } = require('../library/request-token');
+const { prepareTextIndexes, registerCaches, buildCachesPage, buildCacheListPage } = require('./tx-caches');
+const escapeHtml = require('escape-html');
+const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
 const { trimNativeMemory } = require('../library/native-memory');
 const { connectCaches } = require('../library/cluster-caches');
 const { LibraryFilterMemos, libraryFilterMemos } = require('./library/filter-memo');
@@ -237,6 +239,9 @@ class TXModule {
     libraryFilterMemos.maxConcepts = this.limits.filterMemoMaxConcepts;
 
     this.log.info('Initializing TX module');
+    if (config.adminPassword) {
+      this.log.warn('modules.tx.adminPassword is no longer used: the server\'s administrators (logged in) empty the caches');
+    }
     this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
       Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
     this.log.info(`Expansion limits: externalLimit=${this.expansionLimitValues.external}, internalLimit=${this.expansionLimitValues.internal}, ` +
@@ -245,6 +250,10 @@ class TXModule {
       throw new Error(`modules.tx.errorsForInvalidCodes must be true or false, not ${JSON.stringify(config.errorsForInvalidCodes)}`);
     }
     this.log.info(`Invalid codes in value set includes: ${config.errorsForInvalidCodes === true ? 'an error' : 'left out, with a warning'} (errorsForInvalidCodes)`);
+    if (config.conceptMapValueSetMatching !== undefined && typeof config.conceptMapValueSetMatching !== 'boolean') {
+      throw new Error(`modules.tx.conceptMapValueSetMatching must be true or false, not ${JSON.stringify(config.conceptMapValueSetMatching)}`);
+    }
+    this.log.info(`ConceptMap elements that name a value set: ${config.conceptMapValueSetMatching === true ? 'matched' : 'not matched'} (conceptMapValueSetMatching)`);
 
     // Optional instance code, prefixed onto every cache-id this server issues so a
     // proxy in front of several instances can route by it (see nginx.md). Checked
@@ -383,7 +392,7 @@ class TXModule {
     // every cache, for the caches page and the memory guard
     this.caches = registerCaches(this);
     // the caches page asks every process, under the launcher (library/cluster-caches.js)
-    this.cachesChannel = connectCaches(action => this.localCaches(action), process,
+    this.cachesChannel = connectCaches((action, arg) => this.localCaches(action, arg), process,
       { cluster: !!config.clusterRole && typeof process.send === 'function' });
     // everything the library and the endpoints use is loaded: with pruneTerminologyCache, the
     // rest of terminology-cache can go
@@ -451,6 +460,8 @@ class TXModule {
     }
 
     this.log.info(`Setting up endpoint: ${endpointPath} (FHIR v${fhirVersion}, context: ${context || 'none'})`);
+    auth.defineModule('tx', { title: 'Terminology' });
+    auth.addAdminPage('tx', { label: `Caches (${endpointPath})`, path: `${endpointPath}/caches`, description: 'empty the caches' });
 
     const router = express.Router();
 
@@ -640,12 +651,13 @@ class TXModule {
           if (opContext.clientGone) {
             return abandon();
           }
-          // a stored resource that was read: our own ETag (Express's would hash the whole body,
-          // after serialising it), and a 304 at once if the client has it already. Not for HTML,
-          // where the page around the resource varies
+          // a stored resource that was read: its ETag, from where it came from (library/etags.js),
+          // and a 304 at once if the client has it already. Not for HTML, where the page around
+          // the resource varies
           if (!isHtml && req.txStoredResource === data && data && (req.method === 'GET' || req.method === 'HEAD') && res.statusCode === 200) {
             const format = xmlFmt ? 'xml' : 'json';
-            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion));
+            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion,
+              { sourcePackage: req.sourcePackage, contentHash: req.txStoredContentHash }));
             if (req.fresh) {
               res.status(304).end();
               this.log.info(`[${requestId}] ${req.method} ${format} 304 ${duration}ms 0: ${req.originalUrl} )`);
@@ -656,6 +668,7 @@ class TXModule {
 
           let responseSize;
           let result;
+          let serialisedAt = null;
 
           if (isHtml) {
             // _format=html/fragment: the rendering only, with no page around it, for a
@@ -672,10 +685,18 @@ class TXModule {
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const xml = await this.convertResourceToXmlAsync(data, () => !opContext.clientGone);
-              responseSize = Buffer.byteLength(xml, 'utf8');
+              const parts = await FhirXmlBase.toXmlChunksAsync(() => this.convertResourceToXml(data), () => !opContext.clientGone);
               res.setHeader('Content-Type', xmlFmt);
-              result = res.send(xml);
+              if (parts.length === 1 && typeof parts[0] === 'string') {
+                responseSize = Buffer.byteLength(parts[0], 'utf8');
+                result = res.send(parts[0]);
+              } else {
+                // a large resource: written in its parts, never joined (see toXmlChunksAsync). The
+                // time logged is the time to serialise, not to send (which is up to the client)
+                serialisedAt = Date.now();
+                responseSize = await FhirXmlBase.writeXmlParts(res, parts);
+                result = res;
+              }
             } catch (err) {
               if (err.abandoned) {
                 return abandon();
@@ -702,7 +723,7 @@ class TXModule {
           const format = isHtml ? 'html' : (xmlFmt ? 'xml' : 'json');
           let li = req.logInfo ? "(" + req.logInfo + ")" : "";
           // operation+serialising, when serialising took long enough to matter (e.g. "5+6120ms")
-          const serialiseMs = Date.now() - serialiseStart;
+          const serialiseMs = (serialisedAt ?? Date.now()) - serialiseStart;
           const timing = serialiseMs >= SERIALISE_LOG_MS ? `${duration}+${serialiseMs}ms` : `${duration}ms`;
           this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${timing} ${responseSize}: ${req.originalUrl} ${li})`);
           // a slow request: what it asked, so that it can be repeated (the line above has the url)
@@ -941,6 +962,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -950,6 +972,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -961,6 +984,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -970,6 +994,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -980,6 +1005,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -989,6 +1015,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1020,6 +1047,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, '$batch', Date.now() - start, req);
@@ -1029,6 +1057,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
         this.countRequest(endpointPath, 'validate', Date.now() - start, req);
@@ -1082,6 +1111,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1091,6 +1121,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1165,6 +1196,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1174,6 +1206,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1186,6 +1219,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1195,6 +1229,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$validate', Date.now() - start, req);
@@ -1249,6 +1284,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1258,6 +1294,7 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
         this.countRequest(endpointPath, '$translate', Date.now() - start, req);
@@ -1470,7 +1507,7 @@ class TXModule {
           return;
         }
         let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
-        const content = await txhtml.buildInfoPage(source, req);
+        const content = await txhtml.buildInfoPage(source, req, res);
         const html = await txhtml.renderPage(source.name(), content, req.txEndpoint, start);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -1482,22 +1519,44 @@ class TXModule {
         this.countRequest(endpointPath, 'info', Date.now() - start, req);
       }
     };
-    router.get('/info/:id', infoHandler);
-    router.post('/info/:id', infoHandler);
+    // the session (library/auth), so a source can offer an administrator its actions (VSAC: resync a ValueSet)
+    // the pages that look up who is asking are rate limited, for requests that bring a login or
+    // a token - only these routes: the terminology API is heavy, anonymous and not limited here
+    const credentialLimit = rateLimit(auth.credentialLimits());
+    router.get('/info/:id', credentialLimit, auth.session, auth.csrfIfLoggedIn, infoHandler);
+    router.post('/info/:id', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, infoHandler);
 
-    // The caches page: what each cache holds; and, with modules.tx.adminPassword, emptying them
-    // (all but the client caches, or all of them). This process's caches only (tx-caches.js)
+    // The caches page: what each cache holds; and, for the server's administrators (library/auth),
+    // emptying them (all but the client caches, or all of them), in every process (tx-caches.js)
     const cachesHandler = async (req, res) => {
       const start = Date.now();
       try {
         let message = null;
         let action = 'report';
+        // ?show=<id>: the entries of one cache, in every process - for the administrators: they
+        // hold what clients asked (code systems, codes, language tags)
+        const show = req.method === 'GET' && typeof req.query.show === 'string' ? req.query.show : null;
+        if (show) {
+          const user = auth.currentUser(req);
+          let content;
+          if (!user || !user.isAdmin) {
+            content = '<h2>Caches</h2>\n<p>Only the server\'s administrators can see what a cache holds: <a href="' +
+              escapeHtml(auth.loginUrl(req, req.originalUrl)) + '">log in</a>.</p>\n';
+          } else {
+            content = buildCacheListPage({ answer: await this.cachesChannel.ask('list', show.substring(0, 64)) });
+          }
+          let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+          const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
+          res.setHeader('Content-Type', 'text/html');
+          res.setHeader('Cache-Control', 'no-store');
+          res.send(html);
+          return;
+        }
         if (req.method === 'POST') {
           const body = req.body || {};
-          if (!tokenConfigured(this.config.adminPassword)) {
-            message = 'No password is configured (modules.tx.adminPassword): nothing was emptied';
-          } else if (!tokenMatches(this.config.adminPassword, typeof body.password === 'string' ? body.password : null)) {
-            message = 'Incorrect password: nothing was emptied';
+          const user = auth.currentUser(req);
+          if (!user || !user.isAdmin) {
+            message = 'Only the server\'s administrators can empty the caches: nothing was emptied';
           } else if (body.action !== 'unload' && body.action !== 'unload-all') {
             message = 'Unknown action: nothing was emptied';
           } else {
@@ -1513,9 +1572,12 @@ class TXModule {
             (action === 'unload-all' ? ', client caches included' : ', not the client caches');
           this.log.info(`Caches page: ${message}`);
         }
+        const user = auth.currentUser(req);
         const content = buildCachesPage({
           answer, message,
-          passwordConfigured: tokenConfigured(this.config.adminPassword)
+          isAdmin: !!(user && user.isAdmin),
+          csrf: res.locals._csrf || '',
+          loginUrl: auth.loginUrl(req, req.originalUrl)
         });
         let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
         const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
@@ -1526,8 +1588,16 @@ class TXModule {
         this.countRequest(endpointPath, 'caches', Date.now() - start, req);
       }
     };
-    router.get('/caches', cachesHandler);
-    router.post('/caches', cachesHandler);
+    router.get('/caches', credentialLimit, auth.session, auth.csrfIfLoggedIn, cachesHandler);
+    router.post('/caches', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, cachesHandler);
+    // a form post (caches, a source's info page) with a missing or wrong CSRF token: lusca
+    // passes on an error, which is the poster's problem, not the server's
+    router.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
+      }
+      next(err);
+    });
 
     // ===== Fallbacks - keep these last =====
 
@@ -1726,10 +1796,16 @@ class TXModule {
    * This process's caches, for the caches page (tx-caches.js): what each holds, after emptying
    * them if the action says so (all but the client caches, or all), then a full GC and
    * malloc_trim, so RSS shows what was let go
-   * @param {string} action - 'report', 'unload' or 'unload-all'
-   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}}
+   * @param {string} action - 'report', 'unload', 'unload-all', or 'list' (the entries of one cache)
+   * @param {string} [arg] - for list: the cache's id
+   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}};
+   *   for list, {process, list} (CacheRegistry.list)
    */
-  async localCaches(action) {
+  async localCaches(action, arg = null) {
+    const processName = `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`;
+    if (action === 'list') {
+      return { process: processName, list: this.caches ? this.caches.list(arg) : null };
+    }
     let cleared = null;
     let before = null;
     if (action === 'unload' || action === 'unload-all') {
@@ -1748,7 +1824,7 @@ class TXModule {
     }
     const mem = process.memoryUsage();
     return {
-      process: `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`,
+      process: processName,
       report: this.caches ? this.caches.report() : [],
       cleared,
       memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external, before }
@@ -1883,14 +1959,6 @@ class TXModule {
     params.parameter = params.parameter.filter(p => p.name !== 'tx-resource');
 
     return params;
-  }
-
-  /**
-   * convertResourceToXml, letting other requests run while a large resource is
-   * serialised (see FhirXmlBase.toXmlAsync)
-   */
-  async convertResourceToXmlAsync(res, stillWanted = null) {
-    return FhirXmlBase.toXmlAsync(() => this.convertResourceToXml(res), stillWanted);
   }
 
   convertResourceToXml(res) {

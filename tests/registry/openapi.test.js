@@ -20,14 +20,12 @@ const EXCLUDED = {
   'GET /openapi.json': 'the description itself',
   'GET /openapi.yaml': 'the description itself'
 };
-// the login and account pages exist only when users are configured (registry-auth.test.js)
-const AUTH_PAGES = ['/login', '/logout', '/admin/users', '/admin/users/:id', '/admin/users/:id/password',
-  '/admin/users/:id/delete', '/admin/users/:id/tokens', '/admin/users/:id/tokens/:tid/revoke',
-  '/account', '/account/tokens', '/account/tokens/:tid/revoke', '/account/password',
-  '/docs', '/docs/new', '/docs/:name', '/docs/:name/edit', '/docs/:name/delete', '/docs/:name/history', '/docs/:name/history/:entry'];
+// the documents' pages, and the old login and account pages (which go to the server's, /auth)
+const AUTH_PAGES = ['/login', '/admin/users', '/account', '/usage',
+  '/docs', '/docs/new', '/docs/{name}', '/docs/{name}/edit', '/docs/{name}/delete', '/docs/{name}/history', '/docs/{name}/history/{entry}'];
 for (const p of AUTH_PAGES) {
-  EXCLUDED[`GET ${p}`] = 'login/account pages (HTML)';
-  EXCLUDED[`POST ${p}`] = 'login/account pages (HTML)';
+  EXCLUDED[`GET ${p}`] = 'documents and login pages (HTML)';
+  EXCLUDED[`POST ${p}`] = 'documents and login pages (HTML)';
 }
 
 function makeModule() {

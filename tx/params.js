@@ -1,5 +1,5 @@
 const {Languages, LanguageDefinitions} = require("../library/languages");
-const { validateResource, strToBool, getValuePrimitive, validateParameter, Utilities} = require("../library/utilities");
+const { validateResource, strToBool, getValuePrimitive, getValueName, validateParameter, Utilities} = require("../library/utilities");
 const {Issue} = require("./library/operation-outcome");
 const {I18nSupport} = require("../library/i18nsupport");
 
@@ -478,18 +478,40 @@ class TxParameters {
 
       // -- nested parameters -------------------------------------------------
       case 'profile': {
-        // only meaningful from a Parameters.parameter, which can carry a resource
+        // only an inline Parameters resource can be read. Anything else - an (R3) ExpansionProfile,
+        // another resource, or a uri/canonical/string naming a profile - is refused, rather than
+        // answered without what it asks for. A 'profile' among a ValueSet's embedded expansion
+        // parameters (overwrite=false) can only be a value and is left ignored, as before
         const res = value.resource;
-        if (res && (res.resourceType === 'Parameters' || res.resourceType === 'ExpansionProfile')) {
+        if (res && res.resourceType === 'Parameters') {
           this.readParams(res);
+        } else if (overwrite) {
+          const primitive = res ? null : getValuePrimitive(value);
+          if (res) {
+            this.#notSupported('TX_PARAM_PROFILE_RESOURCE', [res.resourceType]);
+          } else if (primitive !== null && primitive !== undefined) {
+            this.#notSupported('TX_PARAM_PROFILE_VALUE', [String(primitive)]);
+          } else {
+            // a value with no primitive (a valueCoding, say): its type
+            this.#notSupported('TX_PARAM_PROFILE_TYPE', [(getValueName(value) || 'value').replace(/^value/, '')]);
+          }
         }
         break;
       }
 
       case 'exclude-system': {
-        throw new Issue('error', 'not-supported', null, null, "The parameter 'exclude-system' is not supported by this system", null, 400);
+        this.#notSupported('TX_PARAM_NOT_SUPPORTED', ['exclude-system']);
       }
     }
+  }
+
+  /**
+   * Refuse a request for a parameter, or a form of one, that this server doesn't support (400)
+   * @param {string} msgId - the message (translations/Messages.properties)
+   * @param {string[]} args - its parameters
+   */
+  #notSupported(msgId, args) {
+    throw new Issue('error', 'not-supported', null, msgId, this.i18n.translate(msgId, this.HTTPLanguages, args), 'not-supported', 400);
   }
 
   /**

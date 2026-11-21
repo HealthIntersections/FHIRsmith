@@ -14,6 +14,8 @@ const pako = require('pako');
 const base45 = require('base45');
 const fs = require('fs');
 const folders = require('../library/folder-setup');
+const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
 const { guarded, failRequest } = require('../library/sqlite-utilities');
 
 const Logger = require('../library/logger');
@@ -36,6 +38,9 @@ class SHLModule {
     this.db = null;
     this.config = null;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.cleanupJob = null;
     this.fhirValidator = null;
     this.setupSecurityMiddleware();
@@ -250,6 +255,13 @@ class SHLModule {
 
   async initialize(config) {
     this.config = config;
+    auth.defineRoles('shl', [
+      { role: 'create', label: 'Create links', description: 'Make, fill and sign SMART Health Links, and validate with the validator (POST /shl/create, /upload, /sign, /validate), usually with an API token' },
+      { role: 'load-ig', label: 'Load IGs into the validator', description: 'Load an IG package into the validator (POST /shl/validate/loadig), with an API token' }
+    ], { title: 'SMART Health Links', path: '/shl' });
+    if (config && config.password) {
+      shlLog.warn('modules.shl.password is no longer used: /shl/create is for users with the shl "create" role (an API token), and the ips module');
+    }
 
     // Initialize database
     await this.initializeDatabase();
@@ -549,8 +561,15 @@ class SHLModule {
       displayOption: { maxLength: 50, pattern: /^[a-zA-Z0-9_-]*$/ }
     };
 
+    // Everything but reading a link (/access, /file - its recipients, who need no account) is for
+    // a user with the shl "create" role, sending an API token, or this server itself (the ips
+    // module) - or, with modules.shl.users "any", for any logged in account (a demo web page on
+    // this site, with the login's session; or software with any user's API token). Loading an IG
+    // into the validator has a role of its own
+    const creator = auth.requireApi(p => p.has('shl', 'create') || (this.config?.users === 'any' && p.id > 0));
+
     // FHIR Validation endpoint
-    this.router.post('/validate', this.validateQueryParams(validationParams), async (req, res) => {
+    this.router.post('/validate', creator, this.validateQueryParams(validationParams), async (req, res) => {
       const start = Date.now();
       try {
         if (!this.fhirValidator || !this.fhirValidator.isRunning()) {
@@ -617,7 +636,7 @@ class SHLModule {
     });
 
     // Validator status endpoint
-    this.router.get('/validate/status', (req, res) => {
+    this.router.get('/validate/status', creator, (req, res) => {
       const start = Date.now();
       try {
         const status = {
@@ -631,8 +650,10 @@ class SHLModule {
       }
     });
 
-    // Load additional IG endpoint
-    this.router.post('/validate/loadig', this.validateJsonBody(['packageId', 'version']), async (req, res) => {
+    // Load an additional IG into the validator: it downloads the package and keeps it loaded, so
+    // it is for a user with the shl "load-ig" role (an API token), or the server's administrators
+    this.router.post('/validate/loadig', auth.requireApi(p => p.has('shl', 'load-ig')),
+      this.validateJsonBody(['packageId', 'version']), async (req, res) => {
       const start = Date.now();
       try {
         if (!this.fhirValidator || !this.fhirValidator.isRunning()) {
@@ -678,15 +699,15 @@ class SHLModule {
       }
     });
 
-    // SHL create endpoint
-    this.router.post('/create', this.validateJsonBody(['vhl', 'password', 'days']), (req, res, next) => {
+    // SHL create endpoint (creator, above). A "password" in the body, as clients sent before, is ignored
+    this.router.post('/create', creator, this.validateJsonBody(['vhl', 'days'], ['password']), (req, res, next) => {
       const start = Date.now();
       try {
-        const {vhl, password, days} = req.body;
+        const {vhl, days} = req.body;
 
-        if (typeof vhl !== 'boolean' || !password) {
+        if (typeof vhl !== 'boolean') {
           return res.status(400).json({
-            error: 'Invalid request. Required: vhl (boolean), password (string), days (number or string)'
+            error: 'Invalid request. Required: vhl (boolean), days (number or string)'
           });
         }
 
@@ -706,10 +727,6 @@ class SHLModule {
           });
         }
 
-        if (password !== this.config.password) {
-          return res.status(401).json({error: 'Unauthorized'});
-        }
-
         const uuid = this.generateUUID();
         const newPassword = this.generateUUID();
 
@@ -725,6 +742,7 @@ class SHLModule {
           }
 
           const host = req.get('host') || 'localhost:3000';
+          shlLog.info(`SHL ${uuid} made by ${req.user.via === 'internal' ? 'this server' : `'${req.user.login}'`} (${vhl ? 'VHL' : 'SHL'}, ${daysNumber} days)`);
 
           res.status(201).json({
             uuid: uuid,
@@ -738,7 +756,7 @@ class SHLModule {
     });
 
     // SHL upload endpoint
-    this.router.post('/upload', this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
+    this.router.post('/upload', creator, this.validateJsonBody(['uuid', 'pword', 'files']), (req, res, next) => {
       const start = Date.now();
       try {
         const {uuid, pword, files} = req.body;
@@ -979,7 +997,7 @@ class SHLModule {
     });
 
     // SHL sign endpoint
-    this.router.post('/sign', this.validateJsonBody(['url']), async (req, res) => {
+    this.router.post('/sign', creator, this.validateJsonBody(['url']), async (req, res) => {
       const start = Date.now();
       try {
         const {url} = req.body;
@@ -1023,6 +1041,7 @@ class SHLModule {
 
             const cborEncoded = CBOR.encode(claims);
             const coseSigned = await this.createCOSESign1(cborEncoded, jwk, kid);
+            shlLog.info(`VHL signed for ${req.user.via === 'internal' ? 'this server' : `'${req.user.login}'`}: ${String(url).substring(0, 200)}`);
             const deflated = pako.deflate(coseSigned);
             const base45Encoded = base45.encode(deflated);
 

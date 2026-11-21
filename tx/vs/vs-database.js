@@ -1364,6 +1364,12 @@ class ValueSetDatabase {
 
       switch (name.toLowerCase()) {
         case 'url':
+          // an exact match
+          conditions.push('v.url = ?');
+          params.push(value);
+          break;
+
+        case 'url:below':
           // a left match (case-sensitive): the url starts with the value
           conditions.push('substr(v.url, 1, length(?)) = ?');
           params.push(value, value);
@@ -1371,7 +1377,7 @@ class ValueSetDatabase {
 
         case 'url:contains':
           // the url contains the value, without regard to case - what the HTML search form asks
-          // for (see SearchWorker.searchParamsFor)
+          // for too (see SearchWorker.searchParamsFor)
           conditions.push('instr(lower(v.url), lower(?)) > 0');
           params.push(value);
           break;

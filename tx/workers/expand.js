@@ -14,7 +14,7 @@ const {Designations, SearchFilterText} = require("../library/designations");
 const {Extensions} = require("../library/extensions");
 const {getValuePrimitive, getValueName, validateParameter} = require("../../library/utilities");
 const {div} = require("../../library/html");
-const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
+const { Issue, buildOperationOutcome } = require('../library/operation-outcome');
 const crypto = require('crypto');
 const ValueSet = require("../library/valueset");
 const {VersionUtilities} = require("../../library/version-utilities");
@@ -48,7 +48,23 @@ const TotalStatus = {
 // include filters that select by concept: one that names a code the code system doesn't have is
 // reported (see ValueSetExpander.#filterNamesUnknownCode)
 const UNKNOWN_CONCEPT_FILTER_PROPS = new Set(['concept', 'code']);
-const UNKNOWN_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'descendent-leaf', 'generalizes']);
+const UNKNOWN_CONCEPT_FILTER_OPS = new Set(['=', 'is-a', 'descendent-of', 'child-of', 'descendent-leaf', 'generalizes', 'in']);
+
+/**
+ * The codes an include filter that selects by concept names: its value, or for `in`, each code
+ * of its comma separated list. [] for any other filter
+ * @param {Object} fc - the filter (property, op, value)
+ * @returns {string[]}
+ */
+function filterConceptCodes(fc) {
+  if (!fc || !fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) {
+    return [];
+  }
+  if (fc.op === 'in') {
+    return String(fc.value).split(',').map(c => c.trim()).filter(c => c.length > 0);
+  }
+  return [fc.value];
+}
 
 class ImportedValueSet {
   /**
@@ -650,26 +666,31 @@ class ValueSetExpander {
 
   /**
    * An include filter that selects by concept (is-a, descendent-of, child-of, descendent-leaf,
-   * generalizes, =) names a code that isn't in its code system: like a listed code that isn't
+   * generalizes, =, and in - any code of its list) names a code that isn't in its code system:
+   * like a listed code that isn't
    * (see #unknownListedCode), the value set can't be expanded (errorsForInvalidCodes), or the
    * include contributes no codes, and the expansion says so. Checked here, before the provider is
    * asked, so every code system behaves the same way (left to themselves, some return nothing,
-   * some fail). is-not-a, in, not-in and regex are not checked
+   * some fail). is-not-a, not-in and regex are not checked
    * @returns {Promise<boolean>} true if a filter names an unknown code (the include is skipped)
    */
   async #filterNamesUnknownCode(cs, filters) {
     let unknown = false;
     for (const fc of filters) {
-      if (!fc.value || !UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) || !UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)) {
-        continue;
+      let missing = false;
+      for (const code of filterConceptCodes(fc)) {
+        let loc = null;
+        try {
+          loc = await cs.locate(code);
+        } catch (e) {
+          loc = null;
+        }
+        if (!loc || !loc.context) {
+          missing = true;
+          break;
+        }
       }
-      let loc = null;
-      try {
-        loc = await cs.locate(fc.value);
-      } catch (e) {
-        loc = null;
-      }
-      if (!loc || !loc.context) {
+      if (missing) {
         const system = this.canonical(cs.system(), cs.version());
         this.#unknownCode(cs, 'VALUESET_EXPANSION_FILTER_UNKNOWN_CODE', [fc.property, fc.op, fc.value, system],
           system + '#' + fc.property + ' ' + fc.op + ' ' + fc.value);
@@ -2336,6 +2357,12 @@ class ValueSetExpander {
         new Issue('warning', 'code-invalid', null, u.msgId,
           this.worker.i18n.translate(u.msgId, this.params.HTTPLanguages, u.params), 'invalid-code')));
     }
+    // a request supplement with the url of the code system it supplements (see
+    // TerminologyWorker.noteSupplementsWithCodeSystemUrl)
+    const sameUrl = this.worker.sameUrlSupplementIssues();
+    if (sameUrl.length > 0) {
+      this.addExpansionIssue(result, exp, sameUrl);
+    }
     if (this.capCut) {
       this.addExpansionIssue(result, exp, new Issue('warning', 'business-rule', null, 'VALUESET_EXPANSION_CODESYSTEM_LIMITED',
         this.worker.i18n.translate('VALUESET_EXPANSION_CODESYSTEM_LIMITED', this.params.httpLanguages, [this.capCut.system, this.capCut.limit]), 'business-rule'));
@@ -3002,7 +3029,8 @@ class ValueSetExpander {
   }
 
   getPropValue(cc, name) {
-    for (let p of cc.property) {
+    // a code only has a property array when one of the properties asked for has a value for it
+    for (let p of cc.property || []) {
       if (p.code == name) {
         return getValuePrimitive(p);
       }
@@ -3086,14 +3114,7 @@ class ExpandWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const statusCode = error.statusCode || 500;
-      if (error instanceof Issue) {
-        let oo = new OperationOutcome();
-        oo.addIssue(error);
-        return res.status(error.statusCode || 500).json(oo.jsonObj);
-      } else {
-        return res.status(statusCode).json(outcomeFromError(error));
-      }
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -3110,8 +3131,7 @@ class ExpandWorker extends TerminologyWorker {
       this.log.error(error);
       debugLog(error);
       req.logInfo = this.usedSources.join("|")+" - error"+(error.msgId  ? " "+error.msgId : "");
-      const statusCode = error.statusCode || 500;
-      return res.status(statusCode).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -3392,6 +3412,7 @@ class ExpandWorker extends TerminologyWorker {
 }
 
 module.exports = {
+  filterConceptCodes,
   ExpandWorker,
   ValueSetExpander,
   ValueSetCounter,

@@ -1,79 +1,68 @@
 'use strict';
 
 /**
- * ETags: what Express makes for a response, and the ones the tx module makes for stored resources.
+ * ETags for stored resources read by id (a CodeSystem, ValueSet or ConceptMap, as JSON or XML).
  *
- * Express sets a weak ETag on every res.send with a body, by hashing the body (SHA-1), for every
- * method - so every POST operation pays for a hash no client will ever use. For the few-KB
- * responses most calls return that costs microseconds; for a 64 MB CodeSystem it's about
- * 100 ms, on top of having serialised it. So the app's ETag function (boundedWeakETag) leaves
- * large bodies without one. Small ones get the same ETag as before.
+ * Clients revalidate these (thousands of 304s a day on tx.fhir.org). Nothing else gets an
+ * ETag from the app: Express's own ETag (a SHA-1 of every response body, POSTs included) is
+ * off, since no client revalidates an operation or a search, and hashing a large body cost
+ * ~100 ms. Static files still get theirs, from express.static.
  *
- * A stored resource (a read by id) is the one case where clients do revalidate (thousands of
- * 304s a day on tx.fhir.org, for /r5/CodeSystem/{id}). For those the tx module sets its own
- * ETag - storedResourceETag - from a hash of the resource, worked out once per resource and
- * remembered, and answers a matching If-None-Match with 304 before serialising anything.
+ * A stored resource can't change once loaded, and its content is fixed by where it came from,
+ * so the ETag is worked out from that, without looking at the content:
+ * - a resource from a package: the package (id#version - the server loads only released
+ *   versions) and the resource's type and id
+ * - a value set from a database that keeps a hash of each one's content (VSAC): that hash
+ * - otherwise (a folder or file the server loads, which can change between runs with nothing
+ *   else to say so): a hash of the resource, worked out once and remembered
+ * and, for all of them, the server's version (a release can change how a resource is
+ * serialised or converted), the format and the FHIR version of the endpoint. So the same
+ * resource has the same ETag in every process, across restarts, and on every server running
+ * the same release with the same packages.
  */
 
 const crypto = require('crypto');
+const SERVER_VERSION = require('../package.json').version;
 
-// bodies larger than this get no ETag from Express (bytes, measured as characters for a string)
-const MAX_HASHED_BODY = 1024 * 1024;
-
-/**
- * The ETag the 'etag' package (what Express uses) makes: length and SHA-1 of the body
- * @private
- */
-function entityTag(buf) {
-  if (buf.length === 0) {
-    return '"0-2jmj7l5rSw0yVb/vlWAYkK/YBwk"';
-  }
-  const hash = crypto.createHash('sha1').update(buf).digest('base64').substring(0, 27);
-  return `"${buf.length.toString(16)}-${hash}"`;
-}
-
-/**
- * For app.set('etag', ...): Express's weak ETag, except for bodies larger than maxBytes,
- * which get none
- * @param {number} [maxBytes]
- * @returns {Function} (body, encoding) => ETag or undefined
- */
-function boundedWeakETag(maxBytes = MAX_HASHED_BODY) {
-  return (body, encoding) => {
-    if (body.length > maxBytes) {
-      return undefined;
-    }
-    const buf = Buffer.isBuffer(body) ? body : Buffer.from(body, encoding);
-    if (buf.length > maxBytes) {
-      return undefined;
-    }
-    return 'W/' + entityTag(buf);
-  };
-}
-
-// stored resource -> hash of its content, worked out once
+// stored resource -> hash of its content, for resources whose source doesn't fix their content
 const resourceHashes = new WeakMap();
 
+// a package the server loaded (id#version), not a folder or file it made one up for
+function isPackage(sourcePackage) {
+  return typeof sourcePackage === 'string' && sourcePackage.includes('#') &&
+    !/^(folder|file)\./.test(sourcePackage) && !sourcePackage.endsWith('#0.0.0');
+}
+
+// what an ETag may hold (RFC 9110: no quotes, spaces or controls)
+function safe(s) {
+  return String(s).replace(/[^\x21\x23-\x7e]/g, '_');
+}
+
 /**
- * A weak ETag for a stored resource as served in a given format and FHIR version: a hash of
- * the resource (as stored, R5), with the format and version, since each is a different
- * representation. The hash is content, not identity, so every process of a cluster gives the
- * same ETag for the same resource, and a changed resource gets a new one. Worked out once per
- * resource object and remembered - which relies on a stored resource not being changed once
- * served (as the XML cache does).
+ * The weak ETag for a stored resource as served in a given format and FHIR version
  *
  * @param {object} resource - the stored resource (R5)
  * @param {string} format - 'json' or 'xml'
  * @param {string} fhirVersion - the endpoint's FHIR version
+ * @param {object} [source]
+ * @param {string} [source.sourcePackage] - the package it was loaded from (id#version)
+ * @param {string} [source.contentHash] - a hash of its content its store already keeps
  * @returns {string}
  */
-function storedResourceETag(resource, format, fhirVersion) {
-  let hash = resourceHashes.get(resource);
-  if (!hash) {
-    hash = crypto.createHash('sha1').update(JSON.stringify(resource)).digest('base64url').substring(0, 27);
-    resourceHashes.set(resource, hash);
+function storedResourceETag(resource, format, fhirVersion, { sourcePackage = null, contentHash = null } = {}) {
+  let key;
+  if (isPackage(sourcePackage) && resource.resourceType && resource.id) {
+    key = `${sourcePackage}/${resource.resourceType}/${resource.id}`;
+  } else if (contentHash) {
+    key = contentHash;
+  } else {
+    key = resourceHashes.get(resource);
+    if (!key) {
+      key = crypto.createHash('sha1').update(JSON.stringify(resource)).digest('base64url').substring(0, 27);
+      resourceHashes.set(resource, key);
+    }
   }
-  return `W/"${hash}-${format}-${fhirVersion}"`;
+  return `W/"${safe(`${key}~${format}~${fhirVersion}~${SERVER_VERSION}`)}"`;
 }
 
-module.exports = { boundedWeakETag, storedResourceETag, MAX_HASHED_BODY };
+module.exports = { storedResourceETag, SERVER_VERSION };

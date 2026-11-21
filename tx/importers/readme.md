@@ -413,6 +413,10 @@ Acetaminophen	CN	362O9ITL9D	acetaminophen
 
 ### NDC Import
 
+The NDC import builds one database from every FDA download it finds, so that codes that have left
+the market are still known (inactive, with when they were last seen): a code doesn't stop being
+valid because the product is no longer sold.
+
 **Import NDC Data:**
 ```bash
 # Interactive mode
@@ -420,32 +424,66 @@ tx-import ndc import
 
 # Full import
 tx-import ndc import \
-  --source /path/to/ndc/versions \
+  --source /path/to/ndc \
   --dest ./data/ndc.db \
-  --version "2025-01" \
   --yes
 
 # Products only
 tx-import ndc import --products-only
-
-# Packages only (requires existing products)
-tx-import ndc import --packages-only
 ```
 
 **Source Structure:**
+
+The source directory is searched recursively for the FDA files, loose or in zips:
+
+| File | Download | |
+|------|----------|---|
+| product.txt / package.txt | ndctext.zip, ndc.zip (ndcxls.zip has the same as .xls) | current listings |
+| Products_excluded.txt / Packages_excluded.txt | ndc_excluded.zip | listings that have left the directory |
+| unfinished_product.txt / unfinished_package.txt | ndc_unfinished.zip | unfinished drugs |
+| unfinished_products_excluded.txt / unfinished_packages_excluded.txt | ndc_unfinished_excluded.zip | unfinished drugs that have left |
+| compounders_ndc_directory.txt | compounders_ndc_directory.zip | 503B outsourcing facility products |
+| drug-ndc-0001-of-0001.json | openFDA bulk download (loose or zipped) | properties only (see below) |
+
+Each copy is a snapshot. A zip named the way the Wayback Machine downloads are
+(`20160609215020-ndctext.zip`) is dated by its name; loose files are dated by their folder name
+if it's a date (`2025-07-11/product.txt`), otherwise by their modification time. Folders starting
+with `.` or `_` are skipped, and other files (the pre-2009 directory files, the openFDA json) are
+ignored.
+
 ```
-ndc_versions/
-├── 2024-12/
+ndc/
+├── product.txt, package.txt, Products_excluded.txt, ...   (the current downloads)
+├── 2025-07-11/
 │   ├── product.txt
 │   └── package.txt
-├── 2025-01/
-│   ├── product.txt  
-│   └── package.txt
+└── wayback/
+    ├── ndctext/20160609215020-ndctext.zip
+    ├── ndc_excluded/20191208061645-ndc_excluded.zip
+    └── ...
 ```
 
-**List Available Versions:**
+Snapshots are read newest first, and the first time a code is seen is the one used - older copies
+of a code that's already loaded are ignored. The version is the date of the newest snapshot, as
+YYYYMMDD (the form HL7 uses to refer to an NDC distribution); `--version` is ignored. Databases
+built before this have the version as YYYY-MM-DD, and the server reads that as YYYYMMDD, so they
+don't need to be rebuilt. A code is active if it's listed in the newest snapshot
+of its kind (finished, unfinished, compounded). Codes that aren't valid NDCs (placeholders like
+`62175-XXX-37`) are left out, and counted.
+
+**Properties** go in the `NDCProperties` table (`NDCKey`, `IsPackage`, `Name`, `Value`), named as
+openFDA names them. From the text files, for every code: `spl_id`, `application_number`,
+`active_ingredient`, `pharm_class`, `dea_schedule`, `listing_expiration_date` and
+`ndc_exclude_flag` for products, and `marketing_start_date`, `marketing_end_date`, `sample` and
+`ndc_exclude_flag` for packages. From the openFDA json, for the products in it (taken from the
+newest download that has the product): `rxcui`, `spl_set_id`, `unii`, `nui`, `upc`,
+`manufacturer_name`, `is_original_packager` and `pharm_class_epc/moa/cs/pe`. openFDA gives these per
+label (SPL), so a product carries the rxcuis and upcs of every product on its label. The rest of the
+json is the same data as product.txt and unfinished_product.txt, so it adds no codes.
+
+**List the snapshots, in import order:**
 ```bash
-tx-import ndc versions --source /path/to/ndc/versions
+tx-import ndc versions --source /path/to/ndc
 ```
 
 ## Advanced Features

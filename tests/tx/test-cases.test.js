@@ -4695,6 +4695,14 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"unknown-system2"}, "4.0");
   });
 
+  it("unknown-system-version" + 'R5', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "5.0");
+  });
+
+  it("unknown-system-version" + 'R4', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "4.0");
+  });
+
   it("broken-filter-validate" + 'R5', async () => {
     await runTest({"suite":"errors","test":"broken-filter-validate"}, "5.0");
   });
@@ -5544,6 +5552,26 @@ describe('translate', () => {
     await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
+  it("translate-vs-target" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-target"}, "5.0");
+  });
+
+  it("translate-vs-unmapped" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-unmapped"}, "5.0");
+  });
+
+  it("translate-vs-element" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-element" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-target" + 'R5', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-target"}, "5.0");
+  });
+
 });
 
 describe('translate2', () => {
@@ -5607,6 +5635,67 @@ describe('translate2', () => {
 
   it("translate-reverse-r4-b" + 'R4', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4-b"}, "4.0");
+  });
+
+});
+
+describe('translate-check', () => {
+  // $validate-code on a CodeableConcept: what the ConceptMaps the server has say about its codings together. For each coding, the maps from its code system to the code system of another coding are consulted: a map that says the code is not-related-to the other coding, or has no map, is a warning; a map that relates it only to other codes is a hint. This is not a requirement on terminology servers - tx.fhir.org reports it in the issues, as hints and warnings. The tests that use LOINC's mappings to SNOMED CT also need the loinc mode
+
+  it("translate-cc-confirmed" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-confirmed"}, "5.0");
+  });
+
+  it("translate-cc-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-other"}, "5.0");
+  });
+
+  it("translate-cc-nomap" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-nomap"}, "5.0");
+  });
+
+  it("translate-cc-denied" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-denied"}, "5.0");
+  });
+
+  it("translate-cc-target-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs"}, "5.0");
+  });
+
+  it("translate-cc-target-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-element-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs"}, "5.0");
+  });
+
+  it("translate-cc-element-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R4', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "4.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R5', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R4', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "4.0");
   });
 
 });
@@ -6195,6 +6284,43 @@ describe('default-valueset-version', () => {
 
   it("indirect-validation-zero-pinned-wrong" + 'R4', async () => {
     await runTest({"suite":"default-valueset-version","test":"indirect-validation-zero-pinned-wrong"}, "4.0");
+  });
+
+});
+
+describe('supplement-url', () => {
+  // A supplement with the same url as the code system it supplements, and a version of its own. This is not valid - a supplement needs a canonical url of its own, and with the code system's url, url|version claims to be a version of the code system - but it is found in published packages, so servers process the request as usual, and warn about the supplement whenever they look up the code system it has the url of. The supplement's version is not a version of the code system: a value set that asks for it can't be expanded or validated against, and the valid versions named are only those of the code system
+
+  it("supplement-url-expand-v2" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "5.0");
+  });
+
+  it("supplement-url-expand-v2" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "4.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "5.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "4.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "4.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R5', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R4', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "4.0");
   });
 
 });
@@ -7375,6 +7501,22 @@ describe('loinc', () => {
     await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "4.0");
   });
 
+  it("loinc-translate-answer-sct" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "5.0");
+  });
+
+  it("loinc-translate-answer-sct" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "4.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R5', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "5.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R4', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "4.0");
+  });
+
 });
 
 describe('snomed', () => {
@@ -7452,6 +7594,14 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid-check-digit"}, "4.0");
   });
 
+  it("snomed-expand-in-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-in-invalid"}, "5.0");
+  });
+
+  it("snomed-expand-in-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-in-invalid"}, "4.0");
+  });
+
   it("snomed-validate-enum-invalid" + 'R5', async () => {
     await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid"}, "5.0");
   });
@@ -7482,6 +7632,14 @@ describe('snomed', () => {
 
   it("snomed-validate-isa-invalid-check-digit" + 'R4', async () => {
     await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid-check-digit"}, "4.0");
+  });
+
+  it("snomed-validate-in-invalid" + 'R5', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-in-invalid"}, "5.0");
+  });
+
+  it("snomed-validate-in-invalid" + 'R4', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-in-invalid"}, "4.0");
   });
 
   it("snomed-expand-isa" + 'R5', async () => {
@@ -12502,6 +12660,22 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-nf-axis-not-multiple"}, "4.0");
   });
 
+  it("cs-validate-pc-required-axis-empty" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-required-axis-empty"}, "5.0");
+  });
+
+  it("cs-validate-pc-required-axis-empty" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-required-axis-empty"}, "4.0");
+  });
+
+  it("cs-validate-required-axis-empty" + 'R5', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-required-axis-empty"}, "5.0");
+  });
+
+  it("cs-validate-required-axis-empty" + 'R4', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-required-axis-empty"}, "4.0");
+  });
+
   it("cs-validate-nf-short-codes" + 'R5', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-nf-short-codes"}, "5.0");
   });
@@ -13674,28 +13848,28 @@ describe('langcodes', () => {
 describe('ecosystem', () => {
   // Value sets whose code systems are spread across more than one server in the ecosystem, so that no single server holds them all: tx.fhir.org answers for them by asking the other servers
 
-  it("ecosystem-cz-in" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "5.0");
+  it("ecosystem-ch-in" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-in"}, "5.0");
   });
 
-  it("ecosystem-cz-in" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "4.0");
+  it("ecosystem-ch-in" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-in"}, "4.0");
   });
 
-  it("ecosystem-cz-excluded-code" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "5.0");
+  it("ecosystem-ch-excluded-code" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-code"}, "5.0");
   });
 
-  it("ecosystem-cz-excluded-code" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "4.0");
+  it("ecosystem-ch-excluded-code" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-code"}, "4.0");
   });
 
-  it("ecosystem-cz-excluded-filter" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "5.0");
+  it("ecosystem-ch-excluded-filter" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-filter"}, "5.0");
   });
 
-  it("ecosystem-cz-excluded-filter" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "4.0");
+  it("ecosystem-ch-excluded-filter" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-filter"}, "4.0");
   });
 
   it("ecosystem-ee-in" + 'R5', async () => {
@@ -13722,28 +13896,28 @@ describe('ecosystem', () => {
     await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-filter"}, "4.0");
   });
 
-  it("ecosystem-cc-cz-in-ee-out" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "5.0");
+  it("ecosystem-cc-ch-in-ee-out" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-in-ee-out"}, "5.0");
   });
 
-  it("ecosystem-cc-cz-in-ee-out" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "4.0");
+  it("ecosystem-cc-ch-in-ee-out" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-in-ee-out"}, "4.0");
   });
 
-  it("ecosystem-cc-cz-out-ee-in" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "5.0");
+  it("ecosystem-cc-ch-out-ee-in" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-out-ee-in"}, "5.0");
   });
 
-  it("ecosystem-cc-cz-out-ee-in" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "4.0");
+  it("ecosystem-cc-ch-out-ee-in" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-out-ee-in"}, "4.0");
   });
 
-  it("ecosystem-cs-cz-good" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-good"}, "5.0");
+  it("ecosystem-cs-ch-good" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-good"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-good" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-good"}, "4.0");
+  it("ecosystem-cs-ch-good" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-good"}, "4.0");
   });
 
   it("ecosystem-cs-ee-good" + 'R5', async () => {
@@ -13754,20 +13928,20 @@ describe('ecosystem', () => {
     await runTest({"suite":"ecosystem","test":"ecosystem-cs-ee-good"}, "4.0");
   });
 
-  it("ecosystem-cs-cz-bad-code" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-code"}, "5.0");
+  it("ecosystem-cs-ch-bad-code" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-code"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-bad-code" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-code"}, "4.0");
+  it("ecosystem-cs-ch-bad-code" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-code"}, "4.0");
   });
 
-  it("ecosystem-cs-cz-bad-display" + 'R5', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-display"}, "5.0");
+  it("ecosystem-cs-ch-bad-display" + 'R5', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-display"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-bad-display" + 'R4', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-display"}, "4.0");
+  it("ecosystem-cs-ch-bad-display" + 'R4', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-display"}, "4.0");
   });
 
 });
@@ -14535,6 +14709,451 @@ describe('icf-ec', () => {
 
   it("ec-icf-expand-referenced" + 'R4', async () => {
     await runTest({"suite":"icf-ec","test":"ec-icf-expand-referenced"}, "4.0");
+  });
+
+});
+
+describe('ndc', () => {
+  // NDC tests. These depend on the NDC database tx.fhir.org has loaded (version 20261117, built from the FDA downloads back to 2009, including codes no longer listed), and every request names that version
+
+  it("ndc-lookup-10-digit-442" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-442"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-442" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-442"}, "4.0");
+  });
+
+  it("ndc-lookup-11-digit-442" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-442"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-442" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-442"}, "4.0");
+  });
+
+  it("ndc-lookup-10-digit-541" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-541"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-541" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-541"}, "4.0");
+  });
+
+  it("ndc-lookup-11-digit-541" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-541"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-541" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-541"}, "4.0");
+  });
+
+  it("ndc-lookup-10-digit-retired" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-retired"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-retired" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-retired"}, "4.0");
+  });
+
+  it("ndc-lookup-11-digit-retired" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-retired"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-retired" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-retired"}, "4.0");
+  });
+
+  it("ndc-lookup-10-digit-archived" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-archived"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-archived" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-archived"}, "4.0");
+  });
+
+  it("ndc-lookup-11-digit-archived" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-archived"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-archived" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-archived"}, "4.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-active" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-active"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-active" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-active"}, "4.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-winner" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-winner"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-winner" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-winner"}, "4.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-loser" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-loser"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-loser" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-loser"}, "4.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-recent" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-recent"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-recent" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-recent"}, "4.0");
+  });
+
+  it("ndc-validate-10-digit-442" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-442"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-442" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-442"}, "4.0");
+  });
+
+  it("ndc-validate-11-digit-442" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-442"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-442" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-442"}, "4.0");
+  });
+
+  it("ndc-validate-10-digit-541" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-541"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-541" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-541"}, "4.0");
+  });
+
+  it("ndc-validate-11-digit-541" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-541"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-541" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-541"}, "4.0");
+  });
+
+  it("ndc-validate-10-digit-retired" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-retired"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-retired" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-retired"}, "4.0");
+  });
+
+  it("ndc-validate-11-digit-retired" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-retired"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-retired" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-retired"}, "4.0");
+  });
+
+  it("ndc-validate-10-digit-archived" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-archived"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-archived" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-archived"}, "4.0");
+  });
+
+  it("ndc-validate-11-digit-archived" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-archived"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-archived" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-archived"}, "4.0");
+  });
+
+  it("ndc-validate-dup-11-digit-active" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-active"}, "5.0");
+  });
+
+  it("ndc-validate-dup-11-digit-active" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-active"}, "4.0");
+  });
+
+  it("ndc-validate-dup-10-digit-winner" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-winner"}, "5.0");
+  });
+
+  it("ndc-validate-dup-10-digit-winner" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-winner"}, "4.0");
+  });
+
+  it("ndc-validate-dup-10-digit-loser" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-loser"}, "5.0");
+  });
+
+  it("ndc-validate-dup-10-digit-loser" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-loser"}, "4.0");
+  });
+
+  it("ndc-validate-dup-11-digit-recent" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-recent"}, "5.0");
+  });
+
+  it("ndc-validate-dup-11-digit-recent" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-recent"}, "4.0");
+  });
+
+  it("ndc-validate-10-digit-unknown" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-unknown"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-unknown" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-unknown"}, "4.0");
+  });
+
+  it("ndc-validate-11-digit-unknown" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-unknown"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-unknown" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-unknown"}, "4.0");
+  });
+
+  it("ndc-validate-bad-format" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-bad-format"}, "5.0");
+  });
+
+  it("ndc-validate-bad-format" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-bad-format"}, "4.0");
+  });
+
+  it("ndc-expand-filter-inactive-true" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-true"}, "5.0");
+  });
+
+  it("ndc-expand-filter-inactive-true" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-true"}, "4.0");
+  });
+
+  it("ndc-expand-filter-inactive-false" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-false"}, "5.0");
+  });
+
+  it("ndc-expand-filter-inactive-false" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-false"}, "4.0");
+  });
+
+  it("ndc-expand-filter-kind-product" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-product"}, "5.0");
+  });
+
+  it("ndc-expand-filter-kind-product" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-product"}, "4.0");
+  });
+
+  it("ndc-expand-filter-kind-package" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-package"}, "5.0");
+  });
+
+  it("ndc-expand-filter-kind-package" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-package"}, "4.0");
+  });
+
+  it("ndc-expand-filter-category" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category"}, "5.0");
+  });
+
+  it("ndc-expand-filter-category" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category"}, "4.0");
+  });
+
+  it("ndc-expand-filter-category-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category-in"}, "5.0");
+  });
+
+  it("ndc-expand-filter-category-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category-in"}, "4.0");
+  });
+
+  it("ndc-expand-filter-combined" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-combined"}, "5.0");
+  });
+
+  it("ndc-expand-filter-combined" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-combined"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in-11" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in-11" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in-11"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in-11" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in-11" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in-11"}, "4.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-product-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out-11" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out-11" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out-11"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in-11" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in-11" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in-11"}, "4.0");
+  });
+
+  it("ndc-validate-filter-kind-package-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-in-11" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-11" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-11"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-bla" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-bla"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-bla" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-bla"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-nda" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-nda"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-nda" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-nda"}, "4.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-out" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-out" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-out"}, "4.0");
+  });
+
+  it("ndc-validate-filter-combined-in" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-in" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-in"}, "4.0");
+  });
+
+  it("ndc-validate-filter-combined-out-inactive" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-inactive"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-out-inactive" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-inactive"}, "4.0");
+  });
+
+  it("ndc-validate-filter-combined-out-product" + 'R5', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-product"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-out-product" + 'R4', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-product"}, "4.0");
   });
 
 });
@@ -16926,6 +17545,10 @@ describe('errors', () => {
     await runTest({"suite":"errors","test":"unknown-system2"}, "5.0");
   });
 
+  it("unknown-system-version" + 'R5-cached', async () => {
+    await runTest({"suite":"errors","test":"unknown-system-version"}, "5.0");
+  });
+
   it("broken-filter-validate" + 'R5-cached', async () => {
     await runTest({"suite":"errors","test":"broken-filter-validate"}, "5.0");
   });
@@ -17379,6 +18002,26 @@ describe('translate', () => {
     await runTest({"suite":"translate","test":"translate-scope-5"}, "5.0");
   });
 
+  it("translate-vs-target" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-target"}, "5.0");
+  });
+
+  it("translate-vs-unmapped" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-unmapped"}, "5.0");
+  });
+
+  it("translate-vs-element" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-element" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-element"}, "5.0");
+  });
+
+  it("translate-vs-reverse-target" + 'R5-cached', async () => {
+    await runTest({"suite":"translate","test":"translate-vs-reverse-target"}, "5.0");
+  });
+
 });
 
 describe('translate2', () => {
@@ -17422,6 +18065,59 @@ describe('translate2', () => {
 
   it("translate-reverse-r4-b" + 'R4-cached', async () => {
     await runTest({"suite":"translate2","test":"translate-reverse-r4-b"}, "4.0");
+  });
+
+});
+
+describe('translate-check', () => {
+  // $validate-code on a CodeableConcept: what the ConceptMaps the server has say about its codings together. For each coding, the maps from its code system to the code system of another coding are consulted: a map that says the code is not-related-to the other coding, or has no map, is a warning; a map that relates it only to other codes is a hint. This is not a requirement on terminology servers - tx.fhir.org reports it in the issues, as hints and warnings. The tests that use LOINC's mappings to SNOMED CT also need the loinc mode
+
+  it("translate-cc-confirmed" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-confirmed"}, "5.0");
+  });
+
+  it("translate-cc-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-other"}, "5.0");
+  });
+
+  it("translate-cc-nomap" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-nomap"}, "5.0");
+  });
+
+  it("translate-cc-denied" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-denied"}, "5.0");
+  });
+
+  it("translate-cc-target-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs"}, "5.0");
+  });
+
+  it("translate-cc-target-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-target-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-element-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs"}, "5.0");
+  });
+
+  it("translate-cc-element-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-element-vs-other"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs"}, "5.0");
+  });
+
+  it("translate-cc-unmapped-vs-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"translate-cc-unmapped-vs-other"}, "5.0");
+  });
+
+  it("loinc-cc-sct-confirmed" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-confirmed"}, "5.0");
+  });
+
+  it("loinc-cc-sct-other" + 'R5-cached', async () => {
+    await runTest({"suite":"translate-check","test":"loinc-cc-sct-other"}, "5.0");
   });
 
 });
@@ -17726,6 +18422,27 @@ describe('default-valueset-version', () => {
 
   it("indirect-validation-zero-pinned-wrong" + 'R5-cached', async () => {
     await runTest({"suite":"default-valueset-version","test":"indirect-validation-zero-pinned-wrong"}, "5.0");
+  });
+
+});
+
+describe('supplement-url', () => {
+  // A supplement with the same url as the code system it supplements, and a version of its own. This is not valid - a supplement needs a canonical url of its own, and with the code system's url, url|version claims to be a version of the code system - but it is found in published packages, so servers process the request as usual, and warn about the supplement whenever they look up the code system it has the url of. The supplement's version is not a version of the code system: a value set that asks for it can't be expanded or validated against, and the valid versions named are only those of the code system
+
+  it("supplement-url-expand-v2" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v2"}, "5.0");
+  });
+
+  it("supplement-url-validate-v2" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-validate-v2"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1"}, "5.0");
+  });
+
+  it("supplement-url-expand-v1-use-supplement" + 'R5-cached', async () => {
+    await runTest({"suite":"supplement-url","test":"supplement-url-expand-v1-use-supplement"}, "5.0");
   });
 
 });
@@ -18322,6 +19039,14 @@ describe('loinc', () => {
     await runTest({"suite":"loinc","test":"loinc-translate-code-mdc"}, "5.0");
   });
 
+  it("loinc-translate-answer-sct" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-answer-sct"}, "5.0");
+  });
+
+  it("loinc-translate-sct-answer" + 'R5-cached', async () => {
+    await runTest({"suite":"loinc","test":"loinc-translate-sct-answer"}, "5.0");
+  });
+
 });
 
 describe('snomed', () => {
@@ -18363,6 +19088,10 @@ describe('snomed', () => {
     await runTest({"suite":"snomed","test":"snomed-expand-isa-invalid-check-digit"}, "5.0");
   });
 
+  it("snomed-expand-in-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-expand-in-invalid"}, "5.0");
+  });
+
   it("snomed-validate-enum-invalid" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"snomed-validate-enum-invalid"}, "5.0");
   });
@@ -18377,6 +19106,10 @@ describe('snomed', () => {
 
   it("snomed-validate-isa-invalid-check-digit" + 'R5-cached', async () => {
     await runTest({"suite":"snomed","test":"snomed-validate-isa-invalid-check-digit"}, "5.0");
+  });
+
+  it("snomed-validate-in-invalid" + 'R5-cached', async () => {
+    await runTest({"suite":"snomed","test":"snomed-validate-in-invalid"}, "5.0");
   });
 
   it("snomed-expand-isa" + 'R5-cached', async () => {
@@ -20921,6 +21654,14 @@ describe('icd-11', () => {
     await runTest({"suite":"icd-11","test":"cs-validate-nf-axis-not-multiple"}, "5.0");
   });
 
+  it("cs-validate-pc-required-axis-empty" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-pc-required-axis-empty"}, "5.0");
+  });
+
+  it("cs-validate-required-axis-empty" + 'R5-cached', async () => {
+    await runTest({"suite":"icd-11","test":"cs-validate-required-axis-empty"}, "5.0");
+  });
+
   it("cs-validate-nf-short-codes" + 'R5-cached', async () => {
     await runTest({"suite":"icd-11","test":"cs-validate-nf-short-codes"}, "5.0");
   });
@@ -21517,16 +22258,16 @@ describe('langcodes', () => {
 describe('ecosystem', () => {
   // Value sets whose code systems are spread across more than one server in the ecosystem, so that no single server holds them all: tx.fhir.org answers for them by asking the other servers
 
-  it("ecosystem-cz-in" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-in"}, "5.0");
+  it("ecosystem-ch-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-in"}, "5.0");
   });
 
-  it("ecosystem-cz-excluded-code" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-code"}, "5.0");
+  it("ecosystem-ch-excluded-code" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-code"}, "5.0");
   });
 
-  it("ecosystem-cz-excluded-filter" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cz-excluded-filter"}, "5.0");
+  it("ecosystem-ch-excluded-filter" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-ch-excluded-filter"}, "5.0");
   });
 
   it("ecosystem-ee-in" + 'R5-cached', async () => {
@@ -21541,28 +22282,28 @@ describe('ecosystem', () => {
     await runTest({"suite":"ecosystem","test":"ecosystem-ee-excluded-filter"}, "5.0");
   });
 
-  it("ecosystem-cc-cz-in-ee-out" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-in-ee-out"}, "5.0");
+  it("ecosystem-cc-ch-in-ee-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-in-ee-out"}, "5.0");
   });
 
-  it("ecosystem-cc-cz-out-ee-in" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cc-cz-out-ee-in"}, "5.0");
+  it("ecosystem-cc-ch-out-ee-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cc-ch-out-ee-in"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-good" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-good"}, "5.0");
+  it("ecosystem-cs-ch-good" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-good"}, "5.0");
   });
 
   it("ecosystem-cs-ee-good" + 'R5-cached', async () => {
     await runTest({"suite":"ecosystem","test":"ecosystem-cs-ee-good"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-bad-code" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-code"}, "5.0");
+  it("ecosystem-cs-ch-bad-code" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-code"}, "5.0");
   });
 
-  it("ecosystem-cs-cz-bad-display" + 'R5-cached', async () => {
-    await runTest({"suite":"ecosystem","test":"ecosystem-cs-cz-bad-display"}, "5.0");
+  it("ecosystem-cs-ch-bad-display" + 'R5-cached', async () => {
+    await runTest({"suite":"ecosystem","test":"ecosystem-cs-ch-bad-display"}, "5.0");
   });
 
 });
@@ -21954,6 +22695,231 @@ describe('icf-ec', () => {
 
   it("ec-icf-expand-referenced" + 'R5-cached', async () => {
     await runTest({"suite":"icf-ec","test":"ec-icf-expand-referenced"}, "5.0");
+  });
+
+});
+
+describe('ndc', () => {
+  // NDC tests. These depend on the NDC database tx.fhir.org has loaded (version 20261117, built from the FDA downloads back to 2009, including codes no longer listed), and every request names that version
+
+  it("ndc-lookup-10-digit-442" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-442"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-442" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-442"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-541" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-541"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-541" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-541"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-retired" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-retired"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-retired" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-retired"}, "5.0");
+  });
+
+  it("ndc-lookup-10-digit-archived" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-10-digit-archived"}, "5.0");
+  });
+
+  it("ndc-lookup-11-digit-archived" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-11-digit-archived"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-active" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-active"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-winner" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-winner"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-10-digit-loser" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-10-digit-loser"}, "5.0");
+  });
+
+  it("ndc-lookup-dup-11-digit-recent" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-lookup-dup-11-digit-recent"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-442" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-442"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-442" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-442"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-541" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-541"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-541" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-541"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-retired" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-retired"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-retired" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-retired"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-archived" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-archived"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-archived" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-archived"}, "5.0");
+  });
+
+  it("ndc-validate-dup-11-digit-active" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-active"}, "5.0");
+  });
+
+  it("ndc-validate-dup-10-digit-winner" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-winner"}, "5.0");
+  });
+
+  it("ndc-validate-dup-10-digit-loser" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-10-digit-loser"}, "5.0");
+  });
+
+  it("ndc-validate-dup-11-digit-recent" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-dup-11-digit-recent"}, "5.0");
+  });
+
+  it("ndc-validate-10-digit-unknown" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-10-digit-unknown"}, "5.0");
+  });
+
+  it("ndc-validate-11-digit-unknown" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-11-digit-unknown"}, "5.0");
+  });
+
+  it("ndc-validate-bad-format" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-bad-format"}, "5.0");
+  });
+
+  it("ndc-expand-filter-inactive-true" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-true"}, "5.0");
+  });
+
+  it("ndc-expand-filter-inactive-false" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-inactive-false"}, "5.0");
+  });
+
+  it("ndc-expand-filter-kind-product" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-product"}, "5.0");
+  });
+
+  it("ndc-expand-filter-kind-package" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-kind-package"}, "5.0");
+  });
+
+  it("ndc-expand-filter-category" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category"}, "5.0");
+  });
+
+  it("ndc-expand-filter-category-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-category-in"}, "5.0");
+  });
+
+  it("ndc-expand-filter-combined" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-expand-filter-combined"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-in-11" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-true-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-true-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-in-11" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-inactive-false-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-inactive-false-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-product-out-11" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-product-out-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-in-11" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-kind-package-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-kind-package-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-11" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-11"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-bla" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-bla"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-nda" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-nda"}, "5.0");
+  });
+
+  it("ndc-validate-filter-category-in-list-out" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-category-in-list-out"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-in" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-in"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-out-inactive" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-inactive"}, "5.0");
+  });
+
+  it("ndc-validate-filter-combined-out-product" + 'R5-cached', async () => {
+    await runTest({"suite":"ndc","test":"ndc-validate-filter-combined-out-product"}, "5.0");
   });
 
 });

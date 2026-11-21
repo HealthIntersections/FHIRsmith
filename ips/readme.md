@@ -9,11 +9,6 @@ FHIR endpoint and web pages. It runs at `/ips` when `modules.ips.enabled` is tru
 "ips": {
   "enabled": true,
   "database": "ips/ips-content.db",
-  "adminUsername": "admin",
-  "adminPassword": "<secret>",
-  "sessionSecret": "<random string>",
-  "cookieSecure": true,
-  "loginAttemptsPerWindow": 20,
   "maxSize": 10485760,
   "rateLimit": { "windowMinutes": 1, "max": 60 },
   "processing": { "enabled": true, "intervalSeconds": 5 },
@@ -22,10 +17,8 @@ FHIR endpoint and web pages. It runs at `/ips` when `modules.ips.enabled` is tru
 ```
 
 Everything is in one SQLite database; a relative path resolves under the data folder's
-`databases` directory. The administrator's login is `adminUsername` (default `admin`) with
-`adminPassword` - without a password there is no administrator, so nothing can be created.
-`sessionSecret` signs the login cookie; `cookieSecure: false` is for local testing over
-plain http (see the publisher's notes on nginx and `X-Forwarded-Proto`). `maxSize` is the
+`databases` directory. Users and logins are the server's ([library/auth](../library/auth/README.md)):
+the module has no logins or passwords of its own. `maxSize` is the
 biggest document accepted, in bytes; `rateLimit` is submissions per IP address (`max: 0`
 turns it off). `txServer` is the terminology server the module uses - for links from the
 terminology view to code systems, and for the analysis of documents: either an http(s) URL
@@ -35,9 +28,12 @@ network. Without it there are no links and no analysis.
 
 ## Projects, the administrator, and managers
 
-`/ips` lists the projects. The administrator logs in at `/ips/login` and, at
-`/ips/admin/projects` and `/ips/admin/users`, creates and deletes projects and users, and
-says which users manage which projects. The administrator also looks after the
+`/ips` lists the projects. The server's administrators (logged in at `/auth/login`), at
+`/ips/admin/projects`, create and delete projects, and say which of the server's users manage
+which projects (the ips "manager" role for the project, which is also on the user's page,
+`/auth/admin/users`). The projects page offers as managers only the users with the
+**IPS Project Admin** role (`ips project-admin`), which the administrator gives on the user's
+page; a manager who loses the role is shown, and stays a manager, until taken off. The administrators also look after the
 [clinical profiles](#clinical-profiles) and the [national profiles](#national-profiles),
 which apply across all projects. A project has a code - 2-32 lower case letters,
 digits and hyphens, fixed once it exists - and lives at `/ips/{code}`. Deleting a project
@@ -45,17 +41,23 @@ deletes its documents.
 
 A project's managers (and the administrator) can:
 
-- set the project's submission token at `/ips/{code}/settings`. When one is set, a document
-  can only be submitted with it: in the `token` field of the submission form, or as
-  `Authorization: Bearer <token>` on a `POST`. Managers can read the token back, so it is
-  stored as it is, not hashed
+- say who may submit, at `/ips/{code}/settings` (*Who may submit*): a submission token, users,
+  both, or neither (anyone). With both, either will do:
+  - **the token**: a document is submitted with it in the `token` field of the submission form,
+    or as `Authorization: Bearer <token>` on a `POST`. Managers can read the token back, so it
+    is stored as it is, not hashed
+  - **users**: *any logged in user*, or *approved users* - those the server's administrator
+    gives the ips *Submit documents* role for the project (`ips submitter`, on the user's page;
+    the project's managers count as approved). On the pages a user logs in; on the API they
+    send their own API token (`Authorization: Bearer fhs_...`, made on their account page) -
+    never a session cookie. The document records who submitted it ("from {name} ({login})")
 - delete documents, and put a document back in the processing queue
 
-Logins work as the publisher's and the testing module's do: a session cookie
-(`ips.sid`, SameSite=Lax, HTTPS-only unless `cookieSecure` is false), bcrypt password
-hashes, a rate limited login, an Origin check and a CSRF token on every form post - except
+Logins are the server's: its session cookie, an Origin check and a CSRF token on every form post - except
 the submission form, which anyone may post (with the project's token, if it has one), so it
-carries no CSRF token and starts no session; the Origin check still applies.
+carries no CSRF token and starts no session; the Origin check still applies. A logged in user's
+submissions (the form, the editors, adding a document from the viewer) carry the CSRF token,
+since they ride on the session.
 
 ## Limits
 
@@ -78,14 +80,14 @@ narratives as they are.
 
     POST /ips/{code}/Bundle
     Content-Type: application/fhir+json
-    Authorization: Bearer <token>        (only if the project has one)
+    Authorization: Bearer <token>        (the project's token, or a user's API token, if the project needs one)
 
 or paste the JSON (or pick a file) at `/ips/{code}/submit`. The server gives the document its
 id - a serial number, one series across all projects - sets `meta.lastUpdated` to the time it
 was received, and drops `meta.versionId`: documents can't be changed once received.
 Responses follow the spec: `201 Created` with a `Location` header, and the stored document,
 or nothing (`Prefer: return=minimal`), or an OperationOutcome (`Prefer: return=OperationOutcome`).
-Errors are OperationOutcomes: 400, 401 (token), 413 (too big), 415 (not JSON), 429 (rate
+Errors are OperationOutcomes: 400, 401 (no token or user, or a wrong one), 403 (a user who isn't approved), 413 (too big), 415 (not JSON), 429 (rate
 limit). The submitter's IP address is recorded, for tracing abuse, and never returned.
 
     GET /ips/{code}/Bundle/{id}          the document (JSON), or a view of it for a browser
@@ -464,7 +466,7 @@ The service is an account - provider, base URL, model, API key - of one of two s
 Groq, Ollama, Azure and others speak (so a routing service is just a base URL), or
 `anthropic`, the Messages API. A project may keep its own account (its managers enter it on
 the settings page; the key is encrypted at rest with AES-256-GCM under `modules.ips.aiKeySecret`,
-else the `sessionSecret`, so a copy of the database is not a copy of the account); a
+else the module's old `sessionSecret` if it is still in the configuration, so a copy of the database is not a copy of the account); a
 project with none uses the server's default, `modules.ips.ai`; with neither, the step is
 skipped. Each project may make `dailyCap` assessments in a rolling day (its own setting,
 else the server's, else 50; the calls are counted in `ai_calls`), and a document bigger
@@ -660,7 +662,7 @@ The service is an account - provider, base URL, model, API key - of one of two s
 Groq, Ollama, Azure and others speak (so a routing service is just a base URL), or
 `anthropic`, the Messages API. A project may keep its own account (its managers enter it on
 the settings page; the key is encrypted at rest with AES-256-GCM under `modules.ips.aiKeySecret`,
-else the `sessionSecret`, so a copy of the database is not a copy of the account); a
+else the module's old `sessionSecret` if it is still in the configuration, so a copy of the database is not a copy of the account); a
 project with none uses the server's default, `modules.ips.ai`; with neither, the step is
 skipped. Each project may make `dailyCap` assessments in a rolling day (its own setting,
 else the server's, else 50; the calls are counted in `ai_calls`), and a document bigger
@@ -865,15 +867,18 @@ one can't be shared until the document has been processed). Each makes a QR code
 page, to scan or copy, with what the code carries in a box beside a Copy button, and the
 link to the manifest; without scripts, the same lands on its own page. The steps are the
 ones the healthintersections.com.au passport page takes, here on the server (`ips/share.js`):
-an entry is created on the SHL server (`POST {shl}/create`, with the server's password and
-the number of days the copy lives), the document (the original or the modified one) is encrypted
+an entry is created on the SHL server (`POST {shl}/create`, as this server itself or with an API
+token, and the number of days the copy lives), the document (the original or the modified one) is encrypted
 as a JWE (`dir` / `A256GCM`, a random key) and uploaded (`POST {shl}/upload`), and the
 shlink payload - the manifest link, the key, flag `U`, a label naming the patient - is
 base64url-encoded. An SHL's code carries `{viewer}#shlink:/{payload}`; a VHL's carries
 `HC1:` and the SHL server's signature of `shlink://{payload}` (`POST {shl}/sign`: a
 COSE_Sign1 of the GDHCN payload, deflated and base45). The SHL server is this server's own
-shl module (`"server": "/shl"`, dispatched in-process, the password taken from
-`modules.shl.password` unless given) or another FHIRsmith's (an https URL and its password).
+shl module (`"server": "/shl"`, dispatched in-process, as this server itself) or another
+FHIRsmith's (an https URL, and `token`: an API token of a user there with the shl "create" role).
+A URL that is this server's own shl module - the host of `hostName` or `auth.publicUrl`, and
+`/shl` - is treated as `"/shl"`: no token. Anyone who can see a document can share it; the
+server makes the link as itself, so they don't need to log in.
 Shares are rate-limited as submissions are, and a document whose JWE is over 2MB is not
 shared this way. The QR codes are made with `qrcode-generator`, error correction L.
 

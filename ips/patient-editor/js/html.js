@@ -166,101 +166,10 @@ function findResource(bundle, reference) {
   return null;
 }
 
-/*
- * Narrative sanitisation.
- *
- * Narrative is XHTML written by whoever produced the document. When the only
- * documents in play were ones this site generated, dropping text.div straight into
- * innerHTML was fine. Now that a document can arrive from a SMART Health Link -
- * i.e. from anyone who can get a patient to open a link - it isn't: FHIR restricts
- * narrative to a safe subset of XHTML, but nothing enforces that on the way in.
- * So we enforce it here, on the way out.
- */
-const NARRATIVE_ELEMENTS = new Set([
-  'a', 'b', 'big', 'blockquote', 'br', 'caption', 'cite', 'code', 'col', 'colgroup',
-  'dd', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img',
-  'li', 'ol', 'p', 'pre', 'q', 'samp', 'small', 'span', 'strong', 'sub', 'sup',
-  'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'ul', 'var'
-]);
-
-// Note: 'style' is deliberately NOT here. FHIR permits it, but a style attribute is
-// enough to cover the page with an invisible overlay, and we lose little without it.
-const NARRATIVE_ATTRIBUTES = new Set([
-  'abbr', 'align', 'alt', 'axis', 'bgcolor', 'border', 'cellpadding', 'cellspacing',
-  'char', 'charoff', 'charset', 'cite', 'class', 'colspan', 'compact', 'coords', 'dir',
-  'frame', 'headers', 'height', 'href', 'hreflang', 'hspace', 'lang', 'longdesc',
-  'name', 'nowrap', 'rel', 'rev', 'rowspan', 'rules', 'scope', 'shape', 'span',
-  'src', 'start', 'summary', 'title', 'type', 'valign', 'value', 'vspace', 'width'
-]);
-
-// Removed outright, contents and all. Anything else unrecognised is unwrapped, so
-// its text survives even though the tag doesn't.
-const NARRATIVE_DROP = new Set([
-  'script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet',
-  'form', 'input', 'button', 'select', 'option', 'textarea', 'label', 'fieldset',
-  'link', 'meta', 'base', 'svg', 'math', 'template', 'audio', 'video', 'source',
-  'track', 'canvas', 'noscript', 'dialog', 'portal'
-]);
-
-const NARRATIVE_URL_ATTRIBUTES = new Set(['href', 'src', 'longdesc', 'cite']);
-
-function narrativeUrlIsSafe(name, value) {
-  if (!NARRATIVE_URL_ATTRIBUTES.has(name)) {
-    return true;
-  }
-  // Strip whitespace and control characters first - 'java\tscript:' is a scheme too
-  const url = String(value).replace(/[\x00-\x20]/g, '').toLowerCase();
-  if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') ||
-      url.startsWith('https://') || url.startsWith('mailto:')) {
-    return true;
-  }
-  if (name === 'src' && url.startsWith('data:image/')) {
-    return true;
-  }
-  return !/^[a-z][a-z0-9+.-]*:/.test(url); // no scheme at all means a relative url
-}
-
-function scrubNarrativeNode(node) {
-  const children = Array.prototype.slice.call(node.childNodes);
-  for (const child of children) {
-    if (child.nodeType === Node.COMMENT_NODE) {
-      node.removeChild(child);
-      continue;
-    }
-    if (child.nodeType !== Node.ELEMENT_NODE) {
-      continue; // text is text
-    }
-    const name = child.tagName.toLowerCase();
-    if (NARRATIVE_DROP.has(name)) {
-      node.removeChild(child);
-      continue;
-    }
-    scrubNarrativeNode(child);
-    if (!NARRATIVE_ELEMENTS.has(name)) {
-      // Unrecognised but harmless: keep the (already scrubbed) content, lose the tag
-      while (child.firstChild) {
-        node.insertBefore(child.firstChild, child);
-      }
-      node.removeChild(child);
-      continue;
-    }
-    for (const attr of Array.prototype.slice.call(child.attributes)) {
-      const attrName = attr.name.toLowerCase();
-      if (!NARRATIVE_ATTRIBUTES.has(attrName) || !narrativeUrlIsSafe(attrName, attr.value)) {
-        child.removeAttribute(attr.name);
-      }
-    }
-  }
-}
-
+// Narrative is sanitised by the document actions (doc-actions.js, loaded before this), which
+// have the one copy of the rules: the same is shown here and put into the PDF
 function sanitizeNarrative(html) {
-  if (!iss(html)) {
-    return '';
-  }
-  // DOMParser neither runs scripts nor loads anything, so building this is safe
-  const doc = new DOMParser().parseFromString(String(html), 'text/html');
-  scrubNarrativeNode(doc.body);
-  return doc.body.innerHTML;
+  return iss(html) ? window.IpsDocActions.sanitizeNarrative(String(html)) : '';
 }
 
 // The narrative of a resource, section or composition - sanitised, or null if absent

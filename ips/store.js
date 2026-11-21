@@ -5,7 +5,7 @@
 //
 
 /**
- * SQLite storage for the /ips module: projects, their managers, the users, and the IPS
+ * SQLite storage for the /ips module: projects, and the IPS
  * documents in each project, with the search index over them.
  *
  * A document is kept whole, as the JSON that was stored (with the server's id and
@@ -36,8 +36,8 @@ const SCHEMA = `
     created      TEXT NOT NULL
   );
 
-  -- the people who can manage projects. The administrator is not in here: their login is
-  -- in the configuration
+  -- users and project_managers are no longer used: users, logins and the managers of projects
+  -- are the server's (library/auth). Kept so a database from before still opens
   CREATE TABLE IF NOT EXISTS users (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     login          TEXT UNIQUE NOT NULL,
@@ -281,7 +281,7 @@ class IpsStore {
       insertIndex: this.db.prepare(`
         INSERT INTO ips_index (doc_id, res, param, type, str, str_lc, sys, code, lo, hi, ref)
         VALUES (@doc_id, @res, @param, @type, @str, @str_lc, @sys, @code, @lo, @hi, @ref)`),
-      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, json, analysed_json FROM documents WHERE id = ?'),
+      readDoc: this.db.prepare('SELECT id, project_id, received, received_ms, source, status, status_message, processed_ms, size, patient_name, patient_gender, patient_birth, comp_date, comp_title, nationality, patient_id, patient_match, submitted_by, json, analysed_json FROM documents WHERE id = ?'),
       saveAnalysed: this.db.prepare('UPDATE documents SET analysed_json = ? WHERE id = ?'),
       deleteDoc: this.db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?'),
       countDocs: this.db.prepare('SELECT COUNT(*) AS n FROM documents WHERE project_id = ?'),
@@ -326,6 +326,15 @@ class IpsStore {
     }
     if (!has('national_profiles', 'snomed_edition')) {
       this.db.exec('ALTER TABLE national_profiles ADD COLUMN snomed_edition TEXT');
+    }
+    if (!has('projects', 'submit_users')) {
+      // who may submit besides the token's holders: '' (nobody: the token, or anyone if there is
+      // none), 'any' (any logged in user), 'approved' (users given the ips submitter role)
+      this.db.exec('ALTER TABLE projects ADD COLUMN submit_users TEXT');
+    }
+    if (!has('documents', 'submitted_by')) {
+      // the user who submitted the document ("Name (login)"), when a user did
+      this.db.exec('ALTER TABLE documents ADD COLUMN submitted_by TEXT');
     }
     if (!has('projects', 'ai_json')) {
       // the project's AI assessment settings (JSON; the API key encrypted)
@@ -471,25 +480,12 @@ class IpsStore {
 
   // ---- projects ----
 
-  /** All projects, with their document counts and managers; by name. */
+  /** All projects, with their document counts; by name. (Their managers are the server's: IpsModule.projectsWithManagers) */
   projects() {
-    const rows = this.db.prepare(`
+    return this.db.prepare(`
       SELECT p.id, p.code, p.name, p.description, p.created,
         (SELECT COUNT(*) FROM documents d WHERE d.project_id = p.id) AS documents
       FROM projects p ORDER BY p.name COLLATE NOCASE, p.code`).all();
-    const managers = this.db.prepare(`
-      SELECT pm.project_id, u.id, u.login, u.name FROM project_managers pm JOIN users u ON u.id = pm.user_id ORDER BY u.login`).all();
-    const byProject = new Map();
-    for (const m of managers) {
-      if (!byProject.has(m.project_id)) {
-        byProject.set(m.project_id, []);
-      }
-      byProject.get(m.project_id).push({ id: m.id, login: m.login, name: m.name });
-    }
-    for (const p of rows) {
-      p.managers = byProject.get(p.id) || [];
-    }
-    return rows;
   }
 
   /** @returns {Object|null} the project, including its token */
@@ -558,71 +554,20 @@ class IpsStore {
     return this.db.prepare('UPDATE projects SET token = ? WHERE id = ?').run(token || null, id).changes > 0;
   }
 
+  /** Which users may submit: '' (none), 'any', 'approved' */
+  setProjectSubmitUsers(id, mode) {
+    const m = mode === 'any' || mode === 'approved' ? mode : null;
+    return this.db.prepare('UPDATE projects SET submit_users = ? WHERE id = ?').run(m, id).changes > 0;
+  }
+
+  /** Record the user who submitted a document */
+  setSubmittedBy(id, label) {
+    this.db.prepare('UPDATE documents SET submitted_by = ? WHERE id = ?').run(label || null, id);
+  }
+
   /** Delete a project and everything in it. @returns {boolean} whether there was one */
   deleteProject(id) {
     return this.db.prepare('DELETE FROM projects WHERE id = ?').run(id).changes > 0;
-  }
-
-  /** Replace the set of users who manage a project. */
-  setProjectManagers(projectId, userIds) {
-    this.db.transaction(() => {
-      this.db.prepare('DELETE FROM project_managers WHERE project_id = ?').run(projectId);
-      const ins = this.db.prepare('INSERT OR IGNORE INTO project_managers (project_id, user_id) VALUES (?, ?)');
-      for (const u of userIds) {
-        ins.run(projectId, u);
-      }
-    })();
-  }
-
-  /** The ids of the projects a user manages. */
-  managedProjectIds(userId) {
-    return this.db.prepare('SELECT project_id FROM project_managers WHERE user_id = ?').all(userId).map(r => r.project_id);
-  }
-
-  // ---- users ----
-
-  /** @returns {Array} users, without their password hashes, with the codes of the projects they manage */
-  users() {
-    const rows = this.db.prepare('SELECT id, login, name, created FROM users ORDER BY login').all();
-    const pm = this.db.prepare('SELECT pm.user_id, p.code FROM project_managers pm JOIN projects p ON p.id = pm.project_id ORDER BY p.code').all();
-    const by = new Map();
-    for (const m of pm) {
-      if (!by.has(m.user_id)) {
-        by.set(m.user_id, []);
-      }
-      by.get(m.user_id).push(m.code);
-    }
-    for (const u of rows) {
-      u.projects = by.get(u.id) || [];
-    }
-    return rows;
-  }
-
-  /** @returns {Object|null} the user, including the password hash */
-  userByLogin(login) {
-    return this.db.prepare('SELECT * FROM users WHERE login = ?').get(login) || null;
-  }
-
-  userById(id) {
-    return this.db.prepare('SELECT id, login, name FROM users WHERE id = ?').get(id) || null;
-  }
-
-  createUser(login, name, passwordHash) {
-    const r = this.db.prepare('INSERT INTO users (login, name, password_hash, created) VALUES (?, ?, ?, ?)')
-      .run(login, name, passwordHash, new Date().toISOString());
-    return Number(r.lastInsertRowid);
-  }
-
-  updateUser(id, name, passwordHash) {
-    const n = this.db.prepare('UPDATE users SET name = ? WHERE id = ?').run(name, id).changes;
-    if (n > 0 && passwordHash) {
-      this.db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, id);
-    }
-    return n > 0;
-  }
-
-  deleteUser(id) {
-    return this.db.prepare('DELETE FROM users WHERE id = ?').run(id).changes > 0;
   }
 
   // ---- documents ----

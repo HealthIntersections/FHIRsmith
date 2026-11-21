@@ -102,6 +102,10 @@ class CountryCodeServices extends CodeSystemProvider {
     if (this._hasAnySupplementDisplays(langs)) {
       return true;
     }
+    // the code system has French names (designations) for nearly every code
+    if ((langs.languages || []).some(lang => lang && lang.language === 'fr')) {
+      return true;
+    }
     return super.hasAnyDisplays(langs);
   }
 
@@ -330,6 +334,20 @@ class CountryCodeServices extends CodeSystemProvider {
       return concept;
     }
     return null;
+  }
+
+  // Text filter ($expand filter): the codes, displays and French names; a user-assigned code's placeholder display isn't searched (CodeSystemProvider._searchConceptList)
+  async searchFilter(filterContext, filter, sort) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    const result = new CountryCodeConceptFilter();
+    result.list = await this._searchConceptList(filterContext, filter, sort, this.codes, (c) => c.userDefined ? [] : [{ lang: null, text: c.display }, { lang: 'fr', text: c.french }]);
+    filterContext.filters.push(result);
+    return filterContext;
+  }
+
+  async _rootDisplay(code) {
+    const concept = this.codeMap.get(code);
+    return concept ? concept.display || null : null;
   }
 
   async filterCheck(filterContext, set, concept) {

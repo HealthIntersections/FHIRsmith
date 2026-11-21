@@ -33,8 +33,9 @@
  * from 'submitted' through 'processing' to 'processed' or 'error', and keeping what each
  * step made of the document for the pages to show.
  *
- * Logins work as the publisher's and the testing module's do: a session cookie, bcrypt
- * password hashes, a rate limited login, CSRF tokens on every form.
+ * Logins are the server's (library/auth): the administrator manages the module, and the
+ * managers of a project are the users given the ips "manager" role for it. CSRF tokens are on
+ * every form.
  *
  * @module ips/ips
  */
@@ -48,9 +49,12 @@ const assets = require('./assets');
 const { minimalIpsProblems } = require('./minimal');
 const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
-const session = require('express-session');
-const lusca = require('lusca');
-const bcrypt = require('bcrypt');
+const auth = require('../library/auth');
+
+// the role of the users who can be made managers of projects
+const PROJECT_ADMIN = 'project-admin';
+// the role of the users approved to submit to a project, when it takes approved users
+const SUBMITTER = 'submitter';
 
 const folders = require('../library/folder-setup');
 const htmlServer = require('../library/html-server');
@@ -270,6 +274,9 @@ class IpsModule {
   constructor(stats, log) {
     this.stats = stats;
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.store = null;
     this.config = null;
     this.queueTimer = null;
@@ -320,14 +327,22 @@ class IpsModule {
 
     htmlServer.loadTemplate(TEMPLATE, path.join(__dirname, 'ips-template.html'));
 
-    // the administrator's password is checked the same way as everyone else's: bcrypt against
-    // a hash, made once here, of the configured password
-    this.adminUsername = typeof this.config.adminUsername === 'string' && this.config.adminUsername ? this.config.adminUsername : 'admin';
-    this.adminHash = tokenConfigured(this.config.adminPassword) ? bcrypt.hashSync(this.config.adminPassword, 10) : null;
-    // compared against when a login names no user, so that takes as long as a real one
-    this.dummyHash = bcrypt.hashSync(crypto.randomBytes(16).toString('hex'), 10);
-    if (!this.adminHash) {
-      this.log.warn('IPS module: no adminPassword configured - nobody can create projects or users');
+    // users and logins are the server's (library/auth). The manager of a project, granted on the
+    // projects page or the user's page; and the IPS Project Admins, the users the projects page
+    // offers as managers, given by the administrator on the user's page
+    auth.defineRoles('ips', [{
+      role: 'manager', label: 'Manage project', description: 'The project\'s settings and submission token, and deleting and reprocessing its documents',
+      scope: { label: 'Project', values: () => this.store.projects().map(p => ({ value: String(p.id), label: `${p.code} (${p.name})` })) }
+    }, {
+      role: SUBMITTER, label: 'Submit documents', description: 'Submit documents to the project, when it takes them from approved users',
+      scope: { label: 'Project', values: () => this.store.projects().map(p => ({ value: String(p.id), label: `${p.code} (${p.name})` })) }
+    }, {
+      role: PROJECT_ADMIN, label: 'IPS Project Admin', description: 'Can be made a manager of IPS projects: the projects page offers only these users'
+    }], { title: 'IPS', path: '/ips' });
+    auth.addAdminPage('ips', { label: 'Projects', path: '/ips/admin/projects', description: 'make and remove IPS projects, and give them managers' });
+    auth.addAdminPage('ips', { label: 'Reports', path: '/ips/reports', description: 'the reports projects can run' });
+    if (tokenConfigured(this.config.adminPassword)) {
+      this.log.warn('IPS module: modules.ips.adminPassword is no longer used - the server\'s administrators (auth.administrators) manage the module');
     }
 
     // the terminology server: links to code systems, and the analysis's queries. None
@@ -349,8 +364,8 @@ class IpsModule {
       this.log.warn('IPS module: no txServer configured - code systems will not be linked, and documents will not be analysed');
     }
 
-    // the secret the projects' AI keys are encrypted with: its own, else the session's
-    // (when that is configured - a random one would make the keys unreadable after a restart)
+    // the secret the projects' AI keys are encrypted with: its own, else the module's old
+    // sessionSecret (keys stored before logins moved to the server were encrypted with it)
     this.aiSecret = typeof this.config.aiKeySecret === 'string' && this.config.aiKeySecret ? this.config.aiKeySecret : (this.config.sessionSecret || null);
     if (!this.aiSecret) {
       this.log.warn('IPS module: no aiKeySecret or sessionSecret configured - projects cannot keep their own AI accounts');
@@ -400,31 +415,15 @@ class IpsModule {
   }
 
   /**
-   * The session (login) cookie and CSRF protection - as the testing module has them. The
-   * FHIR API (POST Bundle) is authenticated by a token in a header, not a cookie, so it
-   * gets neither; the pages get this.web, and every form post gets sameOrigin +
-   * this.session + a form parser + this.csrf.
+   * The login session and CSRF protection are the server's (library/auth). The FHIR API (POST
+   * Bundle) is authenticated by a token in a header, not a cookie, so it gets neither; the
+   * pages get this.web, and every form post gets sameOrigin + this.session + a form parser +
+   * this.csrf.
    */
   setupSession() {
-    if (!this.config.sessionSecret) {
-      this.log.warn('ips: no sessionSecret configured - using a random one, so logins will not ' +
-        'survive a restart. Set modules.ips.sessionSecret.');
-    }
-    this.session = session({
-      name: 'ips.sid',
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        secure: this.config.cookieSecure ?? true,
-        sameSite: 'lax',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000
-      }
-    });
-    this.csrf = lusca.csrf({ key: '_csrf' });
-    const csrfIfLoggedIn = (req, res, next) => this.currentUser(req) ? this.csrf(req, res, next) : next();
-    this.web = [this.session, csrfIfLoggedIn];
+    this.session = auth.session;
+    this.csrf = auth.csrf;
+    this.web = auth.web;
     this.form = express.urlencoded({ extended: false, limit: '64kb' });
     // the submission form carries a whole document
     this.bigForm = express.urlencoded({ extended: false, limit: Math.ceil(this.maxSize * 1.5) });
@@ -437,17 +436,11 @@ class IpsModule {
   setupRootRoutes() {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
-    const loginLimiter = rateLimit({
-      windowMs: 15 * 60 * 1000,
-      limit: this.config.loginAttemptsPerWindow ?? 20,
-      standardHeaders: 'draft-7',
-      legacyHeaders: false,
-      handler: (req, res) => this.sendLogin(req, res, 429, 'Too many login attempts - try again later')
-    });
     const admin = (req, res, next) => {
+      auth.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(auth.loginUrl(req));
       }
       if (!user.isAdmin) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('Only the administrator can do that'), 403);
@@ -466,11 +459,8 @@ class IpsModule {
     // from an array, so that CodeQL can see the CSRF middleware on every cookie-using route.
     // the processing queue: one for the whole module
     r.get('/queue', ...this.web, h('queue', (req, res) => this.sendQueue(req, res)));
-    r.get('/login', this.session, this.csrf, h('login', (req, res) => this.sendLogin(req, res, 200)));
-    r.post('/login', this.sameOrigin, loginLimiter, this.session, this.form, this.csrf, h('login', (req, res) => this.login(req, res)));
-    r.post('/logout', this.sameOrigin, this.session, this.form, this.csrf, h('logout', (req, res) => {
-      req.session.destroy(() => res.redirect(req.baseUrl || '/'));
-    }));
+    // logging in is the server's: an old link to the module's login page goes there
+    r.get('/login', (req, res) => res.redirect(auth.loginUrl(req, req.baseUrl || '/')));
 
     r.get('/admin/projects', this.session, this.csrf, admin, h('projects', (req, res) => this.sendProjects(req, res)));
     r.post('/admin/projects', this.sameOrigin, this.session, this.form, this.csrf, admin, h('projects', (req, res) => this.saveProject(req, res, null)));
@@ -479,20 +469,13 @@ class IpsModule {
       const p = this.store.projectById(parseInt(req.params.id, 10));
       if (p && this.store.deleteProject(p.id)) {
         this.reports.deleteProject(p.id);
+        auth.setHolders('ips', 'manager', String(p.id), []);
         this.log.info(`IPS module: project '${p.code}' deleted by the administrator`);
       }
       res.redirect(req.baseUrl + '/admin/projects');
     }));
-
-    r.get('/admin/users', this.session, this.csrf, admin, h('users', (req, res) => this.sendUsers(req, res)));
-    r.post('/admin/users', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => this.saveUser(req, res, null)));
-    r.post('/admin/users/:id', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => this.saveUser(req, res, req.params.id)));
-    r.post('/admin/users/:id/delete', this.sameOrigin, this.session, this.form, this.csrf, admin, h('users', (req, res) => {
-      if (this.store.deleteUser(parseInt(req.params.id, 10))) {
-        this.log.info(`IPS module: user ${req.params.id} deleted`);
-      }
-      res.redirect(req.baseUrl + '/admin/users');
-    }));
+    // users are the server's
+    r.get('/admin/users', (req, res) => res.redirect('/auth/admin/users'));
   }
 
   /**
@@ -656,7 +639,7 @@ class IpsModule {
     r.post('/view', this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerOpen(req, res)));
     r.get('/view/:token', view, ...this.web, h('view', (req, res) => this.sendView(req, res)));
     r.post('/view/:token', view, this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerPasscode(req, res)));
-    r.post('/view/:token/add', view, this.sameOrigin, ...limit, this.form, h('view', (req, res) => this.viewerAdd(req, res)));
+    r.post('/view/:token/add', view, this.sameOrigin, ...limit, this.session, this.form, auth.csrfIfLoggedIn, h('view', (req, res) => this.viewerAdd(req, res)));
   }
 
   /**
@@ -681,7 +664,9 @@ class IpsModule {
     r.post('/compose/check', this.sameOrigin, ...this.lookups, json, h('compose', (req, res) => this.composeCheck(req, res)));
     r.post('/compose/model', this.sameOrigin, ...this.lookups, json, h('compose', (req, res) => this.composeModel(req, res)));
     r.post('/compose/share', this.sameOrigin, ...posting, json, h('compose', (req, res) => this.composeShare(req, res)));
-    r.post('/compose/submit', this.sameOrigin, ...posting, json, h('compose', (req, res) => this.composeSubmit(req, res)));
+    // a project can take documents from logged in users: for them, a submission rides on the
+    // session, so it carries the CSRF token too (anonymous ones have no session to ride on)
+    r.post('/compose/submit', this.sameOrigin, ...posting, this.session, json, auth.csrfIfLoggedIn, h('compose', (req, res) => this.composeSubmit(req, res)));
   }
 
   setupProjectRoutes() {
@@ -703,9 +688,10 @@ class IpsModule {
     };
     // a manager of the project, or the administrator
     const manager = (req, res, next) => {
+      auth.denyFraming(res);
       const user = this.currentUser(req);
       if (!user) {
-        return res.redirect(req.baseUrl + '/login');
+        return res.redirect(auth.loginUrl(req));
       }
       if (!this.canManage(user, req.project)) {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error('You do not manage this project'), 403);
@@ -734,8 +720,8 @@ class IpsModule {
     r.get('/:code/compose/general', project, ...this.web, h('compose', (req, res) => this.sendCompose(req, res)));
     r.get('/:code/compose/patient', project, ...this.web, h('compose', (req, res) => this.sendPatientEditor(req, res)));
     r.get('/:code/lookup', project, ...this.lookups, h('lookup', (req, res) => this.lookup(req, res)));
-    r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb' }), h('compose', (req, res) => this.compose(req, res)));
-    r.post('/:code/submit', project, this.sameOrigin, ...posting, this.session, this.bigForm, h('submit', (req, res) => this.submitForm(req, res)));
+    r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb' }), auth.csrfIfLoggedIn, h('compose', (req, res) => this.compose(req, res)));
+    r.post('/:code/submit', project, this.sameOrigin, ...posting, this.session, this.bigForm, auth.csrfIfLoggedIn, h('submit', (req, res) => this.submitForm(req, res)));
     r.get('/:code/settings', project, this.session, this.csrf, manager, h('settings', (req, res) => this.sendSettings(req, res)));
     // the reports (reports.js), for this project's documents
     r.get('/:code/reports', project, ...this.web, h('reports', (req, res) => this.sendProjectReports(req, res)));
@@ -745,10 +731,15 @@ class IpsModule {
 
     // the token before the body: a submission without it is refused before anything is read,
     // and the body is read no bigger than maxSize (the server's own parsers leave /ips alone)
-    const submitter = (req, res, next) => {
-      if (tokenConfigured(req.project.token) && !tokenMatches(req.project.token, this.suppliedToken(req))) {
-        res.set('WWW-Authenticate', 'Bearer');
-        return this.sendOutcome(res, 401, 'login', 'This project requires its submission token in the Authorization header');
+    const submitter = async (req, res, next) => {
+      // on the API, a user is the owner of an API token: never a session cookie
+      const p = this.submitAccess(req.project).users ? await auth.principal(req) : null;
+      const problem = this.submissionProblem(req, req.project, this.suppliedToken(req), p && p.via === 'token' ? p : null, 'api');
+      if (problem) {
+        if (problem.status === 401) {
+          res.set('WWW-Authenticate', 'Bearer');
+        }
+        return this.sendOutcome(res, problem.status, problem.status === 401 ? 'login' : 'forbidden', problem.message);
       }
       next();
     };
@@ -1331,6 +1322,8 @@ class IpsModule {
     const user = this.currentUser(req);
     return {
       base: req.baseUrl,
+      // the page, for logging in and out and coming back to it
+      here: auth.safeReturn(req.method === 'GET' ? req.originalUrl : req.baseUrl, req.baseUrl),
       user,
       csrf: res.locals._csrf,
       canManage: req.project ? this.canManage(user, req.project) : false,
@@ -1419,7 +1412,7 @@ class IpsModule {
     const v = req.view;
     const projects = this.store.projects().map(p => {
       const full = this.store.projectByCode(p.code);
-      return { code: p.code, name: p.name, needsToken: tokenConfigured(full?.token), ai: full ? this.store.projectAi(full).enabled === true : false };
+      return { code: p.code, name: p.name, ...this.submitOffer(full, auth.currentUser(req)), ai: full ? this.store.projectAi(full).enabled === true : false };
     });
     // the same document already here: the same Bundle.identifier
     const duplicates = (v.result.documents || []).map(d => {
@@ -1444,8 +1437,9 @@ class IpsModule {
       return this.sendView(req, res, 'Choose a project to add the document to', 400);
     }
     const supplied = typeof req.body.token === 'string' ? req.body.token.trim() : '';
-    if (tokenConfigured(project.token) && !tokenMatches(project.token, supplied)) {
-      return this.sendView(req, res, `The submission token for ${project.name} is missing or wrong`, 401);
+    const problem = this.submissionProblem(req, project, supplied, auth.currentUser(req), 'web');
+    if (problem) {
+      return this.sendView(req, res, `${project.name}: ${problem.message}`, problem.status);
     }
     const bundle = structuredClone(doc.bundle);
     if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > this.maxSize) {
@@ -1571,78 +1565,69 @@ class IpsModule {
   // ---- users ----
 
   /**
-   * Who is logged in, with the projects they manage as they are now (not as they were at
-   * login, so taking a project away, or deleting the user, takes effect at once).
+   * Who is logged in (library/auth), with the projects they manage as they are now (not as
+   * they were at login, so taking a project away, or disabling the user, takes effect at once).
+   * projects: the ids; allProjects: a manager of every project
    */
   currentUser(req) {
-    const s = req.session;
-    if (!s) {
+    const p = auth.currentUser(req);
+    if (!p) {
       return null;
     }
-    if (s.ipsAdmin) {
-      return { name: 'Administrator', login: this.adminUsername, isAdmin: true, projects: [] };
-    }
-    if (s.ipsUserId) {
-      const u = this.store.userById(s.ipsUserId);
-      if (u) {
-        return { id: u.id, name: u.name, login: u.login, isAdmin: false, projects: this.store.managedProjectIds(u.id) };
-      }
-    }
-    return null;
+    const scopes = p.scopes('ips', 'manager');
+    return {
+      id: p.id, name: p.name, login: p.login, isAdmin: p.isAdmin,
+      allProjects: scopes.includes(''),
+      projects: scopes.filter(x => /^\d+$/.test(x)).map(x => parseInt(x, 10))
+    };
   }
 
   canManage(user, project) {
-    return !!user && (user.isAdmin || user.projects.includes(project.id));
+    return !!user && (user.isAdmin || user.allProjects || user.projects.includes(project.id));
   }
 
-  sendLogin(req, res, status, error) {
-    res.status(status);
-    this.sendHtml(res, 'Login', render.renderLogin({ base: req.baseUrl, csrf: res.locals._csrf }, error), Date.now());
-  }
-
-  async login(req, res) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    // for the log: no control characters, no novel
-    const shown = login.replace(/[^\x20-\x7e]/g, '?').substring(0, 64);
-    let ok = false;
-    const regenerate = () => new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
-    if (login === this.adminUsername) {
-      if (this.adminHash && await bcrypt.compare(password, this.adminHash)) {
-        await regenerate();
-        req.session.ipsAdmin = true;
-        ok = true;
-      }
-    } else {
-      const user = login ? this.store.userByLogin(login) : null;
-      // the comparison is made whether or not there is such a user, so the time taken
-      // doesn't say which usernames exist
-      if (await bcrypt.compare(password, user ? user.password_hash : this.dummyHash) && user) {
-        await regenerate();
-        req.session.ipsUserId = user.id;
-        ok = true;
+  /** The projects (store.projects()), each with its managers from the server's users */
+  projectsWithManagers() {
+    const users = new Map(auth.users().map(u => [u.id, u]));
+    const byScope = new Map();
+    for (const h of auth.allHolders('ips', 'manager')) {
+      const u = users.get(h.user_id);
+      if (u) {
+        if (!byScope.has(h.scope)) {
+          byScope.set(h.scope, []);
+        }
+        byScope.get(h.scope).push({ id: u.id, login: u.login, name: u.name || u.login });
       }
     }
-    if (!ok) {
-      this.log.info(`IPS module: failed login for '${shown}' from ${req.ip}`);
-      return this.sendLogin(req, res, 401, 'Unknown username or wrong password');
-    }
-    this.log.info(`IPS module: '${shown}' logged in from ${req.ip}`);
-    res.redirect(req.baseUrl || '/');
+    return this.store.projects().map(p => ({ ...p, managers: byScope.get(String(p.id)) || [] }));
   }
 
   // ---- administration: projects and users ----
 
   sendProjects(req, res, message, status = 200) {
     res.status(status);
-    this.sendHtml(res, 'IPS Projects', render.renderProjects(this.store.projects(), this.store.users(), this.ctx(req, res), message), Date.now());
+    this.sendHtml(res, 'IPS Projects', render.renderProjects(this.projectsWithManagers(), this.managerCandidates(), this.ctx(req, res), message), Date.now());
+  }
+
+  /** The users the projects page offers as managers: enabled, with the IPS Project Admin role */
+  managerCandidates() {
+    const ids = new Set(auth.allHolders('ips', PROJECT_ADMIN).map(h => h.user_id));
+    return auth.users().filter(u => u.enabled && ids.has(u.id));
   }
 
   saveProject(req, res, id) {
     const code = typeof req.body.code === 'string' ? req.body.code.trim().toLowerCase() : '';
     const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
     const description = typeof req.body.description === 'string' ? req.body.description.trim() : '';
-    const managers = [].concat(req.body.manager || []).filter(m => /^\d{1,9}$/.test(m)).map(m => parseInt(m, 10));
+    // an IPS Project Admin, or someone who manages the project already (kept, though they no
+    // longer have the role, until they are taken off)
+    const allowed = new Set(this.managerCandidates().map(u => u.id));
+    if (id !== null) {
+      for (const uid of auth.holders('ips', 'manager', String(parseInt(id, 10)))) {
+        allowed.add(uid);
+      }
+    }
+    const managers = [].concat(req.body.manager || []).filter(m => /^\d{1,9}$/.test(m)).map(m => parseInt(m, 10)).filter(m => allowed.has(m));
     let problem = null;
     if (id === null && (!CODE_RE.test(code) || RESERVED.has(code))) {
       problem = 'The code must be 2-32 lower case letters, digits and hyphens, starting with a letter or digit' +
@@ -1668,49 +1653,14 @@ class IpsModule {
         return this.sendProjects(req, res, 'That project no longer exists', 404);
       }
     }
-    this.store.setProjectManagers(projectId, managers);
+    auth.setHolders('ips', 'manager', String(projectId), managers, req.user.login);
     res.redirect(req.baseUrl + '/admin/projects');
-  }
-
-  sendUsers(req, res, message, status = 200) {
-    res.status(status);
-    this.sendHtml(res, 'IPS Users', render.renderUsers(this.store.users(), this.ctx(req, res), message), Date.now());
-  }
-
-  async saveUser(req, res, id) {
-    const login = typeof req.body.login === 'string' ? req.body.login.trim() : '';
-    const name = typeof req.body.name === 'string' ? req.body.name.trim() : '';
-    const password = typeof req.body.password === 'string' ? req.body.password : '';
-    let problem = null;
-    if (id === null && !/^[A-Za-z0-9._@-]{1,64}$/.test(login)) {
-      problem = 'The username must be 1-64 letters, digits, or . _ @ -';
-    } else if (id === null && login === this.adminUsername) {
-      problem = `'${login}' is the administrator's login`;
-    } else if (!name || name.length > 100) {
-      problem = 'A name is required (up to 100 characters)';
-    } else if ((id === null || password) && password.length < 8) {
-      problem = 'Passwords must be at least 8 characters';
-    }
-    if (problem) {
-      return this.sendUsers(req, res, problem, 400);
-    }
-    const hash = password ? await bcrypt.hash(password, 10) : null;
-    if (id === null) {
-      if (this.store.userByLogin(login)) {
-        return this.sendUsers(req, res, `There is already a user '${login}'`, 409);
-      }
-      this.store.createUser(login, name, hash);
-      this.log.info(`IPS module: user '${login}' created`);
-    } else if (!this.store.updateUser(parseInt(id, 10), name, hash)) {
-      return this.sendUsers(req, res, 'That user no longer exists', 404);
-    }
-    res.redirect(req.baseUrl + '/admin/users');
   }
 
   // ---- a project's settings ----
 
   projectWithManagers(project) {
-    return { ...project, managers: (this.store.projects().find(p => p.id === project.id) || {}).managers || [] };
+    return { ...project, managers: (this.projectsWithManagers().find(p => p.id === project.id) || {}).managers || [] };
   }
 
   sendSettings(req, res, message, status = 200) {
@@ -1726,13 +1676,24 @@ class IpsModule {
       render.renderSettings(this.projectWithManagers(req.project), this.ctx(req, res), message, {
         ai, serverDefault: !!(this.config.ai?.apiKey && this.config.ai?.model), canKeep: !!this.aiSecret,
         serverModel: this.config.ai?.model || null, dailyCap: Number.isInteger(this.config.ai?.dailyCap) ? this.config.ai.dailyCap : 50,
-        serverNarrative: this.config.ai?.sendNarrative === true, usage
+        serverNarrative: this.config.ai?.sendNarrative === true, usage,
+        // the users approved to submit (the ips submitter role, for this project or every project)
+        approved: [...new Set([...auth.holders('ips', SUBMITTER, String(req.project.id)), ...auth.holders('ips', SUBMITTER, '')])]
+          .map(id => auth.user(id)).filter(u => u && u.enabled)
       }), Date.now(), req);
   }
 
   saveSettings(req, res) {
     if (req.body.form === 'ai') {
       return this.saveAiSettings(req, res);
+    }
+    if (req.body.form === 'users') {
+      const mode = req.body.users === 'any' || req.body.users === 'approved' ? req.body.users : '';
+      this.store.setProjectSubmitUsers(req.project.id, mode);
+      this.log.info(`IPS module: users who may submit to '${req.project.code}' set to ${mode || 'none'} by ${req.user.name}`);
+      req.project = this.store.projectById(req.project.id);
+      return this.sendSettings(req, res, mode === 'any' ? 'Any logged in user can now submit documents'
+        : mode === 'approved' ? 'Users approved by the administrator can now submit documents' : 'Users can no longer submit documents as themselves');
     }
     let token = typeof req.body.token === 'string' ? req.body.token.trim() : '';
     if (req.body.generate === '1') {
@@ -1744,7 +1705,8 @@ class IpsModule {
     this.store.setProjectToken(req.project.id, token || null);
     this.log.info(`IPS module: submission token for '${req.project.code}' ${token ? 'set' : 'cleared'} by ${req.user.name}`);
     req.project = this.store.projectById(req.project.id);
-    this.sendSettings(req, res, token ? 'The token has been set' : 'The token has been cleared; anyone can submit');
+    this.sendSettings(req, res, token ? 'The token has been set'
+      : this.submitAccess(req.project).users ? 'The token has been cleared; only users can submit' : 'The token has been cleared; anyone can submit');
   }
 
   /** The AI assessment settings: on/off, the account (its key encrypted), the daily cap. */
@@ -1820,8 +1782,94 @@ class IpsModule {
   receive(req, bundle, source) {
     const now = Date.now();
     const id = this.store.insert(req.project.id, bundle, { ip: req.ip, source, receivedMs: now });
-    this.log.info(`IPS module: document ${id} received in '${req.project.code}' (${source}, ${bundle.entry.length} entries)`);
+    // the user it came from, when a user was what let it in (submissionProblem)
+    const who = req.submitter ? `${req.submitter.name} (${req.submitter.login})` : null;
+    if (who) {
+      this.store.setSubmittedBy(id, who);
+    }
+    this.log.info(`IPS module: document ${id} received in '${req.project.code}' (${source}, ${bundle.entry.length} entries${who ? `, from ${who}` : ''})`);
     return { id, bundle };
+  }
+
+  /**
+   * Who may submit to a project. token: the project has a submission token; users: '' (no
+   * users), 'any' (any logged in user), 'approved' (users with the ips submitter role for the
+   * project - or who manage it). A project with neither is open to anyone. With both, either
+   * will do
+   */
+  submitAccess(p) {
+    const users = p && (p.submit_users === 'any' || p.submit_users === 'approved') ? p.submit_users : '';
+    const token = !!p && tokenConfigured(p.token);
+    return { token, users, open: !token && !users };
+  }
+
+  /** May this user (a Principal, or null) submit to the project as a user? */
+  userMaySubmit(p, who) {
+    const a = this.submitAccess(p);
+    if (!who || !who.id || !a.users) {
+      return false;
+    }
+    return a.users === 'any' || who.has('ips', SUBMITTER, String(p.id)) || who.has('ips', 'manager', String(p.id));
+  }
+
+  /**
+   * Check a submission against the project's rules: the token it carries (supplied), or the user
+   * (who: from the session on the pages, from an API token on the API). Sets req.submitter to
+   * the user when a user was what let it in.
+   * @param {'api'|'web'} channel - for the wording
+   * @returns {null|{status: number, message: string}} null when it may go ahead
+   */
+  submissionProblem(req, p, supplied, who, channel) {
+    const a = this.submitAccess(p);
+    req.submitter = null;
+    if (a.open) {
+      return null;
+    }
+    if (a.token && supplied && tokenMatches(p.token, supplied)) {
+      return null;
+    }
+    if (a.users && who && who.id) {
+      if (this.userMaySubmit(p, who)) {
+        req.submitter = who;
+        return null;
+      }
+      if (!a.token || !supplied) {
+        return { status: 403, message: 'You have not been approved to submit documents to this project: the server\'s administrator approves users' };
+      }
+    }
+    return { status: 401, message: this.submitNeeds(p, channel) };
+  }
+
+  /** What a submission to the project needs, as a message */
+  submitNeeds(p, channel) {
+    const a = this.submitAccess(p);
+    const users = a.users === 'approved' ? 'a logged in user who has been approved' : 'a logged in user';
+    if (channel === 'api') {
+      if (!a.users) {
+        return 'This project requires its submission token in the Authorization header';
+      }
+      return `This project requires ${a.token ? 'its submission token, or ' : ''}${users}: send ${a.token ? 'the token, or ' : ''}the user's API token (made on their account page) as Authorization: Bearer`;
+    }
+    if (!a.users) {
+      return 'The submission token is missing or wrong';
+    }
+    return `This project takes documents from ${users}${a.token ? ', or with its submission token' : ''}: log in${a.token ? ', or give the token' : ''}`;
+  }
+
+  /**
+   * How a page offers submitting to a project, for the user looking at it: needsToken (show the
+   * token field), login (the user should log in to submit), blocked (why they can't, if they
+   * can't), asUser (they will submit as themselves), label (a few words for a list)
+   */
+  submitOffer(p, user) {
+    const a = this.submitAccess(p);
+    const asUser = this.userMaySubmit(p, user);
+    const out = { needsToken: a.token && !asUser, login: !!a.users && !user, asUser, blocked: null, label: '' };
+    if (a.users && !a.token && !asUser) {
+      out.blocked = user ? 'You have not been approved to submit documents to this project' : 'Log in to submit documents to this project';
+    }
+    out.label = a.open || asUser ? '' : a.users && a.token ? '(log in, or a token)' : a.users ? '(log in)' : '(needs a token)';
+    return out;
   }
 
   /** The token from the Authorization header, without any "Bearer " prefix. */
@@ -1831,11 +1879,7 @@ class IpsModule {
   }
 
   async create(req, res) {
-    const p = req.project;
-    if (tokenConfigured(p.token) && !tokenMatches(p.token, this.suppliedToken(req))) {
-      res.set('WWW-Authenticate', 'Bearer');
-      return this.sendOutcome(res, 401, 'login', "This project requires its submission token in the Authorization header");
-    }
+    // who may submit was checked before the body was read (the submitter middleware)
     if (!req.is('application/fhir+json') && !req.is('application/json')) {
       return this.sendOutcome(res, 415, 'not-supported', 'Documents must be JSON (application/fhir+json)');
     }
@@ -1887,7 +1931,8 @@ class IpsModule {
   sendSubmit(req, res, options = {}, status = 200) {
     res.status(status);
     this.sendHtml(res, `${req.project.name}: Submit a Document`,
-      render.renderSubmit(req.project, this.ctx(req, res), { needsToken: tokenConfigured(req.project.token), aiEnabled: this.store.projectAi(req.project).enabled === true, ...options }), Date.now(), req);
+      render.renderSubmit(req.project, this.ctx(req, res), { ...this.submitOffer(req.project, auth.currentUser(req)), loginUrl: auth.loginUrl(req, `${req.baseUrl}/${req.project.code}/submit`),
+        aiEnabled: this.store.projectAi(req.project).enabled === true, ...options }), Date.now(), req);
   }
 
   // ---- reports ----
@@ -2195,20 +2240,22 @@ class IpsModule {
 
   // ---- the editor ----
 
-  /** The projects an editor without a project can submit to: code, name, and whether it needs a token. */
-  submitTargets() {
+  /** The projects an editor without a project can submit to: code, name, and how (submitOffer). */
+  submitTargets(user) {
     // the list leaves the token out; whether there is one comes from the project itself
-    return this.store.projects().map(p => ({ code: p.code, name: p.name, needsToken: tokenConfigured(this.store.projectByCode(p.code)?.token) }));
+    return this.store.projects().map(p => ({ code: p.code, name: p.name, ...this.submitOffer(this.store.projectByCode(p.code), user) }));
   }
 
   /** What every editor page passes to the document actions (doc-actions.js). */
-  actionsConfig(req, editor) {
+  actionsConfig(req, editor, res = null) {
     const base = req.baseUrl;
     const p = req.project;
     return {
       editor,
-      project: p ? { code: p.code, name: p.name, needsToken: tokenConfigured(p.token) } : null,
-      projects: p ? [] : this.submitTargets(),
+      project: p ? { code: p.code, name: p.name, ...this.submitOffer(p, auth.currentUser(req)) } : null,
+      projects: p ? [] : this.submitTargets(auth.currentUser(req)),
+      // a logged in user's posts carry the CSRF token (lusca checks it for them)
+      csrf: res.locals?._csrf || null,
       canShare: !!this.shl,
       shareDays: DEFAULT_EDITOR_SHARE_DAYS,
       urls: {
@@ -2246,7 +2293,7 @@ class IpsModule {
       render.renderCompose(p, this.ctx(req, res), {
         schema: editorSchema.forBrowser(), model, from,
         aiEnabled: p ? this.store.projectAi(p).enabled === true : false, canLookup: !!(this.tx && this.valueSets),
-        actions: this.actionsConfig(req, 'general'),
+        actions: this.actionsConfig(req, 'general', res),
         testPatients: assets.testPatients(req.baseUrl)
       }), Date.now(), req);
   }
@@ -2257,7 +2304,7 @@ class IpsModule {
     this.sendHtml(res, p ? `${p.name}: Patient IPS Editor` : 'Patient IPS Editor',
       render.renderPatientEditor(p, this.ctx(req, res), {
         page: assets.text('patient-editor', 'page.html'),
-        actions: this.actionsConfig(req, 'patient'),
+        actions: this.actionsConfig(req, 'patient', res),
         aiEnabled: p ? this.store.projectAi(p).enabled === true : false
       }), Date.now(), req);
   }
@@ -2350,8 +2397,9 @@ class IpsModule {
       return res.status(404).json({ error: code ? `There is no project '${code}'` : 'Choose the project to submit the document to' });
     }
     const supplied = typeof req.body.token === 'string' ? req.body.token.trim() : '';
-    if (tokenConfigured(p.token) && !tokenMatches(p.token, supplied)) {
-      return res.status(401).json({ error: 'The submission token is missing or wrong' });
+    const problem = this.submissionProblem(req, p, supplied, auth.currentUser(req), 'web');
+    if (problem) {
+      return res.status(problem.status).json({ error: problem.message });
     }
     const bundle = this.bundleIn(req);
     const problems = bundle ? this.editorProblems(bundle) : ['There is no document'];
@@ -2496,8 +2544,9 @@ class IpsModule {
     const p = req.project;
     if (action === 'submit') {
       const supplied = typeof body.token === 'string' ? body.token.trim() : '';
-      if (tokenConfigured(p.token) && !tokenMatches(p.token, supplied)) {
-        return res.status(401).json({ error: 'The submission token is missing or wrong' });
+      const problem = this.submissionProblem(req, p, supplied, auth.currentUser(req), 'web');
+      if (problem) {
+        return res.status(problem.status).json({ error: problem.message });
       }
     }
     let built;
@@ -2531,8 +2580,9 @@ class IpsModule {
     const p = req.project;
     const text = typeof req.body.bundle === 'string' ? req.body.bundle : '';
     const supplied = typeof req.body.token === 'string' ? req.body.token.trim() : '';
-    if (tokenConfigured(p.token) && !tokenMatches(p.token, supplied)) {
-      return this.sendSubmit(req, res, { error: 'The submission token is missing or wrong', bundle: text }, 401);
+    const problem = this.submissionProblem(req, p, supplied, auth.currentUser(req), 'web');
+    if (problem) {
+      return this.sendSubmit(req, res, { error: problem.message, bundle: text }, problem.status);
     }
     if (Buffer.byteLength(text, 'utf8') > this.maxSize) {
       return this.sendSubmit(req, res, { error: `Documents can't be bigger than ${this.maxSize} bytes` }, 413);
@@ -2831,9 +2881,7 @@ class IpsModule {
       format: ['json'],
       rest: [{
         mode: 'server',
-        documentation: tokenConfigured(p.token)
-          ? 'Submitting a document requires the project\'s token in the Authorization header (Bearer)'
-          : 'Anyone may submit a document',
+        documentation: this.submitAccess(p).open ? 'Anyone may submit a document' : this.submitNeeds(p, 'api'),
         resource: [{
           type: 'Bundle',
           profile: 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips',

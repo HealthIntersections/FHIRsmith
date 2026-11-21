@@ -2,18 +2,22 @@
 
 By default the registry is open, as HL7's ecosystem registry is: anyone can call the API. A
 registry run for a narrower community - an enterprise, a national programme, a vendor's
-customers - can be closed with `modules.registry.security`, in any combination of three ways:
+customers - can be closed with `modules.registry.security`, in two ways, alone or together:
 
 | Method | Who it suits |
 |---|---|
-| `apiToken` | A handful of clients you configure yourself: one token, every client sends it |
-| `users` | Clients you want to tell apart - issue, expire and revoke tokens one by one, see who is calling |
+| `required: true` | Clients you want to tell apart: users of the server with the registry **member** role, each with their own API tokens - issue, expire and revoke them one by one, see who is calling |
 | `oidc` | An enterprise with an identity provider: it decides who may call, and issues the tokens |
 
-The methods combine: a registry can accept its enterprise's JWTs *and* have a few locally
-managed users for clients that can't do OAuth. The users are mostly software - a validator
-in a build pipeline, a server resolving terminology - not people, and the design follows
-from that.
+They combine: a registry can accept its enterprise's JWTs *and* have a few members for
+clients that can't do OAuth. The members are mostly software - a validator in a build
+pipeline, a server resolving terminology - not people.
+
+Users, logins, roles and API tokens are the server's, for every module
+([library/auth](../../library/auth/README.md)): the registry has no users or passwords of its
+own. (Before, it had: `security.apiToken`, one token every client sent, and `security.users`,
+users with their own tokens. Neither is used any more; while either is still in the
+configuration, the API stays closed.)
 
 ## What is closed
 
@@ -32,8 +36,9 @@ Content-Type: application/json
   "documentation": "/tx-reg/openapi" }
 ```
 
-(The message says `The token is not valid for this registry` when one was sent.) An open
-registry ignores any token sent to it.
+(The message says `The token is not valid for this registry` when one was sent.) A valid
+token of a user who is not a member gets `403 Forbidden`. An open registry ignores any token
+sent to it.
 
 Failed authentications are limited per address. After `failedAuthPerWindow` requests
 answered 401 in 15 minutes (default 60), the address's requests with a token that isn't
@@ -50,10 +55,10 @@ As an HTTP bearer token, or in an `Api-Key` header (`X-API-Key` is accepted too)
 
 ```http
 GET /tx-reg/resolve?fhirVersion=R4&url=http://loinc.org
-Authorization: Bearer txr_k3Jd9...
+Authorization: Bearer fhs_k3Jd9...
 
 GET /tx-reg/resolve?fhirVersion=R4&url=http://loinc.org
-Api-Key: txr_k3Jd9...
+Api-Key: fhs_k3Jd9...
 ```
 
 The HL7 Java tooling (validator, IG publisher, and everything that uses
@@ -63,80 +68,37 @@ secured registry needs no change to the tools, only a settings entry:
 ```json
 { "servers": [
   { "url": "https://ecosystem.example.org/tx-reg",
-    "authenticationType": "token", "token": "txr_k3Jd9..." }
+    "authenticationType": "token", "token": "fhs_k3Jd9..." }
 ] }
 ```
 
 (`"authenticationType": "apikey", "apikey": "..."` sends the `Api-Key` header instead.) Note
 that the tooling can *send* a token but not *obtain* one, so a Java client of an OIDC-secured
-registry needs a long-lived token - from a local user, or an OIDC client credential arranged
+registry needs a long-lived token - a member's API token, or an OIDC client credential arranged
 outside the tool.
 
-## Method 1: a single API token
+## Members and their tokens
 
 ```json
-"security": { "apiToken": "a long random string" }
+"security": { "required": true }
 ```
 
-Every client sends the same token. Compared in constant time; nothing is stored. Rotating it
-means changing the configuration and every client at once, which is why this suits only a few
-clients you control.
+Every API call must come from a member: a user of the server with the registry **member**
+role. Software sends one of its API tokens; a person logged in with a browser can call it too.
+The server's administrators make the users, give them the role, and issue their tokens
+(`/auth/admin/users`); a user who logs in can issue and revoke their own (`/auth/account`). To
+rotate a token without an outage: issue the new one, move the client to it, revoke the old
+one. See [library/auth](../../library/auth/README.md) for tokens (stored as SHA-256 hashes,
+shown once, with an optional expiry), passwords and logins.
 
-## Method 2: users with their own tokens
+The registry counts the requests each member makes, in memory, written to its database once a
+minute (`security.database`, default `registry-auth.db` in the data folder's `databases`
+directory, which also holds the [documents](documents.md)). The administrators see them on
+`/tx-reg/usage`, with the OIDC clients'.
 
-```json
-"security": {
-  "users": {
-    "database": "registry-auth.db",
-    "adminUsername": "admin",
-    "adminPassword": "...",
-    "sessionSecret": "a long random string",
-    "cookieSecure": true,
-    "loginAttemptsPerWindow": 20
-  }
-}
-```
+Members also read the [documents](documents.md) that aren't public.
 
-Users are kept in a SQLite database (`database`: a file in the data folder's `databases`
-directory, an absolute path, or `:memory:`). The administrator's login comes from the
-configuration, as in the other FHIRsmith modules; without `adminPassword` nobody can create
-users. Sessions are kept in the same database, so with a configured `sessionSecret` logins
-survive a restart. Changing or removing a user's password ends that user's other sessions.
-Pages that a visitor only reads (documents and their history) start no session for them.
-`cookieSecure` (default true) marks
-the login cookie `Secure`, which needs HTTPS and a proxy that passes `X-Forwarded-Proto`
-([configuration.md](configuration.md#behind-a-proxy)). Logins are rate limited to
-`loginAttemptsPerWindow` per 15 minutes per address.
-
-**Administering users.** The administrator logs in at `/tx-reg/login` and manages users at
-`/tx-reg/admin/users`: create a user (a login, a name, optional notes and password, and
-whether it is an administrator), then on the user's page edit it, enable or disable it, set or
-remove its password, issue and revoke tokens, or delete it. A user flagged **administrator**
-can do all of this too, and edit [documents](documents.md); the configured administrator is
-the root that cannot be locked out. The users list shows each user's active tokens, request count and last
-use; an "other clients" table shows requests made with the API token and by OIDC clients.
-
-**Tokens.** A token is `txr_` followed by 256 random bits (base64url, 47 characters). It is
-shown once, on the page after it is issued, and only its SHA-256 hash is stored - a stolen
-database yields no tokens, and the hash (rather than bcrypt) is right because the token is
-already high-entropy and is checked on every API call. A token can carry a label and an
-expiry (in days); it stops working when it expires, when it is revoked, or when its user is
-disabled. Each token's requests are counted, in memory, and written to the database once a
-minute. The first 12 characters are kept in clear as the token's name on the pages.
-
-**Self service.** A user with a password can log in and manage its own tokens at
-`/tx-reg/account`: see them and their usage, issue new ones, revoke old ones, and change the
-password. To rotate a token without an outage: issue the new one, move the client to it,
-revoke the old one. A user without a password cannot log in at all; its tokens still work.
-The password is only for the pages - it is never accepted on the API.
-
-**Web security.** The pages use the same protections as the other FHIRsmith modules: a
-`SameSite=Lax`, `HttpOnly` session cookie; a CSRF token on every form; cross-site form posts
-refused by `Origin`; bcrypt for passwords, with the same comparison time whether or not the
-username exists; the session regenerated at login; every value from the database escaped on
-output. Logins, user changes and token issue/revocation are logged.
-
-## Method 3: OpenID Connect
+## OpenID Connect
 
 ```json
 "security": {
@@ -174,13 +136,13 @@ set (RSA, RSA-PSS, ECDSA, EdDSA) - symmetric HMAC algorithms are never accepted,
 secret would defeat the point.
 
 **Identifying the client.** Requests are counted per client, by the token's `azp`,
-`client_id`, `appid` or `sub` claim, and shown in the "other clients" table on the users page
-when `users` is also configured. The registry keeps no record of OIDC clients beyond that.
+`client_id`, `appid` or `sub` claim, and shown on the usage page (`/tx-reg/usage`). The
+registry keeps no record of OIDC clients beyond that. A valid JWT is a member: the provider
+decides who may call.
 
 **Which check a token gets.** A token of three dot-separated parts is treated as a JWT and
-verified against the provider when `oidc` is configured; anything else is compared with
-`apiToken`, then looked up among the users' tokens. So the three methods never confuse one
-another's tokens.
+verified against the provider when `oidc` is configured; anything else is looked up among the
+server's API tokens. So the two never confuse one another's tokens.
 
 This needs the `jose` package (a dependency of FHIRsmith); a registry configured for OIDC
 without it refuses to start, with a message saying so.
@@ -189,11 +151,11 @@ without it refuses to start, with a message saying so.
 
 * **Trusted proxy headers.** An enterprise that fronts the registry with its own gateway
   (mTLS, SSO, API keys it already issues) could pass the caller's identity in a header the
-  registry trusts from that proxy only. Not implemented; the gateway can simply hold the
-  registry's API token today.
-* **Single sign-on for the pages.** The administrator and users log in with passwords. The
+  registry trusts from that proxy only. Not implemented; the gateway can simply hold a
+  member's API token today.
+* **Single sign-on for the pages.** People log in with a password or GitHub. The
   OIDC provider could authenticate people to the pages too.
 * **Token introspection, LDAP, SCIM.** Considered and set aside until a deployment needs one.
   Introspection (RFC 7662) suits opaque enterprise tokens at the cost of a call per request;
-  LDAP is a human-login technology; SCIM would synchronise the enterprise's users into method
-  2 but still leave the tokens to be issued here.
+  LDAP is a human-login technology; SCIM would synchronise the enterprise's users into the
+  server's users but still leave the tokens to be issued here.

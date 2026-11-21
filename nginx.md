@@ -20,8 +20,8 @@ client address, scheme and host from the `X-Forwarded-*` headers, so nginx has t
 
 | Header | nginx value | What FHIRsmith uses it for |
 |---|---|---|
-| `Host` | `$host` | The base URL in the CapabilityStatement, TerminologyCapabilities and other self-references. It is taken from the host the client asked for. The publisher and testing modules also check the `Origin` of every form post against it, and refuse posts from anywhere else - so if nginx sends a different `Host` (e.g. `proxy_pass` with the default `$proxy_host`), every login and form fails with a 403 |
-| `X-Forwarded-Proto` | `$scheme` | The scheme of those same base URLs, and the `Secure` session cookie used by the publisher and token modules. If this header is missing, an HTTPS server advertises `http://` URLs and publisher login fails silently: you are sent back to the login page, still logged out |
+| `Host` | `$host` | The base URL in the CapabilityStatement, TerminologyCapabilities and other self-references. It is taken from the host the client asked for. Every form post (logins included) has its `Origin` checked against it, and posts from anywhere else are refused - so if nginx sends a different `Host` (e.g. `proxy_pass` with the default `$proxy_host`), every login and form fails with a 403 |
+| `X-Forwarded-Proto` | `$scheme` | The scheme of those same base URLs, and the `Secure` login cookie ([library/auth](library/auth/README.md)). If this header is missing, an HTTPS server advertises `http://` URLs and logging in fails silently: you are sent back to the login page, still logged out |
 | `X-Forwarded-For` | `$proxy_add_x_forwarded_for` | The client IP address in audit and security logs (`req.ip`). If this header is missing, every request is logged as coming from `127.0.0.1` |
 | `X-Request-Id` | `$request_id` | Optional. FHIRsmith echoes it back on the response, so a client's report can be matched to a line in the nginx log (add `$request_id` to your `log_format`) |
 
@@ -247,8 +247,13 @@ you can use a single instance with multiple servers in a [cluster](cluster.md). 
 you can skip this section, and just set up the cluster as a single server from the point of view of nginx.
 
 Note: Only the terminology module should run in the pool. Modules that keep their own state
-(`publisher`, `packages`, `shl`, `token`) belong on a single instance, with their own
+(`publisher`, `packages`, `shl`) belong on a single instance, with their own
 location or server name routed to it.
+
+Logins (`/auth`) are the server's: each instance has its users in `auth.database`. Instances on
+one host name should share them - the same `auth.database` file (they are on one machine) and
+the same `auth.sessionSecret` - so that a login on one is a login on all, and `/auth` can be
+routed to any of them.
 
 Most terminology operations keep no state between requests, so a pool of identical
 FHIRsmith instances could share traffic in any order. The exception is the **terminology

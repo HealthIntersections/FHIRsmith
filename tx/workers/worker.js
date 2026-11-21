@@ -3,7 +3,7 @@ const { CodeSystem } = require('../library/codesystem');
 const ValueSet = require('../library/valueset');
 const {VersionUtilities} = require("../../library/version-utilities");
 const {getValuePrimitive} = require("../../library/utilities");
-const {Issue} = require("../library/operation-outcome");
+const {Issue, OperationOutcome, outcomeFromError} = require("../library/operation-outcome");
 const {Languages} = require("../../library/languages");
 const {ConceptMap} = require("../library/conceptmap");
 const {Renderer} = require("../library/renderer");
@@ -42,6 +42,11 @@ class TerminologyWorker {
   // the base one, so their behaviour is unchanged.
   requiredSupplements = new Set();
   usedSupplements = new Set();
+
+  // modules.tx.conceptMapValueSetMatching: whether a ConceptMap element (or, in reverse, target)
+  // that names a value set rather than a code is matched by checking the code against the value
+  // set. Set from the configuration on the workers that use ConceptMaps ($translate, $validate-code)
+  conceptMapValueSetMatching = false;
 
   /**
    * @param {OperationContext} opContext - Operation context
@@ -170,6 +175,7 @@ class TerminologyWorker {
     if (!url) {
       return null;
     }
+    this.noteSupplementsWithCodeSystemUrl(url);
 
     if (!noVParams) {
       version = this.determineVersionBase(url, version, params);
@@ -258,11 +264,12 @@ class TerminologyWorker {
   async listVersions(url) {
     const versions = new Set();
 
-    // Check additional resources
+    // Check additional resources (a supplement can have the url of the code system it supplements,
+    // but its version is not a version of that code system)
     if (this.additionalResources) {
       for (const resource of this.additionalResources) {
         this.deadCheck('listVersions-additional');
-        if (resource.url === url && resource.version) {
+        if (resource.resourceType === 'CodeSystem' && resource.content !== 'supplement' && resource.url === url && resource.version) {
           versions.add(resource.version);
         }
       }
@@ -1173,6 +1180,77 @@ class TerminologyWorker {
     if (!this.usedSources.find(u => u == s)) {
       this.usedSources.push(s);
     }
+  }
+
+  /**
+   * Issues for the code systems in systems (url or url|version, as x-unknown-system has them)
+   * that weren't found because a server in the ecosystem that should have them couldn't be asked
+   * (see OperationContext.noteEcosystemProblem)
+   *
+   * @param {string[]} systems
+   * @param {string} severity
+   * @returns {Issue[]}
+   */
+  ecosystemIssues(systems, severity) {
+    const problems = this.opContext.ecosystemProblems();
+    if (problems.length === 0 || systems.length === 0) {
+      return [];
+    }
+    const urls = new Set(systems.filter(s => s).map(s => s.split('|')[0]));
+    const result = [];
+    for (const p of problems) {
+      if (urls.has(p.vurl.split('|')[0])) {
+        const m = this.i18n.translate('ECOSYSTEM_SERVER_UNAVAILABLE', this.opContext.HTTPLanguages, [p.vurl, p.why]);
+        result.push(new Issue(severity, 'transient', null, 'ECOSYSTEM_SERVER_UNAVAILABLE', m, 'not-found'));
+      }
+    }
+    return result;
+  }
+
+  /**
+   * A supplement needs a canonical url of its own. One with the url of the code system it
+   * supplements claims, with url|version, to be a version of that code system. Such supplements
+   * are in published packages, so a request that carries one is not failed, but when the
+   * operation looks up that code system it is told so (see sameUrlSupplementIssues). The
+   * supplement is otherwise used as any other (and is not a version of the code system: listVersions)
+   *
+   * @param {string} url - the code system the operation is looking up
+   */
+  noteSupplementsWithCodeSystemUrl(url) {
+    for (const resource of this.additionalResources || []) {
+      // supplementsUrl first: it's read from a cached resource's index, without loading it
+      const supplements = resource.supplementsUrl;
+      if (supplements && resource.resourceType === 'CodeSystem' && resource.url === url && supplements.split('|')[0] === url) {
+        this.opContext.noteSameUrlSupplement(resource.vurl || url);
+      }
+    }
+  }
+
+  /**
+   * The warnings for the supplements noted by noteSupplementsWithCodeSystemUrl
+   * @returns {Issue[]}
+   */
+  sameUrlSupplementIssues() {
+    const result = [];
+    for (const vurl of (this.opContext && this.opContext.sameUrlSupplements) || []) {
+      result.push(new Issue('warning', 'invalid', null, 'CODESYSTEM_CS_SUPP_SAME_URL',
+        this.i18n.translate('CODESYSTEM_CS_SUPP_SAME_URL', this.opContext.HTTPLanguages, [vurl]), 'version-error'));
+    }
+    return result;
+  }
+
+  /**
+   * The OperationOutcome an operation that failed answers with: the error, and the warnings
+   * of sameUrlSupplementIssues (the failure may well be because of the supplement)
+   * @param {Error} error
+   * @returns {Object} OperationOutcome json
+   */
+  errorOutcome(error) {
+    const oo = new OperationOutcome(outcomeFromError(error));
+    for (const iss of this.sameUrlSupplementIssues()) {
+      oo.addIssue(iss);
+    }
+    return oo.jsonObj;
   }
 
   presentVersionList(items) {

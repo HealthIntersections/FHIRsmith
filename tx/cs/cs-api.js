@@ -10,6 +10,11 @@ const {I18nSupport} = require("../../library/i18nsupport");
 const {VersionUtilities} = require("../../library/version-utilities");
 const { Issue } = require("../library/operation-outcome");
 const { SupplementTextIndex } = require("../library/supplement-text-index");
+const { NameIndex } = require("../library/text-match");
+
+// the text index of each in-memory concept list (_searchConceptList): built once, on the first
+// text filter, and kept as long as the list is
+const CONCEPT_LIST_INDEXES = new WeakMap();
 
 /**
  * For documentation, see cs-api.md
@@ -966,7 +971,82 @@ class CodeSystemProvider {
    * @param {String} filter user entered text search
    * @param {boolean} sort ?
    **/
-  async searchFilter(filterContext, filter, sort) { throw new Error("Text Search is not supported"); } // ? must override?
+  async searchFilter(filterContext, filter, sort) {
+    // a provider that has no text search needn't override this: the request asked for a text
+    // filter this code system doesn't have, which is the client's problem, not a server error
+    throw new Issue('error', 'not-supported', null, 'TEXT_SEARCH_NOT_SUPPORTED',
+      this.opContext.i18n.translate('TEXT_SEARCH_NOT_SUPPORTED', this.opContext.langs, [this.system()]), 'not-supported', 422);
+  }
+
+  /**
+   * A text filter ($expand filter) over a code system whose concepts are a list held in memory
+   * (currencies, countries, ...): matched and ranked as any other code system's (NameIndex, as
+   * cs-cs.js uses: the words of the display and other names in the search language, by stem,
+   * and the code by a straight left match), then the codes that a supplement in use matches
+   * (reported as used). The list's index is built on the first text filter, and kept.
+   *
+   * @param {FilterExecutionContext} filterContext - filtering context (its languages)
+   * @param {SearchFilterText} filter - the text filter
+   * @param {boolean} sort - best match first; otherwise in the list's order
+   * @param {Object[]} concepts - the code system's concepts, each with a code and a display
+   * @param {function} [namesOf] - concept -> the names it is searched by, as [{lang, text}] (a
+   *   lang of null is the code system's language); by default, its display
+   * @returns {Promise<Object[]>} the concepts that pass the filter
+   */
+  async _searchConceptList(filterContext, filter, sort, concepts, namesOf = null) {
+    const lang = this.searchLanguage(filterContext.languages);
+    let built = CONCEPT_LIST_INDEXES.get(concepts);
+    if (!built) {
+      const index = new NameIndex();
+      const csLang = this.defLang();
+      concepts.forEach((concept, ordinal) => {
+        index.addCode(ordinal, concept.code);
+        for (const name of (namesOf ? namesOf(concept) : [{ lang: null, text: concept.display }])) {
+          if (name.text) {
+            index.add(ordinal, name.lang || csLang, name.text);
+          }
+        }
+      });
+      built = index.build();
+      built.catch(() => CONCEPT_LIST_INDEXES.delete(concepts));
+      CONCEPT_LIST_INDEXES.set(concepts, built);
+    }
+    const index = await built;
+    this.opContext.deadCheck('cs:searchFilter');
+
+    const query = filter.query;
+    const ratings = new Map(); // ordinal -> rating
+    for (const [ordinal, texts] of index.searchNames(query, lang)) {
+      let rating = 0;
+      for (const text of texts) {
+        // the display is the better match; another name, a little less
+        rating = Math.max(rating, query.nameRank(text, lang) - (text === concepts[ordinal].display ? 0 : 10));
+      }
+      ratings.set(ordinal, Math.max(1, rating));
+    }
+    for (const ordinal of index.searchCodes(query)) {
+      ratings.set(ordinal, Math.max(ratings.get(ordinal) || 0, query.codeRank(concepts[ordinal].code)));
+    }
+    if (this.supplements && this.supplements.length > 0) {
+      const sources = new Map();
+      const supplementCodes = await this._supplementSearchCodes(filter, lang, sources);
+      if (supplementCodes.size > 0) {
+        concepts.forEach((concept, ordinal) => {
+          if (supplementCodes.has(concept.code) && !ratings.has(ordinal)) {
+            ratings.set(ordinal, 10);
+            CodeSystemProvider.noteSupplementUsed(filterContext, sources.get(concept.code));
+          }
+        });
+      }
+    }
+
+    // in the list's order, unless sorted (best first; Array.sort is stable, so ties keep it)
+    const ordinals = [...ratings.keys()].sort((a, b) => a - b);
+    if (sort) {
+      ordinals.sort((a, b) => ratings.get(b) - ratings.get(a));
+    }
+    return ordinals.map(ordinal => concepts[ordinal]);
+  }
 
   /**
    * Used for searching ucum (see specialEnumeration)

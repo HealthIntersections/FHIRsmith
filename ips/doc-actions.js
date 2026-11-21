@@ -44,8 +44,11 @@
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
-  function postJson(url, body) {
-    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json' }, body: JSON.stringify(body), credentials: 'same-origin' })
+  // csrf: the CSRF token, for a logged in user's post (the server checks it for them)
+  function postJson(url, body, csrf) {
+    var headers = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    if (csrf) { headers['X-CSRF-Token'] = csrf; }
+    return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(body), credentials: 'same-origin' })
       .then(function (r) {
         return r.json().catch(function () { return { error: 'HTTP ' + r.status }; }).then(function (j) {
           if (!r.ok) {
@@ -74,26 +77,105 @@
 
   // ---- the document as HTML, for the PDF, when the editor doesn't give its own ----
 
-  var DROP = { SCRIPT: 1, STYLE: 1, IFRAME: 1, OBJECT: 1, EMBED: 1, LINK: 1, META: 1, FORM: 1, INPUT: 1, BUTTON: 1, TEXTAREA: 1, SELECT: 1 };
-  function clean(node) {
-    Array.prototype.slice.call(node.childNodes).forEach(function (c) {
-      if (c.nodeType === 1) {
-        if (DROP[c.tagName.toUpperCase()]) { node.removeChild(c); return; }
-        Array.prototype.slice.call(c.attributes).forEach(function (a) {
-          var n = a.name.toLowerCase();
-          if (n.indexOf('on') === 0 || ((n === 'href' || n === 'src') && !/^(https?:|data:image\/|#)/i.test(a.value))) { c.removeAttribute(a.name); }
-        });
-        clean(c);
-      } else if (c.nodeType !== 3) {
-        node.removeChild(c);
+  /*
+   * Narrative sanitisation.
+   *
+   * Narrative is XHTML written by whoever produced the document. When the only
+   * documents in play were ones this site generated, dropping text.div straight into
+   * innerHTML was fine. Now that a document can arrive from a SMART Health Link -
+   * i.e. from anyone who can get a patient to open a link - it isn't: FHIR restricts
+   * narrative to a safe subset of XHTML, but nothing enforces that on the way in.
+   * So we enforce it here, on the way out.
+   */
+  const NARRATIVE_ELEMENTS = new Set([
+    'a', 'b', 'big', 'blockquote', 'br', 'caption', 'cite', 'code', 'col', 'colgroup',
+    'dd', 'div', 'dl', 'dt', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'hr', 'i', 'img',
+    'li', 'ol', 'p', 'pre', 'q', 'samp', 'small', 'span', 'strong', 'sub', 'sup',
+    'table', 'tbody', 'td', 'tfoot', 'th', 'thead', 'tr', 'tt', 'ul', 'var'
+  ]);
+
+  // Note: 'style' is deliberately NOT here. FHIR permits it, but a style attribute is
+  // enough to cover the page with an invisible overlay, and we lose little without it.
+  const NARRATIVE_ATTRIBUTES = new Set([
+    'abbr', 'align', 'alt', 'axis', 'bgcolor', 'border', 'cellpadding', 'cellspacing',
+    'char', 'charoff', 'charset', 'cite', 'class', 'colspan', 'compact', 'coords', 'dir',
+    'frame', 'headers', 'height', 'href', 'hreflang', 'hspace', 'lang', 'longdesc',
+    'name', 'nowrap', 'rel', 'rev', 'rowspan', 'rules', 'scope', 'shape', 'span',
+    'src', 'start', 'summary', 'title', 'type', 'valign', 'value', 'vspace', 'width'
+  ]);
+
+  // Removed outright, contents and all. Anything else unrecognised is unwrapped, so
+  // its text survives even though the tag doesn't.
+  const NARRATIVE_DROP = new Set([
+    'script', 'style', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet',
+    'form', 'input', 'button', 'select', 'option', 'textarea', 'label', 'fieldset',
+    'link', 'meta', 'base', 'svg', 'math', 'template', 'audio', 'video', 'source',
+    'track', 'canvas', 'noscript', 'dialog', 'portal'
+  ]);
+
+  const NARRATIVE_URL_ATTRIBUTES = new Set(['href', 'src', 'longdesc', 'cite']);
+
+  function narrativeUrlIsSafe(name, value) {
+    if (!NARRATIVE_URL_ATTRIBUTES.has(name)) {
+      return true;
+    }
+    // Strip whitespace and control characters first - 'java\tscript:' is a scheme too
+    // eslint-disable-next-line no-control-regex -- control characters are what browsers ignore
+    const url = String(value).replace(/[\x00-\x20]/g, '').toLowerCase();
+    if (url.startsWith('#') || url.startsWith('/') || url.startsWith('http://') ||
+        url.startsWith('https://') || url.startsWith('mailto:')) {
+      return true;
+    }
+    if (name === 'src' && url.startsWith('data:image/')) {
+      return true;
+    }
+    return !/^[a-z][a-z0-9+.-]*:/.test(url); // no scheme at all means a relative url
+  }
+
+  function scrubNarrativeNode(node) {
+    const children = Array.prototype.slice.call(node.childNodes);
+    for (const child of children) {
+      if (child.nodeType === Node.COMMENT_NODE) {
+        node.removeChild(child);
+        continue;
       }
-    });
-    return node;
+      if (child.nodeType !== Node.ELEMENT_NODE) {
+        continue; // text is text
+      }
+      const name = child.tagName.toLowerCase();
+      if (NARRATIVE_DROP.has(name)) {
+        node.removeChild(child);
+        continue;
+      }
+      scrubNarrativeNode(child);
+      if (!NARRATIVE_ELEMENTS.has(name)) {
+        // Unrecognised but harmless: keep the (already scrubbed) content, lose the tag
+        while (child.firstChild) {
+          node.insertBefore(child.firstChild, child);
+        }
+        node.removeChild(child);
+        continue;
+      }
+      for (const attr of Array.prototype.slice.call(child.attributes)) {
+        const attrName = attr.name.toLowerCase();
+        if (!NARRATIVE_ATTRIBUTES.has(attrName) || !narrativeUrlIsSafe(attrName, attr.value)) {
+          child.removeAttribute(attr.name);
+        }
+      }
+    }
+  }
+
+  function sanitizeNarrative(html) {
+    if (typeof html !== 'string' || !html) {
+      return '';
+    }
+    // DOMParser neither runs scripts nor loads anything, so building this is safe
+    const doc = new DOMParser().parseFromString(String(html), 'text/html');
+    scrubNarrativeNode(doc.body);
+    return doc.body.innerHTML;
   }
   function narrative(div) {
-    if (typeof div !== 'string' || !div) { return ''; }
-    var doc = new DOMParser().parseFromString('<body>' + div + '</body>', 'text/html');
-    return clean(doc.body).innerHTML;
+    return sanitizeNarrative(div);
   }
   function resolve(bundle, ref) {
     if (!ref || typeof ref.reference !== 'string') { return null; }
@@ -156,17 +238,27 @@
     var submitPart = el('span', {});
     var projectSelect = null;
     var tokenInput = el('input', { type: 'password', class: 'form-control', style: 'display: inline-block; width: 12em', placeholder: 'Submission token', autocomplete: 'off', 'aria-label': 'Submission token' });
+    // the project chosen: its submitOffer (needsToken, blocked, asUser...)
+    function chosen() {
+      if (cfg.project) { return cfg.project; }
+      return (cfg.projects || []).filter(function (x) { return projectSelect && x.code === projectSelect.value; })[0] || null;
+    }
+    var note = el('span', { class: 'ips-small' });
     function needsToken() {
-      if (cfg.project) { return cfg.project.needsToken; }
-      var p = (cfg.projects || []).filter(function (x) { return projectSelect && x.code === projectSelect.value; })[0];
+      var p = chosen();
       return !!(p && p.needsToken);
     }
-    function showToken() { tokenInput.style.display = needsToken() ? 'inline-block' : 'none'; }
+    function showToken() {
+      var p = chosen();
+      tokenInput.style.display = needsToken() ? 'inline-block' : 'none';
+      // users only, and this one can't: say so (the server would refuse it anyway)
+      note.textContent = p && p.blocked ? ' ' + p.blocked : '';
+    }
     function submit() {
       var project = cfg.project ? cfg.project.code : (projectSelect ? projectSelect.value : '');
       if (!project) { failed('Not submitted', new Error('Choose the project to submit the document to')); return; }
       messages.innerHTML = '<p><i>Submitting...</i></p>';
-      postJson(cfg.urls.submit, { project: project, token: tokenInput.value, bundle: bundle, editor: cfg.editor })
+      postJson(cfg.urls.submit, { project: project, token: tokenInput.value, bundle: bundle, editor: cfg.editor }, cfg.csrf)
         .then(function (j) {
           if (hooks.onSubmitted) { hooks.onSubmitted(j); }
           messages.innerHTML = '<p class="text-success">Submitted as document ' + escapeHtml(String(j.id)) + '. Opening it...</p>';
@@ -186,6 +278,7 @@
     if (cfg.project || (cfg.projects || []).length) {
       submitPart.appendChild(document.createTextNode(' '));
       submitPart.appendChild(tokenInput);
+      submitPart.appendChild(note);
       showToken();
     }
 
@@ -301,5 +394,5 @@
     return api;
   }
 
-  window.IpsDocActions = { create: create, defaultHtml: defaultHtml };
+  window.IpsDocActions = { create: create, defaultHtml: defaultHtml, sanitizeNarrative: sanitizeNarrative };
 })();

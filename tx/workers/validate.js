@@ -17,16 +17,17 @@ const {Languages, Language} = require("../../library/languages");
 const {Extensions} = require("../library/extensions");
 const {validateParameter, isAbsoluteUrl, validateOptionalParameter, getValuePrimitive} = require("../../library/utilities");
 const {TxParameters} = require("../params");
-const { OperationOutcome, Issue, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
+const { OperationOutcome, Issue, buildOperationOutcome } = require('../library/operation-outcome');
 const {Parameters} = require("../library/parameters");
 const {Designations, DisplayCheckingStyle, DisplayDifference, SearchFilterText} = require("../library/designations");
 const ValueSet = require("../library/valueset");
-const {ValueSetExpander, UNKNOWN_CONCEPT_FILTER_PROPS, UNKNOWN_CONCEPT_FILTER_OPS} = require("./expand");
+const {ValueSetExpander, filterConceptCodes} = require("./expand");
 const {FhirCodeSystemProvider} = require("../cs/cs-cs");
 const {CodeSystem} = require("../library/codesystem");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {debugLog} = require("../operation-context");
 const { storedList, hasConcepts, listedConcepts } = require('../library/stored-concepts');
+const { CodingsChecker } = require('./check-codings');
 
 const DEV_IGNORE_VALUESET = false; // todo: what's going on with this (ported from pascal)
 
@@ -128,7 +129,7 @@ class ValueSetChecker {
         }
       }
     } catch (error) {
-      this.worker.log.error(error);
+      // rethrown: the handler logs it, if it isn't the answer to the request
       debugLog(error);
       if (error instanceof Issue && error.statusCode >= 400 && error.statusCode < 500) {
         // the value set can't be expanded (a code system it imports is unknown, it's too big...):
@@ -282,7 +283,8 @@ class ValueSetChecker {
           op.addIssue(new Issue('error', 'not-found', addToPath(path, 'system'), 'UNKNOWN_CODESYSTEM_VERSION', msg, 'not-found'));
           messages.push(msg);
         }
-      } else if (cs === null && result !== versionCoding) {
+      } else if (cs === null && result && result !== versionCoding) {
+        // (no version from the include or the parameters: nothing to compare the coding's version with)
         let msg = this.worker.i18n.translate('VALUESET_VALUE_MISMATCH', this.params.HTTPLanguages, [system, result, versionCoding]);
         op.addIssue(new Issue('error', 'invalid', addToPath(path, 'version'), 'VALUESET_VALUE_MISMATCH', msg, 'vs-invalid'));
         messages.push(msg);
@@ -396,8 +398,13 @@ class ValueSetChecker {
    * matches nothing (the value set is invalid - see invalidContentMessages)
    */
   async filterNamesUnknownCode(cs, fc) {
-    return !!fc.value && UNKNOWN_CONCEPT_FILTER_PROPS.has(fc.property) && UNKNOWN_CONCEPT_FILTER_OPS.has(fc.op)
-      && !(await this.codeKnown(cs, fc.value));
+    // the value, or for `in`, any code of its list
+    for (const code of filterConceptCodes(fc)) {
+      if (!(await this.codeKnown(cs, code))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async invalidContentMessages() {
@@ -1044,7 +1051,6 @@ class ValueSetChecker {
     let ppath; // the path of the coding that is returned
     let pver;
 
-
     let vstatus = {value: ''};
     let normalForm = {value: ''};
     let mt = [];
@@ -1052,6 +1058,9 @@ class ValueSetChecker {
     let tsys = '';
     let tcode = '';
     let tver = '';
+    // the codings as they were given: validating them fills in versions (for the codeableConcept
+    // that is returned), and what the ConceptMaps say is about the codings as given
+    const codingsAsGiven = (code.coding || []).map(c => Object.assign({}, c));
     let vcc = {}; // todo: VCC is an appendage, and useless. remove it
     if (code.text) {
       vcc.text = code.text;
@@ -1447,6 +1456,20 @@ class ValueSetChecker {
     // the answer, which is not the same as ok: a coding can be in the value set and still carry an
     // error of its own (an unknown version, say), and then the CodeableConcept is not valid
     let valid = ok === true && !op.hasErrors();
+    // a code system that wasn't found because the server in the ecosystem that has it couldn't be
+    // asked: the response says so, next to the issue saying it wasn't found. An error when the
+    // validation failed (it's part of why), a warning when it didn't
+    for (const iss of this.worker.ecosystemIssues([...unknownSystems], valid ? 'warning' : 'error')) {
+      op.addIssue(iss);
+      if (!valid) {
+        msg(iss.message);
+      }
+    }
+    // a request supplement with the url of the code system it supplements (see
+    // TerminologyWorker.noteSupplementsWithCodeSystemUrl): only ever a warning
+    for (const iss of this.worker.sameUrlSupplementIssues()) {
+      op.addIssue(iss, true);
+    }
     result.addParamBool('result', valid);
     if (psys) {
       result.addParamUri('system', psys);
@@ -1535,6 +1558,9 @@ class ValueSetChecker {
       result.addParamStr('message', toText(mt, '; '));
     }
     if (mode === 'codeableConcept') {
+      // what the ConceptMaps say about the codings together - hints and warnings only, so they
+      // don't affect the result or the message
+      await new CodingsChecker(this.worker, this.params).check(issuePath, { coding: codingsAsGiven }, op);
       result.addParam('codeableConcept', 'valueCodeableConcept', code);
     }
     if (op.hasIssues()) {
@@ -2261,16 +2287,10 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      if (error instanceof Issue) {
-        // Issues raised inside the validation are turned into a result by the inner method;
-        // one that reaches here (e.g. cache-id-unknown from setupAdditionalResources, before
-        // the inner try) must still be answered, or the request never completes.
-        let oo = new OperationOutcome();
-        oo.addIssue(error);
-        return res.status(error.statusCode || 500).json(oo.jsonObj);
-      } else {
-        return res.status(error.statusCode || 500).json(outcomeFromError(error));
-      }
+      // Issues raised inside the validation are turned into a result by the inner method;
+      // one that reaches here (e.g. cache-id-unknown from setupAdditionalResources, before
+      // the inner try) must still be answered, or the request never completes.
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
 
     }
   }
@@ -2316,7 +2336,9 @@ class ValidateWorker extends TerminologyWorker {
       }
       return result;
     } catch (error) {
-      this.log.error(error);
+      // An Issue becomes the validation's result (a code with no system, say): that is the
+      // answer, not a server failure, so it isn't logged. Anything else is rethrown, and the
+      // handler logs it
       debugLog(error);
       if (error instanceof Issue && !error.isHandleAsOO()) {
         return await this.handlePrepareError(error, coded, mode.mode, txp);
@@ -2391,7 +2413,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      return res.status(error.statusCode || 500).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2411,13 +2433,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      if (error instanceof Issue) {
-        let op = new OperationOutcome();
-        op.addIssue(error);
-        return res.status(error.statusCode || 500).json(op.jsonObj);
-      } else {
-        return res.status(error.statusCode || 500).json(outcomeFromError(error));
-      }
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2490,7 +2506,7 @@ class ValidateWorker extends TerminologyWorker {
     } catch (error) {
       this.log.error(error);
       debugLog(error);
-      return res.status(error.statusCode || 500).json(outcomeFromError(error));
+      return res.status(error.statusCode || 500).json(this.errorOutcome(error));
     }
   }
 
@@ -2756,7 +2772,7 @@ class ValidateWorker extends TerminologyWorker {
     try {
       await checker.prepare();
     } catch (error) {
-      this.log.error(error);
+      // as in handleCodeSystemInner: an Issue is the result, anything else the handler logs
       debugLog(error);
       if (!(error instanceof Issue) || error.isHandleAsOO()) {
         throw error;
@@ -2868,10 +2884,14 @@ class ValidateWorker extends TerminologyWorker {
   async handlePrepareError(error, coded, mode, txp) {
     let op = new OperationOutcome();
     op.addIssue(error);
+    const extra = this.ecosystemIssues(error.unknownSystem ? [error.unknownSystem] : [], error.level === 'error' ? 'error' : 'warning');
+    for (const iss of [...extra, ...this.sameUrlSupplementIssues()]) {
+      op.addIssue(iss);
+    }
     let p = new Parameters();
     p.addParamResource('issues', op.jsonObj);
     p.addParamBool('result', false);
-    p.addParamStr('message', error.message);
+    p.addParamStr('message', [error.message, ...extra.filter(i => i.level === 'error').map(i => i.message)].join('; '));
     if (!mode || !coded) {
       // nothing to add
     } else if (mode == 'codeableConcept') {

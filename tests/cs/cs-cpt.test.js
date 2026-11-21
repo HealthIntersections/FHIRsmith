@@ -585,7 +585,7 @@ describe('CPT Provider', () => {
     test('should handle empty code lookup', async () => {
       // Recreate provider if needed
       if (!provider) {
-        provider = await factory.build(new OperationContext(Languages.fromAcceptLanguage('en')), []);
+        provider = await factory.build(new OperationContext(Languages.fromAcceptLanguage('en'), opContext.i18n), []);
       }
 
       const result = await provider.locate('');
@@ -613,7 +613,7 @@ describe('CPT Provider', () => {
 
       await expect(
         provider.searchFilter(filterContext, 'test', false)
-      ).rejects.toThrow('Text Search is not supported');
+      ).rejects.toThrow('Text search is not supported for the code system');
     });
   });
 });

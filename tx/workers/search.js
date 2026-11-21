@@ -36,7 +36,7 @@ class SearchWorker extends TerminologyWorker {
   // Allowed search parameters
   static ALLOWED_PARAMS = [
     '_offset', '_count', '_elements', '_sort', '_summary', '_total', '_format',
-    'url', 'version', 'content-mode', 'date', 'description',
+    'url', 'url:below', 'url:contains', 'version', 'content-mode', 'date', 'description',
     'supplements', 'identifier', 'jurisdiction', 'name',
     'publisher', 'status', 'system', 'title', 'text',
     'source-system', 'target-system'
@@ -120,6 +120,13 @@ class SearchWorker extends TerminologyWorker {
           matches = [];
       }
 
+      // _id: the resource with that logical id (an exact match; a list separated by commas
+      // matches any of them)
+      if (params._id) {
+        const idLists = [].concat(params._id).map(v => String(v).split(','));
+        matches = matches.filter(m => idLists.every(ids => ids.includes(m.id)));
+      }
+
       // Sort results
       matches = this.sortResults(matches, sort);
       if (summary !== 'count') {
@@ -150,7 +157,7 @@ class SearchWorker extends TerminologyWorker {
     // Extract search parameters (excluding special params)
     const searchParams = {};
     for (const { name, value } of this.searchParamsFor(params, partialUrl)) {
-      searchParams[name] = name == 'url' || name == 'version' ? value : value.toLowerCase();
+      searchParams[name] = name == 'url' || name == 'url:below' || name == 'version' ? value : value.toLowerCase();
     }
 
     // If no search params, return all
@@ -163,9 +170,11 @@ class SearchWorker extends TerminologyWorker {
   }
 
   /**
-   * The search parameters to hand to the providers: the allowed ones that have a value. With
-   * partialUrl (the HTML search form), url becomes url:contains - the url contains the value,
-   * without regard to case - and the value is trimmed (a form value often picks up a space)
+   * The search parameters to hand to the providers: the allowed ones that have a value. url is
+   * an exact match, url:below a left match (the url starts with the value, case-sensitive) and
+   * url:contains the url contains the value, without regard to case. With partialUrl (the HTML
+   * search form), url becomes url:contains, and the value is trimmed (a form value often picks
+   * up a space)
    * @param {Object} params - the request parameters
    * @param {boolean} partialUrl
    * @returns {Array<{name: string, value: string}>}
@@ -520,7 +529,12 @@ class SearchWorker extends TerminologyWorker {
               isMatch = false;
               break;
             }
-          } else if (param === 'url:contains') { // the HTML form: partial, without regard to case
+          } else if (param === 'url:below') { // a left match, case-sensitive
+            if (!(json.url || '').startsWith(searchValue)) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:contains') { // partial, without regard to case
             if (!(json.url || '').toLowerCase().includes(searchValue)) {
               isMatch = false;
               break;
@@ -562,6 +576,10 @@ class SearchWorker extends TerminologyWorker {
         description: "This is a place holder for the code system which is fully supported through internal means (not by this code system)",
         content: "not-present"
       }
+      if (!json.version) {
+        // no version (the internal code systems without one): no element, rather than version: null
+        delete json.version;
+      }
       if (csp.webSource()) {
         json.extension = [{ url: "http://hl7.org/fhir/StructureDefinition/web-source", valueUrl : csp.webSource()}];
       }
@@ -601,7 +619,12 @@ class SearchWorker extends TerminologyWorker {
             isMatch = false;
             break;
           }
-        } else if (param === 'url:contains') { // the HTML form: partial, without regard to case
+        } else if (param === 'url:below') { // a left match, case-sensitive
+          if (!(json.url || '').startsWith(searchValue)) {
+            isMatch = false;
+            break;
+          }
+        } else if (param === 'url:contains') { // partial, without regard to case
           if (!(json.url || '').toLowerCase().includes(searchValue)) {
             isMatch = false;
             break;

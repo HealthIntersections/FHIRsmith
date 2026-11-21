@@ -1,7 +1,7 @@
 const { OperationContext } = require('../../tx/operation-context');
 const { Iso4217FactoryProvider } = require('../../tx/cs/cs-currency');
 const { Languages } = require('../../library/languages');
-const {Designations} = require("../../tx/library/designations");
+const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
 
 describe('Iso4217Services', () => {
@@ -197,11 +197,13 @@ describe('Iso4217Services', () => {
       expect(await provider.doesFilter('display', 'equals', 'Dollar')).toBe(false);
     });
 
-    test('should throw error for search filter', async () => {
+    test('should search the names (text filter)', async () => {
       const ctxt = await provider.getPrepContext(false);
-      await expect(
-        provider.searchFilter(ctxt, 'dollar', false)
-      ).rejects.toThrow('Text Search is not supported');
+      await provider.searchFilter(ctxt, new SearchFilterText('dollar'), false);
+      const [set] = await provider.executeFilters(ctxt);
+      const codes = set.list.map(c => c.code);
+      expect(codes).toEqual(expect.arrayContaining(['USD', 'AUD', 'CAD']));
+      expect(codes).not.toContain('EUR');
     });
 
     test('should throw error for unsupported filter', async () => {

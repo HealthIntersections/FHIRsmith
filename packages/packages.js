@@ -17,7 +17,7 @@ const escape = require('escape-html');
 const Logger = require('../library/logger');
 const {validateParameter, Utilities} = require("../library/utilities");
 const {describeCron} = require("../library/cron-utilities");
-const {tokenMatches, tokenConfigured} = require("../library/request-token");
+const auth = require('../library/auth');
 const { guarded } = require('../library/sqlite-utilities');
 const pckLog = Logger.getInstance().child({ module: 'packages' });
 const packagesOpenApi = require('./openapi');
@@ -83,6 +83,8 @@ const BROKEN_PARAMS = {
 };
 
 // Path parameter rules for GET /:id/:version (also published in openapi.yaml).
+// How long download counts are gathered before they are written (see countDownload)
+const DOWNLOAD_COUNT_FLUSH_MS = 30000;
 const PACKAGE_ID_PATTERN = /^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$/;
 const PACKAGE_ID_MAX_LENGTH = 100;
 const PACKAGE_VERSION_PATTERN = /^[a-zA-Z0-9._-]+$/;
@@ -200,6 +202,10 @@ class PackagesModule {
     this.config = null;
     this.db = null;
     this.readers = null; // the read connections (openReaders)
+    this.countsDb = null; // the connection download counts are written through (openCountsConnection)
+    this.pendingDownloads = new Map(); // PackageVersionKey -> downloads not yet written
+    this.downloadFlushTimer = null;
+    this.downloadFlush = null; // the flush under way
     this.crawlerJob = null;
     this.crawler = null;
     this.lastRunTime = null;
@@ -759,6 +765,10 @@ class PackagesModule {
 
   async initialize(config) {
     this.config = config;
+    auth.defineRoles('packages', [{ role: 'crawl', label: 'Start a crawl', description: 'POST /packages/crawl, usually with an API token from a scheduled job' }], { title: 'Packages', path: '/packages' });
+    if (this.config.crawlToken) {
+      pckLog.warn('modules.packages.crawlToken is no longer used: /packages/crawl is for users with the packages "crawl" role, with an API token');
+    }
 
     // Set default masterUrl if not configured
     if (!this.config.masterUrl) {
@@ -773,6 +783,7 @@ class PackagesModule {
     await this.dbRun(PACKAGE_DIST_TABLE);
     await this.dbRun(PACKAGE_SIGNATURES_TABLE);
     await this.openReaders();
+    await this.openCountsConnection();
 
     // Ensure mirror directory exists
     await this.ensureMirrorDirectory();
@@ -1023,6 +1034,41 @@ class PackagesModule {
       pckLog.warn(`Unable to open the packages database's read connections, so it is read through the one connection: ${e.message}`);
       this.readers = null;
     }
+  }
+
+  /**
+   * The connection download counts are written through: one of their own, used for nothing else.
+   *
+   * Each download was two UPDATEs on this.db, as it happened - the connection the crawler writes
+   * through too. node-sqlite3 runs one statement at a time on a connection, and Database#run
+   * finalizes its statement on the main thread, which takes the connection's mutex: so when two
+   * downloads came together, or a download during the crawler's writes, the main thread waited
+   * for the other statement to end. And under IO pressure a write takes seconds (its commit, or a
+   * WAL checkpoint, or waiting out another writer's lock with busy_timeout). npm.fhir.org's event
+   * loop stalled for 3-4 s with no request in flight - the counts are written after the response
+   * has gone - and the main thread was waiting on a futex (2026-11-18).
+   *
+   * Now downloads are counted in memory, and written every DOWNLOAD_COUNT_FLUSH_MS in one
+   * transaction, as one exec (which runs entirely on a libuv thread), through this connection,
+   * which never has more than that one thing running.
+   */
+  async openCountsConnection() {
+    await new Promise((resolve) => {
+      const db = new sqlite3.Database(this.getDatabasePath(), sqlite3.OPEN_READWRITE, (err) => {
+        if (err) {
+          pckLog.warn(`Unable to open a connection for the download counts, so they go through the main connection: ${err.message}`);
+          resolve();
+          return;
+        }
+        db.exec('PRAGMA busy_timeout = 5000', (e) => {
+          if (e) {
+            pckLog.warn(`Unable to set up the connection for the download counts: ${e.message}`);
+          }
+          this.countsDb = db;
+          resolve();
+        });
+      });
+    });
   }
 
   /** What requests read through: the read connections, or the one connection without them */
@@ -1760,24 +1806,24 @@ class PackagesModule {
     });
 
     // Manual crawler trigger. A crawl is a long, network-heavy job that anyone could
-    // otherwise start at will, so it is gated on a shared secret from the configuration
-    // (modules.packages.crawlToken), sent in the x-crawl-token header. With no token
-    // configured the endpoint is CLOSED - an administrative trigger that silently
-    // defaults to open is how a deployment ends up exposed without anything looking wrong.
-    this.router.post('/crawl', async (req, res) => {
+    // otherwise start at will, so it is for a user with the packages "crawl" role (or an
+    // administrator) - software sends an API token (Authorization: Bearer {token}; the
+    // x-crawl-token header, as before, works too)
+    // rate limited for requests that bring a token (library/auth)
+    this.router.post('/crawl', rateLimit(auth.credentialLimits()), (req, res, next) => {
+      const legacy = req.headers['x-crawl-token'];
+      if (typeof legacy === 'string' && legacy && !auth.presentsToken(req)) {
+        req.headers.authorization = 'Bearer ' + legacy;
+      }
+      next();
+    }, auth.requireApi(p => p.has('packages', 'crawl'), (req, res, status, message) => {
+      if (status === 401) {
+        pckLog.warn('Rejected /crawl: no valid API token (from ' + req.ip + ')');
+      }
+      res.status(status).json({ error: (status === 401 ? 'unauthorized: ' : 'forbidden: ') + message });
+    }), async (req, res) => {
       const start = Date.now();
       try {
-        if (!tokenConfigured(this.config.crawlToken)) {
-          // Say which of the two it is: the operator needs to know the endpoint is off
-          // because it was never configured, not that they typed the token wrongly.
-          res.status(403).json({ error: 'forbidden: no crawlToken is configured, so this endpoint is disabled' });
-          return;
-        }
-        if (!tokenMatches(this.config.crawlToken, req.headers['x-crawl-token'])) {
-          pckLog.warn('Rejected /crawl: missing or invalid x-crawl-token (from ' + req.ip + ')');
-          res.status(403).json({ error: 'forbidden: missing or invalid x-crawl-token' });
-          return;
-        }
         try {
           await this.runCrawler();
           res.json({
@@ -2448,7 +2494,7 @@ class PackagesModule {
         const redirectUrl = `${bucketUrl}${this.fixPrefix(id)}-${version}.tgz`;
         res.redirect(redirectUrl);
         // a download, though the bucket sends it (npm.fhir.org: all of them)
-        void this.incrementDownloadCounts(packageData.PackageVersionKey, id); // fire-and-forget; errors handled internally
+        this.incrementDownloadCounts(packageData.PackageVersionKey);
         return;
       }
 
@@ -2527,7 +2573,7 @@ class PackagesModule {
       // Update download counts after successful response
       // Do this asynchronously to not delay the response
       setImmediate(() => {
-        void this.incrementDownloadCounts(packageData.PackageVersionKey, id); // fire-and-forget; errors handled internally
+        this.incrementDownloadCounts(packageData.PackageVersionKey);
       });
 
     } catch (error) {
@@ -2536,35 +2582,71 @@ class PackagesModule {
     }
   }
 
-  async incrementDownloadCounts(packageVersionKey, packageId) {
+  /**
+   * Count a download (of a package version, by its PackageVersionKey). Counted in memory, and
+   * written every DOWNLOAD_COUNT_FLUSH_MS (see openCountsConnection), so the counts in the
+   * database lag by up to that long
+   */
+  incrementDownloadCounts(packageVersionKey) {
+    if (!Number.isInteger(packageVersionKey)) {
+      return;
+    }
+    this.pendingDownloads.set(packageVersionKey, (this.pendingDownloads.get(packageVersionKey) || 0) + 1);
+    this.scheduleDownloadFlush();
+  }
+
+  /** Write the download counts in DOWNLOAD_COUNT_FLUSH_MS, unless that is already arranged */
+  scheduleDownloadFlush() {
+    if (this.downloadFlushTimer || this.stopping) {
+      return;
+    }
+    this.downloadFlushTimer = setTimeout(() => {
+      this.downloadFlushTimer = null;
+      void this.flushDownloadCounts();
+    }, DOWNLOAD_COUNT_FLUSH_MS);
+    this.downloadFlushTimer.unref();
+  }
+
+  /**
+   * Write the downloads counted since the last time: one transaction, run as one exec (the
+   * statements are built here, from integers only). Counts that can't be written are kept for
+   * next time. Not critical: a failure is logged, never thrown
+   * @returns {Promise<void>}
+   */
+  async flushDownloadCounts() {
+    if (this.downloadFlush !== null) {
+      await this.downloadFlush;
+    }
+    if (this.pendingDownloads.size === 0) {
+      return;
+    }
+    const counts = this.pendingDownloads;
+    this.pendingDownloads = new Map();
+    const statements = ['BEGIN IMMEDIATE'];
+    for (const [key, n] of counts) {
+      statements.push(`UPDATE PackageVersions SET DownloadCount = DownloadCount + ${n} WHERE PackageVersionKey = ${key}`);
+      statements.push(`UPDATE Packages SET DownloadCount = DownloadCount + ${n} WHERE Id = (SELECT Id FROM PackageVersions WHERE PackageVersionKey = ${key})`);
+    }
+    statements.push('COMMIT');
+    const db = this.countsDb || this.db;
+    this.downloadFlush = new Promise((resolve) => {
+      db.exec(statements.join(';\n'), (err) => {
+        if (!err) {
+          resolve();
+          return;
+        }
+        pckLog.warn(`Unable to write the download counts (they are kept for next time): ${err.message}`);
+        for (const [key, n] of counts) {
+          this.pendingDownloads.set(key, (this.pendingDownloads.get(key) || 0) + n);
+        }
+        this.scheduleDownloadFlush();
+        db.exec('ROLLBACK', () => resolve());
+      });
+    });
     try {
-      // Update PackageVersions download count
-      await new Promise((resolve, reject) => {
-        this.db.run(
-          'UPDATE PackageVersions SET DownloadCount = DownloadCount + 1 WHERE PackageVersionKey = ?',
-          [packageVersionKey],
-          guarded(reject, (err) => {
-            if (err) reject(err);
-            else resolve();
-          })
-        );
-      });
-
-      // Update Packages download count
-      await new Promise((resolve, reject) => {
-        this.db.run(
-          'UPDATE Packages SET DownloadCount = DownloadCount + 1 WHERE Id = ?',
-          [packageId],
-          guarded(reject, (err) => {
-            if (err) reject(err);
-            else resolve();
-          })
-        );
-      });
-
-    } catch (error) {
-      pckLog.error('Error updating download counts:', error);
-      // Don't throw here - download counts are not critical
+      await this.downloadFlush;
+    } finally {
+      this.downloadFlush = null;
     }
   }
 
@@ -3413,6 +3495,18 @@ class PackagesModule {
     this.stopping = true;
     if (this.distBackfill) {
       await this.distBackfill;
+    }
+
+    // the downloads counted since the counts were last written
+    if (this.downloadFlushTimer) {
+      clearTimeout(this.downloadFlushTimer);
+      this.downloadFlushTimer = null;
+    }
+    await this.flushDownloadCounts();
+    if (this.countsDb) {
+      const countsDb = this.countsDb;
+      this.countsDb = null;
+      await new Promise((resolve) => countsDb.close(() => resolve()));
     }
 
     if (this.readers) {

@@ -128,6 +128,10 @@ paths:
           `usage` is in it.
         * A server that excludes the code system or value set is never returned.
         * `authoritative` and `candidates` are omitted when empty.
+        * When a code system (`url`, http: or https:) resolves to nothing, and no endpoint
+          at this FHIR version and usage hosts any code system on the url's host,
+          `unknown-host` gives the host, and the client may treat the host's other code
+          systems as unknown too (see 'Unknown Hosts' in the tx ecosystem IG).
 
         With `language`, endpoints matched on a language specific claim come first in
         `authoritative`, and candidates are marked `language-support: unknown`. Value set
@@ -384,6 +388,9 @@ components:
         candidates:
           type: array
           items: { $ref: '#/components/schemas/ResolvedServer' }
+        unknown-host:
+          type: string
+          description: With `url`, when nothing was found - the url's host (lower case, with any port), on which no endpoint hosts any code system
 
     ChooseServerResult:
       type: object

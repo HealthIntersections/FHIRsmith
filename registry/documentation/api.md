@@ -109,6 +109,24 @@ client's business (the Java tooling takes the first).
 (`complete`, `fragment` ...), if it reports one. `authoritative` and `candidates` are omitted
 when empty, so an empty object means nobody hosts it.
 
+When a code system with an `http:` or `https:` url resolves to nothing, and no endpoint the
+request would consider (the same FHIR version and `usage`, after exclusions) hosts any code
+system on the url's host - over `http:` or `https:` - the result says so:
+
+```json
+{
+  "formatVersion": "1",
+  "registry-url": "https://fhir.github.io/ig-registry/tx-servers.json",
+  "unknown-host": "dnvimatis.com"
+}
+```
+
+The host is the url's own host, in lower case, with any port: nothing is said about other
+hosts under it, or above it. A client can treat the host's other code systems as unknown for as
+long as it would remember this one was. `authoritativeOnly` and `language` don't change the
+answer: a host where some server is only a candidate is not unknown. Value set resolution never
+returns it.
+
 ### How resolution decides
 
 * An endpoint is only ever returned for content it actually hosts, as learned by scanning:
@@ -217,7 +235,8 @@ These are HTML, not part of the API, and never secured:
 |---|---|
 | `/tx-reg/software` | What each server runs, how old it is, and its uptime ([internals.md](internals.md#the-software-page)) |
 | `/tx-reg/log` | The scanner's log |
-| `/tx-reg/login`, `/tx-reg/account`, `/tx-reg/admin/users` | Login and user administration, when users are configured ([security.md](security.md)) |
+| `/tx-reg/login`, `/tx-reg/account`, `/tx-reg/admin/users` | Redirects to the server's login, account and users pages ([library/auth](../../library/auth/README.md)) |
+| `/tx-reg/usage` | The requests each client made, for the server's administrators ([security.md](security.md)) |
 
 ## Keeping the description honest
 

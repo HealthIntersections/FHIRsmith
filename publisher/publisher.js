@@ -5,11 +5,8 @@ const validation = require('./validation');
 const gitRemote = require('./git-remote');
 const githubRelease = require('./github-release');
 const Database = require('sqlite3').Database;
-const bcrypt = require('bcrypt');
-const session = require('express-session');
-const lusca = require('lusca');
+const auth = require('../library/auth');
 const rateLimit = require('express-rate-limit');
-const crypto = require('crypto');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
 const { requireSameOrigin } = require('../library/same-origin');
@@ -24,6 +21,9 @@ const GITHUB_MAX_FILE_SIZE = 100 * 1024 * 1024;
 class PublisherModule {
   constructor(stats) {
     this.router = express.Router();
+    // routes that look up who is asking (library/auth) are rate limited, for requests that bring
+    // a login or a token (anonymous requests aren't counted)
+    this.router.use(rateLimit(auth.credentialLimits()));
     this.db = null;
     this.config = null;
     this.logger = null;
@@ -40,37 +40,27 @@ class PublisherModule {
 
     // Initialize database first
     await this.initializeDatabase();
+    this.websiteList = [];
+    await this.refreshWebsiteList();
 
-    // Set up session middleware - use in-memory sessions or separate session db
-    if (!this.config.sessionSecret) {
-      // Never fall back to a constant. This project is open source, so a fixed default
-      // secret is a published signing key: anyone could mint themselves an admin session
-      // on any deployment that forgot the setting, and nothing about the server would
-      // look wrong. A random secret fails safe instead - sessions simply do not survive
-      // a restart, which is visible and harmless. token.js does the same.
-      this.logger.warn('publisher: no sessionSecret configured - using a random one, so ' +
-        'logins will not survive a restart. Set modules.publisher.sessionSecret.');
-    }
-    this.router.use(session({
-      secret: this.config.sessionSecret || crypto.randomBytes(64).toString('hex'),
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        // Secure by default: the cookie is then only ever sent over HTTPS. Express is
-        // configured to trust the proxy, so this works behind an NGINX TLS terminator
-        // reporting X-Forwarded-Proto. Set cookieSecure false to run the publisher over
-        // plain HTTP - without it the browser will not send the cookie back and login
-        // appears to succeed and then silently do nothing.
-        secure: this.config.cookieSecure ?? true,
-        // CSRF: the browser leaves the cookie off a POST that starts on another site. That,
-        // with the Origin check below, is what stops another site's page from driving a
-        // logged-in browser to create, approve or delete tasks, or to add users
-        sameSite: 'lax',
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    // users, logins and the session are the server's (library/auth). The module's roles: queue
+    // and approve, each for a website; the server's administrators manage the websites
+    auth.defineRoles('publisher', [
+      { role: 'queue', label: 'Queue publications', scope: { label: 'Website', values: () => this.websiteList } },
+      { role: 'approve', label: 'Approve publications', scope: { label: 'Website', values: () => this.websiteList } }
+    ], { title: 'Publisher', path: '/publisher' });
+    for (const old of ['adminPassword', 'sessionSecret']) {
+      if (this.config[old]) {
+        this.logger.warn(`publisher: modules.publisher.${old} is no longer used - users and logins are the server's (library/auth)`);
       }
-      // Not using SQLiteStore to avoid the database conflict
-    }));
+    }
+    this.router.use(auth.session);
+    // who is logged in, for the pages and the permission checks
+    this.router.use((req, res, next) => {
+      const p = auth.currentUser(req);
+      req.pub = p ? { userId: p.id, userName: p.name, login: p.login, isAdmin: p.isAdmin } : {};
+      next();
+    });
 
     // every POST must come from one of our own pages - see library/same-origin.js
     this.router.use(requireSameOrigin());
@@ -82,8 +72,8 @@ class PublisherModule {
     // and every POST route has this.csrf in it, written out so static analysis can see it.
     // Pages only make a token for someone logged in (making one stores a secret in the
     // session, and anonymous visitors should not get sessions); the login page always does
-    this.csrf = lusca.csrf({ key: '_csrf' });
-    this.csrfIfLoggedIn = (req, res, next) => req.session && req.session.userId ? this.csrf(req, res, next) : next();
+    this.csrf = auth.csrf;
+    this.csrfIfLoggedIn = auth.csrfIfLoggedIn;
 
     // Set up routes
     this.setupRoutes();
@@ -218,9 +208,6 @@ class PublisherModule {
       });
     }
 
-    // the administrator, with the configured password (or a random one)
-    await this.ensureAdmin();
-
     // Schema migrations for existing databases
     await this.runMigrations();
   }
@@ -274,81 +261,39 @@ class PublisherModule {
       }));
     });
     const websiteColumnNames = websiteColumns.map(c => c.name);
-    if (!websiteColumnNames.includes('git_root')) {
-      await new Promise((resolve, reject) => {
-        this.db.run('ALTER TABLE websites ADD COLUMN git_root TEXT', guarded(reject, (err) => {
-          if (err) reject(err);
-          else {
-            this.logger.info('Migration: added git_root column to websites table');
-            resolve();
-          }
-        }));
+    // who queued and approved a task, and who took an action, by name: the users are the
+    // server's (library/auth), in another database, so the pages can't join to them
+    for (const [table, column] of [['tasks', 'created_by_label'], ['tasks', 'approved_by_label'], ['user_actions', 'actor_label']]) {
+      const cols = await new Promise((resolve, reject) => {
+        this.db.all(`PRAGMA table_info(${table})`, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
       });
+      if (!cols.some(c => c.name === column)) {
+        await new Promise((resolve, reject) => {
+          this.db.run(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`, guarded(reject, (err) => err ? reject(err) : resolve()));
+        });
+        this.logger.info(`Migration: added ${column} column to ${table} table`);
+      }
     }
-  }
-
-  /**
-   * The administrator, login 'admin'. Its password is the config's adminPassword, set (or reset)
-   * at every start, so changing the config changes it. With no adminPassword, an 'admin' that
-   * doesn't exist yet (and no other administrator) - or that still has the old fixed default
-   * password, admin123 - gets a random password (a UUID), which is logged: set adminPassword to
-   * choose it. There is no page to change a password
-   */
-  async ensureAdmin() {
-    const get = (sql, params = []) => new Promise((resolve, reject) =>
-      this.db.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
-    const run = (sql, params = []) => new Promise((resolve, reject) =>
-      this.db.run(sql, params, guarded(reject, (err) => err ? reject(err) : resolve())));
-    const setPassword = async (admin, password) => {
-      const hash = await bcrypt.hash(password, 10);
-      if (admin) {
-        await run('UPDATE users SET password_hash = ?, is_admin = 1 WHERE id = ?', [hash, admin.id]);
-      } else {
-        await run('INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
-          ['Administrator', 'admin', hash, 1]);
+    // columns added to websites since it was first made: a database from before them has
+    // neither, and every insert or update of a website failed
+    for (const column of ['git_root', 'history_templates', 'web_templates']) {
+      if (!websiteColumnNames.includes(column)) {
+        await new Promise((resolve, reject) => {
+          this.db.run(`ALTER TABLE websites ADD COLUMN ${column} TEXT`, guarded(reject, (err) => {
+            if (err) reject(err);
+            else {
+              this.logger.info(`Migration: added ${column} column to websites table`);
+              resolve();
+            }
+          }));
+        });
       }
-    };
-
-    const configured = typeof this.config.adminPassword === 'string' && this.config.adminPassword.trim() !== ''
-      ? this.config.adminPassword : null;
-    const admin = await get("SELECT id, password_hash FROM users WHERE login = 'admin'");
-    if (configured) {
-      if (!admin || !(await bcrypt.compare(configured, admin.password_hash))) {
-        await setPassword(admin, configured);
-        this.logger.info(`Administrator 'admin': password ${admin ? 'changed to' : 'set from'} the configured adminPassword`);
-      }
-      return;
-    }
-    if (!admin) {
-      const others = await get('SELECT COUNT(*) as count FROM users WHERE is_admin = 1');
-      if (others.count > 0) {
-        return;
-      }
-      const password = crypto.randomUUID();
-      await setPassword(null, password);
-      this.logger.warn(`Created administrator - login: admin, password: ${password}. Set adminPassword in the publisher config to choose the password`);
-    } else if (await bcrypt.compare('admin123', admin.password_hash)) {
-      const password = crypto.randomUUID();
-      await setPassword(admin, password);
-      this.logger.warn(`Administrator 'admin' had the old default password (admin123); it is now ${password}. Set adminPassword in the publisher config to choose the password`);
     }
   }
 
   setupRoutes() {
     // Main dashboard
     this.router.get('/', this.csrfIfLoggedIn, this.renderDashboard.bind(this));
-
-    // Authentication. The login post is rate limited: besides slowing down guessing, it
-    // is the one unauthenticated route that runs bcrypt, and bcrypt.compare holds a libuv
-    // threadpool thread (4 by default) for ~100ms - so without a limit a handful of
-    // concurrent attempts stall every file operation the server wants to do.
-    const loginLimiter = rateLimit({
-      windowMs: 15 * 60 * 1000,
-      max: this.config.loginAttemptsPerWindow ?? 20,
-      message: 'Too many login attempts, please try again later.',
-      standardHeaders: true,
-      legacyHeaders: false
-    });
 
     // Task actions delete build output from disk or queue new builds: a logged-in user can't
     // be allowed to hammer them either
@@ -369,8 +314,8 @@ class PublisherModule {
       legacyHeaders: false
     });
 
-    this.router.get('/login', this.csrf, this.renderLogin.bind(this));
-    this.router.post('/login', loginLimiter, this.csrf, this.handleLogin.bind(this));
+    // logging in is the server's (library/auth); the nav bar's Login and Logout come here
+    this.router.get('/login', (req, res) => res.redirect(auth.loginUrl(req, '/publisher')));
     this.router.post('/logout', this.csrf, this.handleLogout.bind(this));
 
     // Tasks
@@ -389,6 +334,9 @@ class PublisherModule {
           return res.status(404).send('Not found');
         }
         const outputDir = path.join(task.local_folder, 'draft', 'output');
+        // the IG's own pages: their scripts run, but in an origin of their own, so they can't act
+        // with the login of whoever is looking at them (an administrator approving the build)
+        res.setHeader('Content-Security-Policy', 'sandbox allow-scripts allow-popups allow-forms allow-downloads');
         express.static(outputDir)(req, res, next);
       }).catch(() => res.status(500).send('Error'));
     });
@@ -398,9 +346,8 @@ class PublisherModule {
     this.router.post('/admin/websites', this.csrf, this.requireAdmin.bind(this), this.createWebsite.bind(this));
     this.router.get('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.renderEditWebsite.bind(this));
     this.router.post('/admin/websites/:id/edit', this.csrf, this.requireAdmin.bind(this), this.updateWebsite.bind(this));
-    this.router.get('/admin/users', this.csrf, this.requireAdmin.bind(this), this.renderUsers.bind(this));
-    this.router.post('/admin/users', this.csrf, this.requireAdmin.bind(this), this.createUser.bind(this));
-    this.router.post('/admin/permissions', this.csrf, this.requireAdmin.bind(this), this.updatePermissions.bind(this));
+    // users, and who may queue and approve for each website, are on the server's users pages
+    this.router.get('/admin/users', (req, res) => res.redirect('/auth/admin/users'));
 
     // lusca rejects a post with a missing or wrong token by passing on an error
     this.router.use((err, req, res, next) => {
@@ -409,6 +356,11 @@ class PublisherModule {
       }
       next(err);
     });
+  }
+
+  /** The user making the request, as the task and action logs record them: Name (login) */
+  label(req) {
+    return req.pub && req.pub.userId ? `${req.pub.userName} (${req.pub.login})` : null;
   }
 
   /** The hidden field every POST form carries: the session's CSRF token. */
@@ -1548,14 +1500,19 @@ class PublisherModule {
 
   // Middleware
   requireAuth(req, res, next) {
-    if (!req.session.userId) {
-      return res.redirect('/publisher/login');
+    auth.denyFraming(res);
+    if (!req.pub.userId) {
+      return res.redirect(auth.loginUrl(req, '/publisher'));
     }
     next();
   }
 
   requireAdmin(req, res, next) {
-    if (!req.session.userId || !req.session.isAdmin) {
+    auth.denyFraming(res);
+    if (!req.pub.userId) {
+      return res.redirect(auth.loginUrl(req));
+    }
+    if (!req.pub.isAdmin) {
       return res.status(403).send('Admin access required');
     }
     next();
@@ -1575,16 +1532,16 @@ class PublisherModule {
         let content = '<div class="row mb-4">';
         content += '<div class="col-12">';
 
-        if (req.session.userId) {
-          content += '<p>Welcome, ' + escape(req.session.userName) + '!</p>';
+        if (req.pub.userId) {
+          content += '<p>Welcome, ' + escape(req.pub.userName) + '!</p>';
           content += '<div class="mb-3">';
           content += '<a href="/publisher/tasks" class="btn btn-primary me-2">View All Tasks</a>';
-          if (req.session.isAdmin) {
+          if (req.pub.isAdmin) {
             content += '<a href="/publisher/admin/websites" class="btn btn-secondary me-2">Manage Websites</a>';
-            content += '<a href="/publisher/admin/users" class="btn btn-secondary">Manage Users</a>';
+            content += '<a href="/auth/admin/users" class="btn btn-secondary">Manage Users</a>';
           }
           content += '<form style="display: inline-block; margin-left: 10px;" method="post" action="/publisher/logout">' + this.csrfField(res);
-          content += '<button type="submit" class="btn btn-outline-secondary">' + escape(req.session.userName) + ' \u2014 Logout</button>';
+          content += '<button type="submit" class="btn btn-outline-secondary">' + escape(req.pub.userName) + ' \u2014 Logout</button>';
           content += '</form>';
           content += '</div>';
         } else {
@@ -1620,12 +1577,7 @@ class PublisherModule {
         content += '</div>';
 
         const html = htmlServer.renderPage('publisher', 'FHIR Publisher', content, {
-          taskCount: tasks.length,
-          templateVars: {
-            loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-            loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-          }
+          taskCount: tasks.length
         });
 
         res.setHeader('Content-Type', 'text/html');
@@ -1639,95 +1591,11 @@ class PublisherModule {
     }
   }
 
-  renderLogin(req, res) {
-    const start = Date.now();
-    try {
-
-      const htmlServer = require('../library/html-server');
-
-      let content = '<div class="row justify-content-center">';
-      content += '<div class="col-md-6">';
-      content += '<h3>Login</h3>';
-      content += '<form method="post" action="/publisher/login">' + this.csrfField(res);
-      content += '<div class="mb-3">';
-      content += '<label for="login" class="form-label">Username</label>';
-      content += '<input type="text" class="form-control" id="login" name="login" required>';
-      content += '</div>';
-      content += '<div class="mb-3">';
-      content += '<label for="password" class="form-label">Password</label>';
-      content += '<input type="password" class="form-control" id="password" name="password" required>';
-      content += '</div>';
-      content += '<button type="submit" class="btn btn-primary">Login</button>';
-      content += '</form>';
-      content += '</div>';
-      content += '</div>';
-
-      const html = htmlServer.renderPage('publisher', 'Login - FHIR Publisher', content, {
-        templateVars: {
-          loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-          loginPath: req.session.userId ? "logout" : 'login',
-          loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-        }});
-      res.setHeader('Content-Type', 'text/html');
-      res.send(html);
-    } finally {
-      this.stats.countRequest('login', Date.now() - start);
-    }
-  }
-
-  async handleLogin(req, res) {
-    const start = Date.now();
-    try {
-
-      try {
-        const {login, password} = req.body;
-
-        const user = await new Promise((resolve, reject) => {
-          this.db.get(
-              'SELECT * FROM users WHERE login = ?',
-              [login],
-              guarded(reject, (err, row) => {
-                if (err) reject(err);
-                else resolve(row);
-              })
-          );
-        });
-
-        if (!user) {
-          return res.redirect('/publisher/login?error=invalid');
-        }
-
-        const passwordMatch = await bcrypt.compare(password, user.password_hash);
-        if (!passwordMatch) {
-          return res.redirect('/publisher/login?error=invalid');
-        }
-
-        // a new session id on login, so an id planted in the browser before login
-        // (session fixation) does not become a logged-in session
-        await new Promise((resolve, reject) => req.session.regenerate(e => e ? reject(e) : resolve()));
-        req.session.userId = user.id;
-        req.session.userName = user.name;
-        req.session.isAdmin = user.is_admin;
-
-        // Log the action
-        this.logUserAction(user.id, 'login', null, req.ip);
-
-        res.redirect('/publisher');
-      } catch (error) {
-        this.logger.error('Login error:', error);
-        res.redirect('/publisher/login?error=server');
-      }
-    } finally {
-      this.stats.countRequest('login', Date.now() - start);
-    }
-  }
-
   handleLogout(req, res) {
     const start = Date.now();
     try {
 
-      req.session.destroy();
-      res.redirect('/publisher');
+      req.session.destroy(() => res.redirect('/publisher'));
     } finally {
       this.stats.countRequest('logout', Date.now() - start);
     }
@@ -1740,12 +1608,12 @@ class PublisherModule {
       try {
         const htmlServer = require('../library/html-server');
         const tasks = await this.getTasks();
-        const userWebsites = req.session.userId ? await this.getUserWebsites(req.session.userId) : [];
+        const userWebsites = req.pub.userId ? await this.getUserWebsites(req.pub.userId) : [];
 
         let content = '<div class="row mb-4">';
 
         // Create task form for logged in users
-        if (req.session.userId && userWebsites.length > 0) {
+        if (req.pub.userId && userWebsites.length > 0) {
           content += '<div class="col-12 mb-4">';
           content += '<button class="btn btn-primary" onclick="document.getElementById(\'create-task-panel\').style.display = document.getElementById(\'create-task-panel\').style.display === \'none\' ? \'block\' : \'none\'">New Publication Task</button>';
           content += '<div id="create-task-panel" style="display: none;" class="mt-3">';
@@ -1800,15 +1668,15 @@ class PublisherModule {
           content += '<tbody>';
 
           for (const task of tasks) {
-            const canApprove = req.session.userId && task.status === 'waiting for approval' &&
-                await this.userCanApprove(req.session.userId, task.website_id);
+            const canApprove = req.pub.userId && task.status === 'waiting for approval' &&
+                await this.userCanApprove(req.pub.userId, task.website_id);
 
             // Determine if the current user can delete this task (mirrors deleteTask backend logic)
             const isPreApprovalStatus = task.status === 'waiting for approval' || task.status === 'queued' || (task.status === 'failed' && !task.approved_by);
             const isPostApprovalFailed = task.status === 'failed' && task.approved_by;
-            const canDelete = req.session.userId && (
-                (isPreApprovalStatus && await this.userCanQueue(req.session.userId, task.website_id)) ||
-                (isPostApprovalFailed && req.session.isAdmin)
+            const canDelete = req.pub.userId && (
+                (isPreApprovalStatus && await this.userCanQueue(req.pub.userId, task.website_id)) ||
+                (isPostApprovalFailed && req.pub.isAdmin)
             );
 
             content += '<tr>';
@@ -1850,7 +1718,7 @@ class PublisherModule {
               content += '</form>';
             }
 
-            if (req.session.userId && task.status === 'failed') {
+            if (req.pub.userId && task.status === 'failed') {
               content += ' <form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;">' + this.csrfField(res);
               content += '<button type="submit" class="btn btn-sm btn-warning">Retry</button>';
               content += '</form>';
@@ -1867,12 +1735,7 @@ class PublisherModule {
         content += '</div>';
         content += '</div>';
 
-        const html = htmlServer.renderPage('publisher', 'Tasks - FHIR Publisher', content, {
-          templateVars: {
-            loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-            loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-          }});
+        const html = htmlServer.renderPage('publisher', 'Tasks - FHIR Publisher', content);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (error) {
@@ -1898,12 +1761,12 @@ class PublisherModule {
         // form isn't the only way to reach this route.
         const problems = validation.validateTaskInput(req.body);
         if (problems.length > 0) {
-          this.logger.warn('Rejected task creation from user ' + req.session.userId + ': ' + problems.join('; '));
+          this.logger.warn('Rejected task creation from user ' + req.pub.userId + ': ' + problems.join('; '));
           return res.status(400).send('Invalid task details: ' + problems.join('; '));
         }
 
         // Verify user has permission for this website
-        const canQueue = await this.userCanQueue(req.session.userId, website_id);
+        const canQueue = await this.userCanQueue(req.pub.userId, website_id);
         if (!canQueue) {
           return res.status(403).send('You do not have permission to create tasks for this website');
         }
@@ -1929,8 +1792,8 @@ class PublisherModule {
         // Insert task (ID will be auto-generated)
         const result = await new Promise((resolve, reject) => {
           this.db.run(
-              'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              [req.session.userId, website_id, github_org, github_repo, git_branch, npm_package_id, version],
+              'INSERT INTO tasks (user_id, created_by_label, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              [req.pub.userId, this.label(req), website_id, github_org, github_repo, git_branch, npm_package_id, version],
               guarded(reject, function (err) {
                 if (err) reject(err);
                 else resolve(this.lastID);
@@ -1941,9 +1804,9 @@ class PublisherModule {
         const taskId = result;
 
         // Log the action
-        this.logUserAction(req.session.userId, 'create_task', taskId.toString(), req.ip);
+        this.logUserAction(req.pub.userId, 'create_task', taskId.toString(), req.ip);
 
-        this.logger.info('Task created: ID=' + taskId + ' (' + npm_package_id + '#' + version + ') by user ' + req.session.userId);
+        this.logger.info('Task created: ID=' + taskId + ' (' + npm_package_id + '#' + version + ') by user ' + req.pub.userId);
         res.redirect('/publisher/tasks');
       } catch (error) {
         this.logger.error('Error creating task:', error);
@@ -1971,7 +1834,7 @@ class PublisherModule {
         }
 
         // Check user permissions
-        const canApprove = await this.userCanApprove(req.session.userId, task.website_id);
+        const canApprove = await this.userCanApprove(req.pub.userId, task.website_id);
         if (!canApprove) {
           return res.status(403).send('You do not have permission to approve tasks for this website');
         }
@@ -1979,8 +1842,8 @@ class PublisherModule {
         // Update task status
         await new Promise((resolve, reject) => {
           this.db.run(
-              'UPDATE tasks SET status = ?, approved_by = ?, publishing_at = CURRENT_TIMESTAMP WHERE id = ?',
-              ['publishing', req.session.userId, taskId],
+              'UPDATE tasks SET status = ?, approved_by = ?, approved_by_label = ?, publishing_at = CURRENT_TIMESTAMP WHERE id = ?',
+              ['publishing', req.pub.userId, this.label(req), taskId],
               guarded(reject, (err) => {
                 if (err) reject(err);
                 else resolve();
@@ -1989,9 +1852,9 @@ class PublisherModule {
         });
 
         // Log the action
-        this.logUserAction(req.session.userId, 'approve_task', taskId, req.ip);
+        this.logUserAction(req.pub.userId, 'approve_task', taskId, req.ip);
 
-        this.logger.info('Task approved: ' + taskId + ' by user ' + req.session.userId);
+        this.logger.info('Task approved: ' + taskId + ' by user ' + req.pub.userId);
         res.redirect('/publisher/tasks');
       } catch (error) {
         this.logger.error('Error approving task:', error);
@@ -2021,11 +1884,11 @@ class PublisherModule {
         // Post-approval (failed after publishing started): admin only
         const isPostApproval = task.status === 'failed' && task.approved_by;
         if (isPostApproval) {
-          if (!req.session.isAdmin) {
+          if (!req.pub.isAdmin) {
             return res.status(403).send('Admin access required to delete a task that has been approved');
           }
         } else {
-          const canQueue = await this.userCanQueue(req.session.userId, task.website_id);
+          const canQueue = await this.userCanQueue(req.pub.userId, task.website_id);
           if (!canQueue) {
             return res.status(403).send('You do not have permission to delete tasks for this website');
           }
@@ -2056,8 +1919,8 @@ class PublisherModule {
           }));
         });
 
-        this.logUserAction(req.session.userId, 'delete_task', taskId, req.ip);
-        this.logger.info('Task deleted: ' + taskId + ' by user ' + req.session.userId);
+        this.logUserAction(req.pub.userId, 'delete_task', taskId, req.ip);
+        this.logger.info('Task deleted: ' + taskId + ' by user ' + req.pub.userId);
         res.redirect('/publisher/tasks');
       } catch (error) {
         this.logger.error('Error deleting task:', error);
@@ -2076,18 +1939,18 @@ class PublisherModule {
         const task = await this.getTask(taskId);
         if (!task) return res.status(404).send('Task not found');
         if (task.status !== 'failed') return res.status(400).send('Only failed tasks can be retried');
-        const canQueue = await this.userCanQueue(req.session.userId, task.website_id);
+        const canQueue = await this.userCanQueue(req.pub.userId, task.website_id);
         if (!canQueue) return res.status(403).send('You do not have permission to queue tasks for this website');
         const existingTask = await this.findActiveTask(task.npm_package_id, task.version);
         if (existingTask) return res.status(400).send('An active task for this package and version is already in progress.');
         const newTaskId = await new Promise((resolve, reject) => {
           this.db.run(
-              'INSERT INTO tasks (user_id, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?)',
-              [req.session.userId, task.website_id, task.github_org, task.github_repo, task.git_branch, task.npm_package_id, task.version],
+              'INSERT INTO tasks (user_id, created_by_label, website_id, github_org, github_repo, git_branch, npm_package_id, version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+              [req.pub.userId, this.label(req), task.website_id, task.github_org, task.github_repo, task.git_branch, task.npm_package_id, task.version],
               guarded(reject, function (err) { if (err) reject(err); else resolve(this.lastID); })
           );
         });
-        this.logUserAction(req.session.userId, 'retry_task', newTaskId.toString(), req.ip);
+        this.logUserAction(req.pub.userId, 'retry_task', newTaskId.toString(), req.ip);
         this.logger.info('Task retried: new ID=' + newTaskId + ' from task #' + taskId);
         res.redirect('/publisher/tasks/' + newTaskId + '/history');
       } catch (error) {
@@ -2202,12 +2065,7 @@ class PublisherModule {
 
           content += '<div class="mt-3"><a href="/publisher/tasks" class="btn btn-secondary">Back to Tasks</a></div>';
 
-          const html = htmlServer.renderPage('publisher', 'Task Output - FHIR Publisher', content, {
-            templateVars: {
-              loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-              loginPath: req.session.userId ? "logout" : 'login',
-              loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-            }});
+          const html = htmlServer.renderPage('publisher', 'Task Output - FHIR Publisher', content);
           res.setHeader('Content-Type', 'text/html');
           res.send(html);
         } else {
@@ -2296,7 +2154,7 @@ class PublisherModule {
         if (task.release_url) {
           content += '<p><strong>Release:</strong> <a href="' + escape(task.release_url) + '" target="_blank" rel="noopener noreferrer">' + escape(task.release_url) + '</a></p>';
         }
-        content += '<p><strong>Created by:</strong> ' + escape(task.user_name) + ' (' + escape(task.user_login) + ')</p>';
+        content += '<p><strong>Created by:</strong> ' + escape(task.user_name || 'unknown') + (task.user_login ? ' (' + escape(task.user_login) + ')' : '') + '</p>';
         if (task.approved_by_name) {
           content += '<p><strong>Approved by:</strong> ' + escape(task.approved_by_name) + '</p>';
         }
@@ -2359,7 +2217,7 @@ class PublisherModule {
 
         // User actions
         for (const action of actions) {
-          const who = action.user_name ? escape(action.user_name) + ' (' + escape(action.user_login) + ')' : 'Unknown';
+          const who = action.user_name ? escape(action.user_name) + (action.user_login ? ' (' + escape(action.user_login) + ')' : '') : 'Unknown';
           const ip = action.ip_address ? ' from ' + escape(action.ip_address) : '';
           let actionLabel = action.action;
           if (action.action === 'create_task') actionLabel = 'Created task';
@@ -2422,7 +2280,7 @@ class PublisherModule {
         if (task.status === 'waiting for approval') {
           content += '<a href="/publisher/tasks/' + task.id + '/qa" class="btn btn-outline-secondary me-2">View QA Report</a>';
         }
-        if (req.session.userId && task.status === 'failed') {
+        if (req.pub.userId && task.status === 'failed') {
           content += '<form method="post" action="/publisher/tasks/' + task.id + '/retry" style="display: inline;" class="me-2">' + this.csrfField(res);
           content += '<button type="submit" class="btn btn-warning">Retry</button>';
           content += '</form>';
@@ -2432,9 +2290,9 @@ class PublisherModule {
         // Post-approval (failed after approval): admin only
         const detailIsPreApproval = task.status === 'waiting for approval' || task.status === 'queued' || (task.status === 'failed' && !task.approved_by);
         const detailIsPostApprovalFailed = task.status === 'failed' && task.approved_by;
-        const detailCanDelete = req.session.userId && (
-            (detailIsPreApproval && await this.userCanQueue(req.session.userId, task.website_id)) ||
-            (detailIsPostApprovalFailed && req.session.isAdmin)
+        const detailCanDelete = req.pub.userId && (
+            (detailIsPreApproval && await this.userCanQueue(req.pub.userId, task.website_id)) ||
+            (detailIsPostApprovalFailed && req.pub.isAdmin)
         );
         if (detailCanDelete) {
           content += '<form method="post" action="/publisher/tasks/' + task.id + '/delete" style="display: inline;" class="me-2" onsubmit="return confirm(\'Delete task #' + task.id + ' and all its build output? This cannot be undone.\')">' + this.csrfField(res);
@@ -2444,12 +2302,7 @@ class PublisherModule {
         content += '<a href="/publisher/tasks" class="btn btn-secondary">Back to Tasks</a>';
         content += '</div>';
 
-        const html = htmlServer.renderPage('publisher', 'Task History - FHIR Publisher', content, {
-          templateVars: {
-            loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-            loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-          }});
+        const html = htmlServer.renderPage('publisher', 'Task History - FHIR Publisher', content);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (error) {
@@ -2488,9 +2341,7 @@ class PublisherModule {
       content += '<a href="/publisher/admin/websites" class="btn btn-secondary">Cancel</a></div>';
       content += '</form>';
 
-      const html = htmlServer.renderPage('publisher', 'Edit Website - FHIR Publisher', content, {
-        templateVars: { loginTitle: (req.session.userName || '') + ' \u2014 Logout', loginPath: 'logout', loginAction: 'POST', csrfToken: res.locals._csrf || '' }
-      });
+      const html = htmlServer.renderPage('publisher', 'Edit Website - FHIR Publisher', content);
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
     } catch (error) {
@@ -2515,12 +2366,14 @@ class PublisherModule {
         );
       });
 
-      this.logUserAction(req.session.userId, 'update_website', websiteId, req.ip);
-      this.logger.info('Website updated: ' + websiteId + ' by user ' + req.session.userId);
+      this.logUserAction(req.pub.userId, 'update_website', websiteId, req.ip);
+      await this.refreshWebsiteList();
+      this.logger.info('Website updated: ' + websiteId + ' by user ' + req.pub.userId);
       res.redirect('/publisher/admin/websites');
     } catch (error) {
       this.logger.error('Error updating website:', error);
-      res.status(500).send('Failed to update website');
+      // the page is for administrators: say why
+      res.status(500).send('Failed to update website: ' + escape(error.message));
     } finally {
       this.stats.countRequest('websites-update', Date.now() - start);
     }
@@ -2605,12 +2458,7 @@ class PublisherModule {
         content += '</div>';
         content += '</div>';
 
-        const html = htmlServer.renderPage('publisher', 'Websites - FHIR Publisher', content, {
-          templateVars: {
-            loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-            loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-          }});
+        const html = htmlServer.renderPage('publisher', 'Websites - FHIR Publisher', content);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } catch (error) {
@@ -2639,217 +2487,25 @@ class PublisherModule {
           );
         });
 
-        this.logUserAction(req.session.userId, 'create_website', name, req.ip);
-        this.logger.info('Website created: ' + name + ' by user ' + req.session.userId);
+        this.logUserAction(req.pub.userId, 'create_website', name, req.ip);
+        await this.refreshWebsiteList();
+        this.logger.info('Website created: ' + name + ' by user ' + req.pub.userId);
 
         res.redirect('/publisher/admin/websites');
       } catch (error) {
         this.logger.error('Error creating website:', error);
-        res.status(500).send('Failed to create website');
+        // the page is for administrators: say why
+        res.status(500).send('Failed to create website: ' + escape(error.message));
       }
     } finally {
       this.stats.countRequest('website', Date.now() - start);
     }
   }
 
-  async renderUsers(req, res) {
-    const start = Date.now();
-    try {
-
-
-      try {
-        const htmlServer = require('../library/html-server');
-        const users = await this.getUsers();
-        const websites = await this.getWebsites();
-
-        let content = '<div class="row mb-4">';
-
-        // Add user form
-        content += '<div class="col-12 mb-4">';
-        content += '<button class="btn btn-primary" onclick="document.getElementById(\'add-user-panel\').style.display = document.getElementById(\'add-user-panel\').style.display === \'none\' ? \'block\' : \'none\'">Add New User</button>';
-        content += '<div id="add-user-panel" style="display: none;" class="mt-3">';
-        content += '<h3>Add New User</h3>';
-        content += '<form method="post" action="/publisher/admin/users" class="row g-3">' + this.csrfField(res);
-        content += '<div class="col-md-3">';
-        content += '<label for="name" class="form-label">Full Name</label>';
-        content += '<input type="text" class="form-control" id="name" name="name" required>';
-        content += '</div>';
-        content += '<div class="col-md-3">';
-        content += '<label for="login" class="form-label">Username</label>';
-        content += '<input type="text" class="form-control" id="login" name="login" required>';
-        content += '</div>';
-        content += '<div class="col-md-3">';
-        content += '<label for="password" class="form-label">Password</label>';
-        content += '<input type="password" class="form-control" id="password" name="password" required>';
-        content += '</div>';
-        content += '<div class="col-md-3 d-flex align-items-end">';
-        content += '<div class="form-check">';
-        content += '<input class="form-check-input" type="checkbox" id="is_admin" name="is_admin">';
-        content += '<label class="form-check-label" for="is_admin">Administrator</label>';
-        content += '</div>';
-        content += '</div>';
-        content += '<div class="col-12">';
-        content += '<button type="submit" class="btn btn-primary">Add User</button>';
-        content += '</div>';
-        content += '</form>';
-        content += '</div>'; // add-user-panel
-        content += '</div>';
-
-        // Users list
-        content += '<div class="col-12">';
-        content += '<h3>Users & Permissions</h3>';
-
-        if (users.length === 0) {
-          content += '<p>No users found.</p>';
-        } else {
-          for (const user of users) {
-            const permissions = await this.getUserPermissions(user.id);
-
-            content += '<div class="card mb-3">';
-            content += '<div class="card-header">';
-            content += '<h5>' + escape(user.name) + ' (' + escape(user.login) + ') ' + (user.is_admin ? '<span class="badge bg-warning">Admin</span>' : '') + '</h5>';
-            content += '</div>';
-            content += '<div class="card-body">';
-
-            if (websites.length === 0) {
-              content += '<p>No websites available for permission assignment.</p>';
-            } else {
-              content += '<form method="post" action="/publisher/admin/permissions">' + this.csrfField(res);
-              content += '<input type="hidden" name="user_id" value="' + user.id + '">';
-              content += '<div class="permission-grid">';
-              content += '<div><strong>Website</strong></div>';
-              content += '<div><strong>Can Queue</strong></div>';
-              content += '<div><strong>Can Approve</strong></div>';
-
-              websites.forEach(website => {
-                const perm = permissions.find(p => p.website_id === website.id) || {};
-                content += '<div>' + escape(website.name) + '</div>';
-                content += '<div>';
-                content += '<input type="checkbox" name="queue_' + website.id + '"' + (perm.can_queue ? ' checked' : '') + '>';
-                content += '</div>';
-                content += '<div>';
-                content += '<input type="checkbox" name="approve_' + website.id + '"' + (perm.can_approve ? ' checked' : '') + '>';
-                content += '</div>';
-              });
-
-              content += '</div>';
-              content += '<div class="mt-3">';
-              content += '<button type="submit" class="btn btn-secondary btn-sm">Update Permissions</button>';
-              content += '</div>';
-              content += '</form>';
-            }
-
-            content += '</div>';
-            content += '</div>';
-          }
-        }
-
-        content += '</div>';
-        content += '</div>';
-
-        const html = htmlServer.renderPage('publisher', 'Users - FHIR Publisher', content, {
-          templateVars: {
-            loginTitle: req.session.userId ? (req.session.userName + ' \u2014 Logout') : 'Login',
-            loginPath: req.session.userId ? "logout" : 'login',
-            loginAction: req.session.userId ? "POST" : 'GET', csrfToken: res.locals._csrf || ''
-          }});
-        res.setHeader('Content-Type', 'text/html');
-        res.send(html);
-      } catch (error) {
-        this.logger.error('Error rendering users:', error);
-        res.status(500).send('Internal server error');
-      }
-    } finally {
-      this.stats.countRequest('users', Date.now() - start);
-    }
-  }
-
-  async createUser(req, res) {
-    const start = Date.now();
-    try {
-      try {
-        const {name, login, password, is_admin} = req.body;
-
-        const passwordHash = await bcrypt.hash(password, 10);
-
-        await new Promise((resolve, reject) => {
-          this.db.run(
-              'INSERT INTO users (name, login, password_hash, is_admin) VALUES (?, ?, ?, ?)',
-              [name, login, passwordHash, is_admin ? 1 : 0],
-              guarded(reject, function (err) {
-                if (err) reject(err);
-                else resolve();
-              })
-          );
-        });
-
-        this.logUserAction(req.session.userId, 'create_user', login, req.ip);
-        this.logger.info('User created: ' + login + ' by user ' + req.session.userId);
-
-        res.redirect('/publisher/admin/users');
-      } catch (error) {
-        this.logger.error('Error creating user:', error);
-        if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') {
-          res.status(400).send('Username already exists');
-        } else {
-          res.status(500).send('Failed to create user');
-        }
-      }
-    } finally {
-      this.stats.countRequest('createUser', Date.now() - start);
-    }
-  }
-
-  async updatePermissions(req, res) {
-    const start = Date.now();
-    try {
-
-      try {
-        const {user_id} = req.body;
-        const websites = await this.getWebsites();
-
-        // Clear existing permissions
-        await new Promise((resolve, reject) => {
-          this.db.run('DELETE FROM user_website_permissions WHERE user_id = ?', [user_id], guarded(reject, (err) => {
-            if (err) reject(err);
-            else resolve();
-          }));
-        });
-
-        // Add new permissions
-        for (const website of websites) {
-          const canQueue = req.body['queue_' + website.id] === 'on';
-          const canApprove = req.body['approve_' + website.id] === 'on';
-
-          if (canQueue || canApprove) {
-            await new Promise((resolve, reject) => {
-              this.db.run(
-                  'INSERT INTO user_website_permissions (user_id, website_id, can_queue, can_approve) VALUES (?, ?, ?, ?)',
-                  [user_id, website.id, canQueue ? 1 : 0, canApprove ? 1 : 0],
-                  guarded(reject, (err) => {
-                    if (err) reject(err);
-                    else resolve();
-                  })
-              );
-            });
-          }
-        }
-
-        this.logUserAction(req.session.userId, 'update_permissions', user_id, req.ip);
-        res.redirect('/publisher/admin/users');
-      } catch (error) {
-        this.logger.error('Error updating permissions:', error);
-        res.status(500).send('Failed to update permissions');
-      }
-    } finally {
-      this.stats.countRequest('update', Date.now() - start);
-    }
-  }
-
   // Helper methods
   async getTasks(limit = null) {
     return new Promise((resolve, reject) => {
-      let sql = 'SELECT t.*, u.name as user_name, w.name as website_name, approver.name as approved_by_name FROM tasks t JOIN users u ON t.user_id = u.id JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id ORDER BY t.queued_at DESC';
+      let sql = 'SELECT t.*, COALESCE(t.created_by_label, u.name) as user_name, w.name as website_name, COALESCE(t.approved_by_label, approver.name) as approved_by_name FROM tasks t LEFT JOIN users u ON t.user_id = u.id AND t.created_by_label IS NULL JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id AND t.approved_by_label IS NULL ORDER BY t.queued_at DESC';
 
       if (limit) {
         sql += ' LIMIT ' + limit;
@@ -2865,7 +2521,7 @@ class PublisherModule {
   async getTask(taskId) {
     return new Promise((resolve, reject) => {
       this.db.get(
-          'SELECT t.*, u.name as user_name, u.login as user_login, w.name as website_name, approver.name as approved_by_name FROM tasks t JOIN users u ON t.user_id = u.id JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id WHERE t.id = ?',
+          'SELECT t.*, COALESCE(t.created_by_label, u.name) as user_name, u.login as user_login, w.name as website_name, COALESCE(t.approved_by_label, approver.name) as approved_by_name FROM tasks t LEFT JOIN users u ON t.user_id = u.id AND t.created_by_label IS NULL JOIN websites w ON t.website_id = w.id LEFT JOIN users approver ON t.approved_by = approver.id AND t.approved_by_label IS NULL WHERE t.id = ?',
           [taskId],
           guarded(reject, (err, row) => {
             if (err) reject(err);
@@ -2891,7 +2547,7 @@ class PublisherModule {
   async getTaskActions(taskId) {
     return new Promise((resolve, reject) => {
       this.db.all(
-          'SELECT ua.*, u.name as user_name, u.login as user_login FROM user_actions ua LEFT JOIN users u ON ua.user_id = u.id WHERE ua.target_id = ? ORDER BY ua.timestamp ASC',
+          'SELECT ua.*, COALESCE(ua.actor_label, u.name) as user_name, u.login as user_login FROM user_actions ua LEFT JOIN users u ON ua.user_id = u.id AND ua.actor_label IS NULL WHERE ua.target_id = ? ORDER BY ua.timestamp ASC',
           [taskId.toString()],
           guarded(reject, (err, rows) => {
             if (err) reject(err);
@@ -2901,43 +2557,33 @@ class PublisherModule {
     });
   }
 
+  /** The active websites a user may queue for (the publisher "queue" role, library/auth) */
   async getUserWebsites(userId) {
-    return new Promise((resolve, reject) => {
-      this.db.all(
-          'SELECT w.* FROM websites w JOIN user_website_permissions p ON w.id = p.website_id WHERE p.user_id = ? AND p.can_queue = 1 AND w.is_active = 1',
-          [userId],
-          guarded(reject, (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows || []);
-          })
-      );
-    });
+    const p = auth.principalById(userId);
+    if (!p) {
+      return [];
+    }
+    const websites = await this.getWebsites();
+    return websites.filter(w => w.is_active && p.has('publisher', 'queue', w.id));
   }
 
   async userCanQueue(userId, websiteId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-          'SELECT can_queue FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
-          [userId, websiteId],
-          guarded(reject, (err, row) => {
-            if (err) reject(err);
-            else resolve(row && row.can_queue);
-          })
-      );
-    });
+    const p = auth.principalById(userId);
+    return !!p && p.has('publisher', 'queue', websiteId);
   }
 
   async userCanApprove(userId, websiteId) {
-    return new Promise((resolve, reject) => {
-      this.db.get(
-          'SELECT can_approve FROM user_website_permissions WHERE user_id = ? AND website_id = ?',
-          [userId, websiteId],
-          guarded(reject, (err, row) => {
-            if (err) reject(err);
-            else resolve(row && row.can_approve);
-          })
-      );
-    });
+    const p = auth.principalById(userId);
+    return !!p && p.has('publisher', 'approve', websiteId);
+  }
+
+  /** The websites, for the roles on the server's users pages: kept up to date as they change */
+  async refreshWebsiteList() {
+    try {
+      this.websiteList = (await this.getWebsites()).map(w => ({ value: String(w.id), label: w.name }));
+    } catch (e) {
+      this.logger.error('publisher: could not list the websites: ' + e.message);
+    }
   }
 
   async findActiveTask(packageId, version) {
@@ -3025,28 +2671,6 @@ class PublisherModule {
     });
   }
 
-  async getUsers() {
-    return new Promise((resolve, reject) => {
-      this.db.all('SELECT id, name, login, is_admin, created_at FROM users ORDER BY name', guarded(reject, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      }));
-    });
-  }
-
-  async getUserPermissions(userId) {
-    return new Promise((resolve, reject) => {
-      this.db.all(
-          'SELECT * FROM user_website_permissions WHERE user_id = ?',
-          [userId],
-          guarded(reject, (err, rows) => {
-            if (err) reject(err);
-            else resolve(rows || []);
-          })
-      );
-    });
-  }
-
   /**
    * The paragraph for the server's daily report: publication runs started in
    * the period, and how many finished successfully.
@@ -3127,9 +2751,10 @@ class PublisherModule {
   // Fire-and-forget audit logging: callers don't await this, and it must never fail a
   // request, so it returns void and swallows any DB error in the callback.
   logUserAction(userId, action, targetId, ipAddress) {
+    const p = userId ? auth.principalById(userId) : null;
     this.db.run(
-        'INSERT INTO user_actions (user_id, action, target_id, ip_address) VALUES (?, ?, ?, ?)',
-        [userId, action, targetId, ipAddress],
+        'INSERT INTO user_actions (user_id, actor_label, action, target_id, ip_address) VALUES (?, ?, ?, ?, ?)',
+        [userId, p ? `${p.name} (${p.login})` : null, action, targetId, ipAddress],
         () => {} // don't fail (or block) the request if audit logging fails
     );
   }

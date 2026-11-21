@@ -91,6 +91,10 @@ class ReadWorker extends TerminologyWorker {
           description: "This is a place holder for the code system which is fully supported through internal means (not by this code system)",
           content: "not-present"
         }
+        if (!json.version) {
+          // no version (the internal code systems without one): no element, rather than version: null
+          delete json.version;
+        }
         if (cs.webSource()) {
           json.extension = [{ url: "http://hl7.org/fhir/StructureDefinition/web-source", valueUrl : cs.webSource()}];
         }
@@ -136,6 +140,7 @@ class ReadWorker extends TerminologyWorker {
         req.sourcePackage = vs.sourcePackage;
         // a stored resource: the tx module gives it an ETag, and can answer 304 without serialising
         req.txStoredResource = vs.jsonObj;
+        req.txStoredContentHash = vs.contentHash || null;
         return res.json(vs.jsonObj);
       }
     }

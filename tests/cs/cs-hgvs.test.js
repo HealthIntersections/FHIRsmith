@@ -236,7 +236,7 @@ describe('HGVS Provider', () => {
     });
 
     test('should throw errors for filter operations', async () => {
-      await expect(provider.searchFilter(null, 'filter', false)).rejects.toThrow('Text Search is not supported');
+      await expect(provider.searchFilter(null, 'filter', false)).rejects.toThrow('Text search is not supported for the code system');
       await expect(provider.filter(await provider.getPrepContext(true), true, 'prop', 'equal', 'value'))
         .rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "prop equal value" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
       await expect(provider.prepare(null)).rejects.toThrow('not supported for HGVS');

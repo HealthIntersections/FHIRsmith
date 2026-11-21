@@ -1,16 +1,19 @@
-// Documents the registry stores and serves, and the administrator flag on users
+// Documents the registry stores and serves: the server's administrators edit them, and its
+// members read the ones that are not public
 
 const express = require('express');
 const request = require('supertest');
 const RegistryModule = require('../../registry/registry');
 const { renderMarkdown } = require('../../registry/documents');
+const { ADMIN_PASSWORD, setupAuth, mountAuth, makeUser, tokenFor, login } = require('../helpers/auth');
 
 const quiet = { info() {}, warn() {}, error() {}, debug() {}, child() { return quiet; } };
-const USERS = { database: ':memory:', adminPassword: 'admin-secret', cookieSecure: false, sessionSecret: 's' };
-
-async function makeApp(security = { users: USERS }) {
+async function makeApp(security = { database: ':memory:' }) {
   const app = express();
   app.set('trust proxy', 'loopback');
+  setupAuth();
+  mountAuth(app);
+  await makeUser('admin', ADMIN_PASSWORD, { admin: true });
   const mod = new RegistryModule({ countRequest() {}, addTask() {}, task() {}, taskDone() {}, taskError() {} });
   mod.logger = quiet;
   await mod.initialize({ crawlInterval: 0, releasesUrl: '', security });
@@ -23,21 +26,18 @@ const form = async (agent, url, data, page) => {
   const _csrf = await csrfOf(agent, page); // before the post is made, so its cookie jar has the session
   return agent.post(url).type('form').send({ ...data, _csrf });
 };
-const loginAs = async (app, login, password) => {
-  const agent = request.agent(app);
-  const res = await form(agent, '/tx-reg/login', { login, password }, '/tx-reg/login');
-  return { agent, res };
-};
+const loginAs = (app, name, password) => login(app, name, password);
 const html = (r) => r.set('Accept', 'text/html');
 
 describe('documents', () => {
   let app, mod, admin;
   beforeAll(async () => {
     ({ app, mod } = await makeApp());
-    admin = (await loginAs(app, 'admin', 'admin-secret')).agent;
-    // a plain user, and an administrator user
-    await form(admin, '/tx-reg/admin/users', { login: 'reader', password: 'password-1' }, '/tx-reg/admin/users');
-    await form(admin, '/tx-reg/admin/users', { login: 'editor', password: 'password-2', admin: '1' }, '/tx-reg/admin/users');
+    admin = (await loginAs(app, 'admin', ADMIN_PASSWORD)).agent;
+    // a member of the registry, a user who is not, and another administrator
+    await makeUser('reader', 'password-1', { roles: [['registry', 'member']] });
+    await makeUser('plain', 'password-1');
+    await makeUser('editor', 'password-2', { admin: true });
   });
   afterAll(() => mod.shutdown());
 
@@ -78,7 +78,7 @@ describe('documents', () => {
     expect((await html(request(app).get('/tx-reg/docs'))).text).toContain('href="/tx-reg/docs/policy"');
   });
 
-  test('a private JSON document is for logged in users only, and never for API tokens', async () => {
+  test('a private JSON document is for members logged in only, and never for API tokens', async () => {
     let r = await form(admin, '/tx-reg/docs', { name: 'config.v1', type: 'json', content: '{"a": [1, 2]}' }, '/tx-reg/docs/new');
     expect(r.status).toBe(302);
 
@@ -86,15 +86,18 @@ describe('documents', () => {
     expect((await html(request(app).get('/tx-reg/docs'))).text).not.toContain('config.v1');
     r = await html(request(app).get('/tx-reg/docs/config.v1'));
     expect(r.status).toBe(302);
-    expect(r.headers.location).toBe('/tx-reg/login');
+    expect(r.headers.location).toBe('/auth/login?return=%2Ftx-reg%2Fdocs%2Fconfig.v1');
     expect((await request(app).get('/tx-reg/docs/config.v1')).status).toBe(404);
 
-    // an API token is not a login
-    r = await form(admin, '/tx-reg/admin/users/1/tokens', { label: 't' }, '/tx-reg/admin/users/1');
-    const token = (await admin.get('/tx-reg/admin/users/1')).text.match(/<b>New token:<\/b> <code[^>]*>([^<]+)<\/code>/)[1];
+    // an API token is not a login, even a member's
+    const token = tokenFor(require('../../library/auth').store.userByLogin('reader').id);
     expect((await request(app).get('/tx-reg/docs/config.v1').set('Authorization', `Bearer ${token}`)).status).toBe(404);
 
-    // a logged in user, even a plain one, reads it
+    // a logged in user who is not a member doesn't see it
+    const { agent: plain } = await loginAs(app, 'plain', 'password-1');
+    expect((await html(plain.get('/tx-reg/docs'))).text).not.toContain('config.v1');
+
+    // a member reads it
     const { agent: reader } = await loginAs(app, 'reader', 'password-1');
     expect((await html(reader.get('/tx-reg/docs'))).text).toContain('config.v1');
     const page = await html(reader.get('/tx-reg/docs/config.v1'));
@@ -199,37 +202,8 @@ describe('documents', () => {
   });
 });
 
-describe('administrator users', () => {
-  let app, mod;
-  beforeAll(async () => ({ app, mod } = await makeApp()));
-  afterAll(() => mod.shutdown());
-
-  test('an admin user manages users and has an account page; a plain user has neither', async () => {
-    const root = (await loginAs(app, 'admin', 'admin-secret')).agent;
-    await form(root, '/tx-reg/admin/users', { login: 'ops', password: 'password-1', admin: '1' }, '/tx-reg/admin/users');
-    await form(root, '/tx-reg/admin/users', { login: 'plain', password: 'password-1' }, '/tx-reg/admin/users');
-    expect((await root.get('/tx-reg/admin/users')).text).toMatch(/ops<\/a><\/td><td><\/td><td>yes<\/td><td>yes<\/td>/);
-
-    const { agent: ops, res } = await loginAs(app, 'ops', 'password-1');
-    expect(res.headers.location).toBe('/tx-reg/admin/users');
-    expect((await ops.get('/tx-reg/admin/users')).status).toBe(200);
-    expect((await ops.get('/tx-reg/account')).status).toBe(200);
-    let r = await form(ops, '/tx-reg/admin/users', { login: 'made-by-ops' }, '/tx-reg/admin/users');
-    expect(r.status).toBe(302);
-
-    const { agent: plain } = await loginAs(app, 'plain', 'password-1');
-    expect((await plain.get('/tx-reg/admin/users')).status).toBe(403);
-
-    // the flag can be taken away
-    const id = mod.auth.store.userByLogin('ops').id;
-    r = await form(root, `/tx-reg/admin/users/${id}`, { name: '', notes: '', enabled: '1' }, `/tx-reg/admin/users/${id}`);
-    expect(r.status).toBe(200);
-    expect((await ops.get('/tx-reg/admin/users')).status).toBe(403);
-    // the configured administrator has no account page of its own
-    expect((await root.get('/tx-reg/account')).headers.location).toBe('/tx-reg/admin/users');
-  });
-
-  test('an existing database without the admin column is migrated', () => {
+describe('the registry\'s database', () => {
+  test('one from before (with users and tokens tables of its own) still opens', () => {
     const fs = require('fs');
     const os = require('os');
     const path = require('path');
@@ -242,9 +216,8 @@ describe('administrator users', () => {
     old.close();
     try {
       const s = new AuthStore(file);
-      expect(s.userByLogin('legacy').admin).toBe(false);
-      s.updateUser(s.userByLogin('legacy').id, { admin: true });
-      expect(s.userByLogin('legacy').admin).toBe(true);
+      s.createDocument({ name: 'x', type: 'md', content: '# x' }, 'admin');
+      expect(s.documentByName('x').content).toBe('# x');
       s.close();
     } finally {
       for (const f of [file, file + '-wal', file + '-shm']) {

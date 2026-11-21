@@ -82,21 +82,14 @@ same values can be copied between the two.
 
 ## Security
 
-`security` closes the JSON API. Absent, the registry is open. The block and its three methods
-are described in [security.md](security.md); in brief:
+`security` closes the JSON API. Absent, the registry is open. It is described in
+[security.md](security.md); in brief:
 
 ```json
 "security": {
-  "apiToken": "one token every client sends",
+  "required": true,
   "failedAuthPerWindow": 60,
-  "users": {
-    "database": "registry-auth.db",
-    "adminUsername": "admin",
-    "adminPassword": "...",
-    "sessionSecret": "...",
-    "cookieSecure": true,
-    "loginAttemptsPerWindow": 20
-  },
+  "database": "registry-auth.db",
   "oidc": {
     "issuer": "https://login.microsoftonline.com/{tenant}/v2.0",
     "audience": "api://ecosystem.hl7.org",
@@ -115,7 +108,7 @@ The registry keeps its state in the server's data folder (`FHIRSMITH_DATA_DIR`, 
 |---|---|
 | `registry/registry-data.json` | The result of the last scan - what every endpoint hosts. Loaded at startup, so the registry answers immediately after a restart. |
 | `registry/registry-uptime.json` | Per-endpoint scan outcomes, for the uptime figures. |
-| `databases/registry-auth.db` | Users and tokens, when `security.users` is configured (`database` names it; an absolute path or `:memory:` also works). |
+| `databases/registry-auth.db` | The [documents](documents.md), and the requests each client made (`security.database` names it; an absolute path or `:memory:` also works). Users, logins and API tokens are the server's ([library/auth](../../library/auth/README.md)). |
 
 ## Behind a proxy
 
