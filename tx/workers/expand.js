@@ -1151,6 +1151,11 @@ class ValueSetExpander {
         && !(this.count > 0 && this.count <= this.limitCount)) {
       throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyCountMessage(vsSrc.vurl || vsSrc.url, selection.total, this.limitCount), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
     }
+    // count=0 with a filter: the usual path walks the selection to count it, and refuses at the walk
+    // limit (#checkLimit); only a whole-system include is counted without a walk (countAllCodes)
+    if (!wholeSystemInclude && this.count === 0 && this.walkLimit > 0 && selection.total > this.walkLimit) {
+      throw new Issue("error", "too-costly", null, 'VALUESET_TOO_COSTLY', this.tooCostlyMessage(vsSrc.url, '>' + this.walkLimit), null, 422).withDiagnostics(this.worker.opContext.diagnostics());
+    }
 
     for (const cset of [...includes, ...excludes]) {
       this.worker.checkSupplements(cs, cset, this.requiredSupplements, this.usedSupplements);
@@ -1161,7 +1166,11 @@ class ValueSetExpander {
       notClosed.value = true;
       const wholeSystem = includes.some(cset => !(cset.filter || []).length);
       if (wholeSystem && cs.isNotClosed() && !Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason")) {
-        // as the usual path says for a whole grammar-based code system
+        // as the usual path says for a whole grammar-based code system, in its order: unclosed,
+        // then the reason
+        if (!Extensions.has(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed")) {
+          Extensions.addBoolean(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed", true);
+        }
         Extensions.addString(expansion, "http://hl7.org/fhir/StructureDefinition/valueset-unclosed-reason", "The code System '" + cs.system() + "' has a grammar and so has infinite members");
       }
     }
@@ -1191,12 +1200,46 @@ class ValueSetExpander {
         }
       }
     }
-    if (selection.total != null && selection.total >= 0) {
+    // the total as the usual path reports it: always for count=0; otherwise only for a selection
+    // within the response limit (#finishIfPageFilled: a paged walk that reaches the limit has no
+    // total, so the whole of LOINC or SNOMED CT with count=3 has none), or one whose page is never
+    // filled (the walk then runs to the end and counts everything: an offset past the last page)
+    if (selection.total != null && selection.total >= 0 && (this.count === 0 || this.limitCount <= 0 || selection.total < this.limitCount
+        || (this.count > 0 && selection.total - Math.max(this.offset, 0) < this.count))) {
       this.addToTotal(selection.total);
     } else {
       this.noTotal();
     }
+    // where the walk ends with the expansion finished (#finishIfPageFilled), it skips what follows
+    // the compose in expand(), such as the required-supplement check: the same here, so a value set
+    // naming a supplement that no code system takes gets the walk's answer
+    if (this.#walkFinishesAfterPage(compose, cs, excludeInactive, selection.total)) {
+      throw new Issue('information', 'informational', null, null, null, null).setFinished();
+    }
     return true;
+  }
+
+  /**
+   * Whether the usual path's paged walk of this compose would stop with the expansion finished
+   * (#finishIfPageFilled, after each code it adds or counts): its page is full, and either the
+   * walk took the provider's size as the total (#useProviderSize: one include, the whole system or
+   * one filter, #sizeIsTotal), or the codes it has walked reach the response limit. Otherwise it
+   * counts every code to the end, and the expansion goes on as an unpaged one does.
+   * @param {number} total - the selection's total (null or -1: not counted)
+   */
+  #walkFinishesAfterPage(compose, cs, excludeInactive, total) {
+    if (!(this.count > 0 && this.offset >= 0) || this.fullList.length < this.count) {
+      return false;
+    }
+    if (total == null || total < 0 || this.limitCount <= 0 || total >= this.limitCount) {
+      return true;
+    }
+    const includes = compose.include || [];
+    if (includes.length !== 1 || !this.#sizeIsTotal(compose, cs, excludeInactive)) {
+      return false;
+    }
+    const filters = includes[0].filter || [];
+    return filters.length === 0 ? !this.params.excludeNotForUI && !cs.isNotClosed() : filters.length === 1;
   }
 
   async includeCodes(cset, path, vsSrc, compose, filter, expansion, excludeInactive, notClosed) {

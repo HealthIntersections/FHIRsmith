@@ -79,6 +79,13 @@ async function folderSize(dir) {
  * based on the stated FHIR version, and the other (optional) context information
  *
  */
+// the code system each sqlite-v2 source type's file must hold (loadSqliteV2)
+const SQLITE_V2_SYSTEMS = {
+  'snomed-v2': 'http://snomed.info/sct',
+  'loinc-v2': 'http://loinc.org',
+  'rxnorm-v2': 'http://www.nlm.nih.gov/research/umls/rxnorm'
+};
+
 class Library {
   /**
    * {Map<String, CodeSystemFactoryProvider>} A list of code system factories that contains all the preloaded native code systems
@@ -491,6 +498,12 @@ class Library {
 
       case 'icd11':
         await this.loadIcd11(details, isDefault, mode);
+        break;
+
+      case 'snomed-v2':
+      case 'loinc-v2':
+      case 'rxnorm-v2':
+        await this.loadSqliteV2(type, details, isDefault, mode);
         break;
 
       case 'npm':
@@ -1033,6 +1046,26 @@ class Library {
     const filePath = this.#resolveLocalSourcePath(details);
     const cacheSubdir = await this.#prepareLocalSourceCache(filePath, dir => new FileContentLoader(filePath, dir));
     await this.#loadLocalSource(new FileContentLoader(filePath, cacheSubdir));
+  }
+
+  /**
+   * A SNOMED CT, LOINC or RxNorm file in the sqlite-v2 format (tx/sqlite-v2; source syntax
+   * `snomed-v2:<file>`, `loinc-v2:<file>`, `rxnorm-v2:<file>`, with `!` as for the other types).
+   * Opt-in: the engine (and its roaring dependency) is required only when a library names such a
+   * file. The file is opened read-only, so tx-workers in a cluster load the same line as the master.
+   */
+  async loadSqliteV2(type, details, isDefault, mode) {
+    const fn = await this.getOrDownloadFile(details);
+    if (mode !== "cs") {
+      return;
+    }
+    const { loadSqliteV2Factory } = require('./sqlite-v2');
+    const factory = await loadSqliteV2Factory(this.i18n, fn);
+    const expected = SQLITE_V2_SYSTEMS[type];
+    if (factory.system() !== expected) {
+      throw new Error(`${type}:${details}: the file holds ${factory.system()}, not ${expected}`);
+    }
+    this.registerProvider(fn, factory, isDefault);
   }
 
   /**
