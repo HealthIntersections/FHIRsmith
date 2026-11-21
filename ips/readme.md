@@ -233,7 +233,12 @@ kept: the server loads the private keys from the key store (each load is logged 
 document and a signer for each - the public key (as the KeyProvider gives it), the private key, and the key's
 permalink (`/keys/key/{id}`). Signing as yourself needs a login (and, as every logged in post, the CSRF token);
 the system signs for anyone, but no more often than `signing.systemSeconds` (10) apart for any one address. The
-choices need scripts. `sign()` is not written yet: it gives the document back as it was. They don't go into the document's
+choices need scripts, and a public URL for the keys' links (`auth.publicUrl`, or `hostName` - never the request's
+Host, which anyone can set): without one, there is no signing. What the signatures say: the system's, only that the
+document hasn't been changed since it left this server - nothing about where it came from, or whether it is right;
+the user's, that they asked for it to be signed, and it names them (`sign()` gets their name, login and email).
+`verify()` makes no network requests (it gets keys from the KeyProvider, or the signature itself), and has 60
+seconds; `sign()` has 30. `sign()` is not written yet: it gives the document back as it was. They don't go into the document's
 status line, and a check that fails is an error outcome, not a failed step. `verify()` itself is not written yet: it
 says so, as an information outcome.
 

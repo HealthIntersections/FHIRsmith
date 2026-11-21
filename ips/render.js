@@ -2474,7 +2474,8 @@ function signChoices(ctx) {
     (keyId ? '' : ` <span class="ips-small">(${why})</span>`);
   let h = '<div class="ips-doc-banner-group ips-sign" hidden><span class="ips-doc-banner-label">Sign document</span>';
   if (s.user) {
-    h += choice('sign-user', escape(s.user.name), s.user.keyId, `you have no ${escape(words)} key pair: <a href="/keys/mine">make one</a>`);
+    h += choice('sign-user', escape(s.user.name), s.user.keyId, `you have no ${escape(words)} key pair: <a href="/keys/mine">make one</a>`) +
+      (s.user.keyId ? ' <span class="ips-small">(the signature names you: your name and email)</span>' : '');
   } else {
     h += choice('sign-user', 'You', null, `<a href="${escape(`/auth/login?return=${encodeURIComponent(ctx.here || '/')}`)}">log in</a> to sign as yourself`);
   }

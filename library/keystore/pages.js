@@ -85,10 +85,10 @@ function buildRouter(ks) {
     error(req, res, 500, 'Something went wrong; the log says what');
   });
   // a form action: done (a message for the next page) or refused (the message, as an error), back to `back`
-  const act = (fn, back) => h((req, res) => {
+  const act = (fn, back) => h(async (req, res) => {
     const to = typeof back === 'function' ? back(req) : back;
     try {
-      const text = fn(req, res);
+      const text = await fn(req, res);
       flash(req, text);
     } catch (e) {
       if (!(e instanceof KeyStoreError)) {
@@ -166,8 +166,8 @@ function buildRouter(ks) {
     return added.length === 1 ? `Key ${added[0].key_id} uploaded` : `${added.length} keys uploaded`;
   }, '/keys/mine'));
 
-  r.post('/mine/create', sameOrigin, session, form, csrf, user, act(req => {
-    const row = ks.create(req.user, str(req.body.kty), { label: str(req.body.label) });
+  r.post('/mine/create', sameOrigin, session, form, csrf, user, act(async req => {
+    const row = await ks.create(req.user, str(req.body.kty), { label: str(req.body.label) });
     return `New ${KEY_TYPES[row.kty].label} key pair made: ${row.key_id}`;
   }, '/keys/mine'));
 
@@ -185,8 +185,8 @@ function buildRouter(ks) {
 
   r.get('/admin', session, csrf, admin, h((req, res) => sendAdmin(ks, req, res, page)));
 
-  r.post('/admin/create', sameOrigin, session, form, csrf, admin, act(req => {
-    const row = ks.create(req.user, str(req.body.kty), { system: true, label: str(req.body.label) });
+  r.post('/admin/create', sameOrigin, session, form, csrf, admin, act(async req => {
+    const row = await ks.create(req.user, str(req.body.kty), { system: true, label: str(req.body.label) });
     return `New system ${KEY_TYPES[row.kty].label} key pair made: ${row.key_id}`;
   }, '/keys/admin'));
 
@@ -200,9 +200,17 @@ function buildRouter(ks) {
     return `The key's id is now ${row.key_id}`;
   }, '/keys/admin'));
 
-  // ---- the API (an API token, or a login) ----
+  // ---- the API: an API token only (not a login: nothing in the browser calls it, and a
+  // session-borne request is one more way for another page to try) ----
 
-  const api = auth.requireApi();
+  const tokenOnly = (req, res, next) => {
+    if (!auth.presentsToken(req)) {
+      res.setHeader('WWW-Authenticate', 'Bearer');
+      return res.status(401).json({ error: 'unauthorized', message: 'An API token is required: send it as Authorization: Bearer {token}' });
+    }
+    next();
+  };
+  const api = [tokenOnly, auth.requireApi()];
   const apiH = fn => (req, res) => Promise.resolve().then(() => fn(req, res)).catch(e => {
     if (e instanceof KeyStoreError) {
       return res.status(e.status).json({ error: e.kind || 'invalid', message: e.message });
@@ -221,9 +229,9 @@ function buildRouter(ks) {
   }));
 
   // {kty, label?, system?}
-  r.post('/api/create', api, apiH((req, res) => {
+  r.post('/api/create', api, apiH(async (req, res) => {
     const b = body(req);
-    const row = ks.create(req.user, str(b.kty), { system: b.system === true, label: str(b.label) });
+    const row = await ks.create(req.user, str(b.kty), { system: b.system === true, label: str(b.label) });
     res.status(201).json(ks.jwk(row));
   }));
 
@@ -270,7 +278,7 @@ function filterForm(filter) {
 }
 
 function origin(ks, row) {
-  return `${row.origin === 'created' ? 'created' : 'uploaded'} by ${row.owner === SYSTEM ? '<b>System</b>' : escape(ks.ownerName(row))}`;
+  return `${row.origin === 'created' ? 'created' : 'uploaded'} by ${row.owner === SYSTEM ? '<b>System</b>' : escape(ks.ownerLabel(row))}`;
 }
 
 /**

@@ -92,6 +92,20 @@ function issueSummary(counts) {
 }
 
 const SIGNATURE_STATUSES = ['error', 'warning', 'information'];
+// how long verify() has (signatures.js): a check that takes longer is an error outcome
+const VERIFY_TIMEOUT_MS = 60000;
+
+/** A promise's result, or a rejection with `message` after `ms` (the work itself isn't stopped) */
+function withTimeout(promise, ms, message) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise),
+    new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error(message)), ms);
+      timer.unref();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
 const SIGNATURE_DESCRIPTION_MAX = 2000;
 
 /**
@@ -119,8 +133,8 @@ const signaturesStep = {
     const started = Date.now();
     let outcomes;
     try {
-      const found = await signatures.verify(structuredClone(row.bundle), module.keyProvider || new KeyStoreKeyProvider(),
-        { receivedAt: row.received || null, log: module.log });
+      const found = await withTimeout(signatures.verify(structuredClone(row.bundle), module.keyProvider || new KeyStoreKeyProvider(),
+        { receivedAt: row.received || null, log: module.log }), module.verifyTimeoutMs || VERIFY_TIMEOUT_MS, `it took more than ${(module.verifyTimeoutMs || VERIFY_TIMEOUT_MS) / 1000} seconds`);
       outcomes = Array.isArray(found) ? found.map(signatureOutcome) :
         [{ status: 'error', keyId: null, description: 'The signature check did not return a list of outcomes' }];
     } catch (e) {
@@ -1236,7 +1250,7 @@ const reportsStep = {
 const STEPS = [signaturesStep, nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
 
 module.exports = {
-  STEPS, signatures: signaturesStep, signatureOutcome, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
+  STEPS, signatures: signaturesStep, signatureOutcome, withTimeout, VERIFY_TIMEOUT_MS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

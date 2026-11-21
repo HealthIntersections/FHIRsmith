@@ -30,8 +30,10 @@ function openDb(dbPath, { secret = false } = {}) {
   }
   const db = new Database(dbPath);
   if (dbPath !== ':memory:') {
-    db.pragma('journal_mode = WAL');
     db.pragma('busy_timeout = 5000');
+    // the private keys: a rollback journal, not a WAL - a WAL keeps old pages (a destroyed key)
+    // until it is checkpointed and reused, where secure_delete doesn't reach
+    db.pragma(secret ? 'journal_mode = DELETE' : 'journal_mode = WAL');
   }
   if (secret) {
     db.pragma('secure_delete = ON');

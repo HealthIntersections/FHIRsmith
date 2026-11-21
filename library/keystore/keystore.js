@@ -136,13 +136,27 @@ class KeyStore {
 
   // ---- who ----
 
-  /** The name a key's owner is shown by: "System", or the user's display name (never their login or email) */
+  /** The name a key's owner is shown by: "System", or the user's display name (their login when they have none) */
   ownerName(row) {
     if (row.owner === SYSTEM) {
       return 'System';
     }
     const u = this.auth.initialized ? this.auth.user(Number(row.owner)) : null;
     return u ? (u.name || u.login) : `(account ${row.owner} deleted)`;
+  }
+
+  /** What kind of owner a key has: 'system' or 'user' */
+  ownerKind(row) {
+    return row.owner === SYSTEM ? 'system' : 'user';
+  }
+
+  /**
+   * The owner as shown, with its kind: "System", or "User: {name}". A user's name can't make
+   * their key look like the system's: the kind comes first, and an account can't be called
+   * System (library/auth)
+   */
+  ownerLabel(row) {
+    return row.owner === SYSTEM ? 'System' : `User: ${this.ownerName(row)}`;
   }
 
   /** May this principal manage (label, revoke) this key? Its owner, or an administrator */
@@ -208,7 +222,8 @@ class KeyStore {
     if (row.expires) {
       j.expires = row.expires;
     }
-    j.owner = row.owner === SYSTEM ? 'system' : this.ownerName(row);
+    j.ownerKind = this.ownerKind(row);
+    j.owner = this.ownerLabel(row);
     j.origin = row.origin;
     // the server holds the private key, and signs with it when a module asks
     j.signs = Boolean(row.has_private);
@@ -293,7 +308,7 @@ class KeyStore {
       const have = this.db.byFingerprint(fp);
       if (have) {
         this.refused(p, 'duplicate', fp);
-        throw new KeyStoreError(`That key is already in the store, as ${have.key_id} (${have.origin} by ${this.ownerName(have)})`, 409, 'duplicate');
+        throw new KeyStoreError(`That key is already in the store, as ${have.key_id} (${have.origin} by ${this.ownerLabel(have)})`, 409, 'duplicate');
       }
       const claim = kid || f.kid;
       if (claim) {
@@ -339,16 +354,22 @@ class KeyStore {
   /**
    * Make a key pair: the user's own, or (an administrator) the system's. A key pair the owner
    * already has of this type is retired, and its private key destroyed
-   * @returns {object} the new row
+   * @returns {Promise<object>} the new row
    */
-  create(p, kty, { system = false, label = '' } = {}) {
+  async create(p, kty, { system = false, label = '' } = {}) {
     this.requireInitialized();
-    const problem = this.createProblem(p, kty, { system });
-    if (problem) {
-      throw new KeyStoreError(problem, keys.KEY_TYPES[kty] ? (system ? 403 : 429) : 400, 'limit');
-    }
+    const check = () => {
+      const problem = this.createProblem(p, kty, { system });
+      if (problem) {
+        throw new KeyStoreError(problem, keys.KEY_TYPES[kty] ? (system ? 403 : 429) : 400, 'limit');
+      }
+    };
+    check();
     const owner = system ? SYSTEM : String(p.id);
-    const k = keys.generate(kty, { rsaBits: this.rsaBits });
+    // made off the event loop (keys.generate); the limit is checked again after, for another
+    // request that made one in the meantime
+    const k = await keys.generate(kty, { rsaBits: this.rsaBits });
+    check();
     const fp = keys.fingerprint(k.spki);
     let row;
     let old = null;
@@ -603,7 +624,7 @@ class KeyStore {
     if (!row) {
       return { ok: false, key: null, owner: null, problem: `No key ${kid} in the store` };
     }
-    const owner = this.ownerName(row);
+    const owner = this.ownerLabel(row);
     if (!keys.ALGS[row.kty].includes(alg)) {
       return { ok: false, key: row, owner, problem: `The key is ${keys.KEY_TYPES[row.kty].label}, which doesn't sign ${alg}` };
     }

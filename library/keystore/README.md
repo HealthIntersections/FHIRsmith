@@ -17,7 +17,7 @@ The top-level `keystore` block of `config.json`. The store is off unless `enable
 |---|---|---|
 | `enabled` | `false` | `/keys`, the account page's *Your keys*, and the administrator's *Keys* page |
 | `database` | `keystore.db` | The public keys, their owners and status, and the log of what happened to them, in the databases folder (or an absolute path). Nothing in it is secret |
-| `privateDatabase` | `keystore-private.db` | The private keys, and nothing else. Made with mode 0600 (its journal files too), with SQLite's `secure_delete` on, so a destroyed key is overwritten. It must be a different file from `database` |
+| `privateDatabase` | `keystore-private.db` | The private keys, and nothing else. Made with mode 0600 (its journal files too), with SQLite's `secure_delete` on and a rollback journal (not a WAL, which would keep a destroyed key's old pages), so a destroyed key is overwritten. It must be a different file from `database` |
 | `uploadAllowance` | 10 | How many keys a user can upload before the daily limit applies |
 | `uploadsPerDay` | 1 | Past the allowance, how many keys a user can upload in any 24 hours |
 | `createsPerDay` | 1 | How many key pairs of each type a user can have made in any 24 hours |
@@ -28,6 +28,12 @@ Administrators have no limits. Under the launcher every process uses the same tw
 The private keys are not encrypted: anyone who can read the data folder can read everything
 there anyway. They are in a database of their own so that copying, backing up or debugging the
 other never moves a private key.
+
+**Backups:** a backup of the databases folder holds `keystore-private.db`, and with it every
+private key the server holds, usable as they are - the users' and the system's. Keep backups as
+you keep the server itself, or leave the file out of them: without it, the public keys and
+their history stay, and the key pairs need making again (the old ones can't sign any more, and
+should be revoked).
 
 ## Keys
 
@@ -101,7 +107,7 @@ keys of its key pairs are destroyed (within the hour); the public keys stay.
 | | |
 |---|---|
 | `GET /keys` | The keys, with filters (`status`, `kty`, `owner=system`) |
-| `GET /keys/jwks.json` | The keys as a JWKS, with the same filters. Each has `kid`, `alg`, `use: "sig"`, and `status`, `expires` (revoked), `owner` (display name, or `system`), `origin` (`uploaded`, `created`), `created`, `fingerprint` |
+| `GET /keys/jwks.json` | The keys as a JWKS, with the same filters. Each has `kid`, `alg`, `use: "sig"`, and `status`, `expires` (revoked), `ownerKind` (`system`, `user`), `owner` (`System`, or `User: {display name}`), `origin` (`uploaded`, `created`), `created`, `fingerprint` |
 | `GET /keys/key/{kid}` | A key: HTML; JSON (a JWK as above) with `Accept: application/json` or `?format=json`; PEM with `Accept: application/x-pem-file` or `?format=pem` |
 | `/keys/mine` | A user's own keys: upload, make, label, revoke |
 | `/keys/admin` | The administrator's: system key pairs, revoking, deleting, key ids |
@@ -110,10 +116,15 @@ keys of its key pairs are destroyed (within the hour); the public keys stay.
 | `POST /keys/api/key/{kid}/revoke` | `{reason?, expires?}` |
 | `GET /keys/api/mine` | `{keys, uploadsLeft}` |
 
-The API takes an API token (`Authorization: Bearer fhs_...`) or a login. Errors are
-`{error, message}`: 400, 401, 403, 404, 409 (already there), 429 (over the limit).
+The API takes an API token only (`Authorization: Bearer fhs_...`), not a login: nothing in the
+browser calls it. Errors are `{error, message}`: 400, 401, 403, 404, 409 (already there), 429 (over
+the limit).
 
-Owners are shown by their display name: never their login or email.
+Owners are shown with their kind: **System**, or **User:** and the user's display name (their login,
+when they have none; never their email). No account can be called System.
+
+Key pairs are made off the event loop (`crypto.generateKeyPair`: an RSA key takes up to seconds),
+so `keystore.create()` returns a promise.
 
 ## For modules
 
