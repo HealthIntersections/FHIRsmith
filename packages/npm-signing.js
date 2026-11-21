@@ -137,6 +137,8 @@ class NpmSigner {
 const BUNDLE_MEDIA_TYPE = 'application/vnd.dev.sigstore.bundle';
 const IN_TOTO_PAYLOAD = 'application/vnd.in-toto+json';
 const IN_TOTO_STATEMENT = 'https://in-toto.io/Statement/v1';
+// what kind of statement a package signature is (as org.hl7.fhir.core's NpmPackageSigner.PREDICATE_TYPE)
+const PACKAGE_SIGNATURE_PREDICATE = 'http://hl7.org/fhir/package-signature/v1';
 
 // The npm package URL of a package version
 function purl(name, version) {
@@ -202,6 +204,10 @@ function verifyPackageSignature(tgz, bundle, keys, name, version, publishedAt) {
   }
   if (statement._type !== IN_TOTO_STATEMENT) {
     throw new Error(`the signed payload is not an in-toto v1 statement (_type is ${statement._type})`);
+  }
+  // another kind of statement (SLSA provenance, say) made with the same key is not a package signature
+  if (statement.predicateType !== PACKAGE_SIGNATURE_PREDICATE) {
+    throw new Error(`the signed statement is not a FHIR package signature (predicateType is ${statement.predicateType})`);
   }
   const expected = purl(name, version);
   const digest = crypto.createHash('sha512').update(tgz).digest('hex');

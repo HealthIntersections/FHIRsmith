@@ -68,6 +68,9 @@ const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, p
 const render = require('./render');
 const { TxClient } = require('./tx-client');
 const { STEPS, stripChecks } = require('./pipeline');
+const signatures = require('./signatures');
+const { KeyStoreKeyProvider } = require('./signature-keys');
+const keystore = require('../library/keystore');
 const { Reports, SOURCES: REPORT_SOURCES } = require('./reports');
 
 // the extension definitions remembered from the validator (the analysis step)
@@ -83,6 +86,13 @@ const { MembershipSession } = require('./membership');
 
 const TEMPLATE = 'ips';
 const DEFAULT_DATABASE = 'ips/ips-content.db';
+// how far apart the system signs documents for any one address (modules.ips.signing.systemSeconds)
+const DEFAULT_SYSTEM_SIGNING_SECONDS = 10;
+
+/** A form's checkbox-like field: on? */
+function isOn(v) {
+  return v === true || v === '1' || v === 'on' || v === 'true';
+}
 const DEFAULT_MAX_SIZE = 10 * 1024 * 1024;
 const DEFAULT_INTERVAL_SECONDS = 5;
 // a terminology server on this server that isn't there: how often to look again, and how
@@ -755,7 +765,11 @@ class IpsModule {
     r.get('/:code/Bundle/:id', project, ...this.web, h('read', (req, res) => this.read(req, res)));
     // sharing: anyone who can read the document (same origin, and rate limited as
     // submissions are, since each share stores a copy on the SHL server)
-    r.post('/:code/Bundle/:id/share', project, this.sameOrigin, ...posting, this.form, h('share', (req, res) => this.share(req, res)));
+    // a logged in user can sign what they share (signUser): their post rides on the session, so it carries the CSRF token
+    r.post('/:code/Bundle/:id/share', project, this.sameOrigin, ...posting, this.session, this.form, auth.csrfIfLoggedIn, h('share', (req, res) => this.share(req, res)));
+    // a signed copy of the document (the original, or the modified copy), for the source view's downloads
+    r.post('/:code/Bundle/:id/signed', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '16kb' }), auth.csrfIfLoggedIn,
+      h('signed', (req, res) => this.signed(req, res)));
     r.post('/:code/Bundle/:id/delete', project, this.sameOrigin, this.session, this.form, this.csrf, manager, h('delete', (req, res) => {
       const id = docId(req.params.id);
       if (!this.store.delete(id, req.project.id)) {
@@ -1545,21 +1559,172 @@ class IpsModule {
       return fail(409, `Document ${id} has not been processed yet, so there is no modified copy to share`);
     }
     const label = row.patient_name ? `Patient Health Document for ${row.patient_name}` : 'Patient Health Document';
+    // signed, if the user asked (the source view's Sign choices)
+    const wanted = { user: isOn(req.body.signUser), system: isOn(req.body.signSystem) };
+    let shared = doc;
+    if (wanted.user || wanted.system) {
+      try {
+        shared = await this.signedCopy(req, doc, wanted);
+      } catch (e) {
+        return fail(e.status || 500, e.message);
+      }
+    }
     let out;
     try {
       // the QR opens this server's viewer, unless the configuration names another
-      out = await this.shl.share(doc, { kind, host: req.get('host'), label, viewer: this.viewer ? this.viewerUrl(req) : undefined });
+      out = await this.shl.share(shared, { kind, host: req.get('host'), label, viewer: this.viewer ? this.viewerUrl(req) : undefined });
       out.source = source;
     } catch (e) {
       this.log.error(`IPS module: document ${id} could not be shared as ${kind}: ${e.message}`);
       return fail(502, e.message);
     }
-    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared (${source}) as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
+    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared (${source}${shared !== doc ? ', signed' : ''}) as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
     if (json) {
       return res.json(out);
     }
     this.sendHtml(res, `${req.project.name}: Document ${id} - ${kind.toUpperCase()}`,
       render.renderShare(req.project, row, out, this.ctx(req, res)), Date.now(), req);
+  }
+
+  // ---- signing ----
+
+  /**
+   * A signed copy of a document: {source: 'original' | 'modified', user: bool, system: bool}
+   * -> the signed document (JSON). Not kept.
+   */
+  async signed(req, res) {
+    const id = docId(req.params.id);
+    const row = this.store.read(id, req.project.id);
+    if (!row) {
+      return res.status(404).json({ error: `No document with id '${req.params.id}'` });
+    }
+    const b = req.body && typeof req.body === 'object' ? req.body : {};
+    const modified = b.source === 'modified';
+    const doc = modified ? row.analysed : row.bundle;
+    if (!doc) {
+      return res.status(409).json({ error: `Document ${id} has not been processed yet, so there is no modified copy to sign` });
+    }
+    const wanted = { user: b.user === true, system: b.system === true };
+    if (!wanted.user && !wanted.system) {
+      return res.status(400).json({ error: 'Say who signs: the user, the system, or both' });
+    }
+    let signed;
+    try {
+      signed = await this.signedCopy(req, doc, wanted);
+    } catch (e) {
+      return res.status(e.status || 500).json({ error: e.message });
+    }
+    this.log.info(`IPS module: document ${id} in '${req.project.code}' signed (${modified ? 'modified' : 'original'}) by ${[wanted.user ? 'the user' : null, wanted.system ? 'the system' : null].filter(Boolean).join(' and ')}`);
+    res.set('Cache-Control', 'no-store');
+    return this.sendJson(res, 200, signed);
+  }
+
+  /**
+   * Who can sign the documents a request's page shows (the source view's Sign choices): the
+   * logged in user with a key pair of a type signatures.js can use, and the system with one.
+   * null when the key store isn't on
+   * @returns {{types: string[], user: {name: string, keyId: string|null}|null, system: {keyId: string|null}}|null}
+   */
+  signingState(req) {
+    if (!keystore.initialized) {
+      return null;
+    }
+    const types = signatures.signingKeyTypes;
+    const me = auth.currentUser(req);
+    const userKey = me ? keystore.usableKey(me.id, types) : null;
+    const systemKey = keystore.usableKey(keystore.SYSTEM, types);
+    return {
+      types,
+      user: me ? { name: me.name || me.login, keyId: userKey ? userKey.key_id : null } : null,
+      system: { keyId: systemKey ? systemKey.key_id : null }
+    };
+  }
+
+  /**
+   * Sign a copy of a document with signatures.js sign(): the logged in user's key pair, the
+   * system's, or both - the first of signatures.signingKeyTypes each has. The system signs for
+   * anyone, but no more often than modules.ips.signing.systemSeconds (10) apart for any one
+   * address. Throws an error with a status (401, 404, 409, 429, 500) when it can't
+   */
+  async signedCopy(req, doc, wanted) {
+    const err = (status, message) => Object.assign(new Error(message), { status });
+    if (!keystore.initialized) {
+      throw err(404, 'Signing is not available on this server: the key store is off');
+    }
+    const types = signatures.signingKeyTypes;
+    const words = types.map(t => keystore.KEY_TYPES[t]?.label || t).join(' or ');
+    const provider = new KeyStoreKeyProvider(keystore);
+    const base = auth.publicUrl(req);
+    const signer = (loaded) => ({
+      key: provider.describe(loaded.row),
+      privateKey: loaded.privateKey,
+      url: `${base}/keys/key/${encodeURIComponent(loaded.row.key_id)}`
+    });
+    const purpose = 'ips:sign-document';
+    let user = null;
+    let system = null;
+    const me = wanted.user ? auth.currentUser(req) : null;
+    if (wanted.user) {
+      if (!me) {
+        throw err(401, 'Log in to sign as yourself');
+      }
+      const loaded = keystore.loadPrivateKey({ owner: me.id, types, purpose, actor: me.id });
+      if (!loaded) {
+        throw err(409, `You have no ${words} key pair to sign with: make one on your keys page (/keys/mine)`);
+      }
+      user = signer(loaded);
+    }
+    if (wanted.system) {
+      const wait = this.systemSigningWait(req.ip);
+      if (wait > 0) {
+        throw err(429, `The system signs a document for you no more than once every ${this.systemSigningSeconds()} seconds: try again in ${wait} second${wait === 1 ? '' : 's'}`);
+      }
+      const loaded = keystore.loadPrivateKey({ owner: keystore.SYSTEM, types, purpose, actor: me ? me.id : null });
+      if (!loaded) {
+        throw err(409, `The system has no ${words} key pair to sign with`);
+      }
+      system = signer(loaded);
+    }
+    let signed;
+    try {
+      signed = await signatures.sign(structuredClone(doc), { user, system }, { log: this.log });
+    } catch (e) {
+      throw err(422, `The document could not be signed: ${e.message}`);
+    }
+    if (!signed || typeof signed !== 'object' || signed.resourceType !== 'Bundle') {
+      this.log.error('IPS module: signatures.sign() did not return a Bundle');
+      throw err(500, 'Signing did not give a document back');
+    }
+    return signed;
+  }
+
+  systemSigningSeconds() {
+    const s = this.config.signing?.systemSeconds;
+    return Number.isFinite(s) && s >= 0 ? s : DEFAULT_SYSTEM_SIGNING_SECONDS;
+  }
+
+  /** Seconds until this address may have the system sign again (0: now, and the time is taken) */
+  systemSigningWait(ip) {
+    const gap = this.systemSigningSeconds() * 1000;
+    if (gap <= 0) {
+      return 0;
+    }
+    const now = Date.now();
+    this.systemSigned = this.systemSigned || new Map();
+    // forget the addresses whose wait is long over, so the map stays small
+    if (this.systemSigned.size > 10000) {
+      for (const [k, t] of this.systemSigned) {
+        if (now - t >= gap) {
+          this.systemSigned.delete(k);
+        }
+      }
+    }
+    const last = this.systemSigned.get(ip || '');
+    if (last !== undefined && now - last < gap) {
+      return Math.ceil((gap - (now - last)) / 1000);
+    }
+    this.systemSigned.set(ip || '', now);
+    return 0;
   }
 
   // ---- users ----
@@ -2624,18 +2789,24 @@ class IpsModule {
         np: typeof req.query.np === 'string' ? req.query.np : undefined,
         problemsOnly: req.query.problems === '1',
         narrative,
-        source
+        source,
+        signing: view === 'source' ? this.signingState(req) : null
       };
       return this.sendHtml(res, documentPageTitle(row), render.renderDocument(req.project, row, view, ctx), start, req);
     }
     if (!row) {
       return this.sendOutcome(res, 404, 'not-found', `No Bundle with id '${req.params.id}'`);
     }
+    // ?source=modified: the analysed copy (what the processing ended up with), as the source view shows it
+    const modified = req.query.source === 'modified';
+    if (modified && !row.analysed) {
+      return this.sendOutcome(res, 404, 'not-found', `Document ${row.id} has no modified copy: it has not been processed yet`);
+    }
     res.set('Last-Modified', new Date(row.received).toUTCString());
     if (req.query.download === '1') {
-      res.set('Content-Disposition', `attachment; filename="ips-${req.project.code}-${row.id}.json"`);
+      res.set('Content-Disposition', `attachment; filename="ips-${req.project.code}-${row.id}${modified ? '-modified' : ''}.json"`);
     }
-    return this.sendJson(res, 200, row.bundle);
+    return this.sendJson(res, 200, modified ? row.analysed : row.bundle);
   }
 
   // ---- patients ----

@@ -100,7 +100,7 @@ class BatchValidateWorker extends TerminologyWorker {
       // Pass 1: front-load every resource the batch supplies into the (unsealed)
       // session cache before any entry is evaluated. When this happens, pass 2
       // below drops per-entry tx-resource processing (they're already cached).
-      const frontLoaded = this.frontLoadBatch(params);
+      const frontLoaded = await this.frontLoadBatch(params);
       // Before any entry runs: the codes the entries name, by code system. The first entry that
       // locates a code in a version of one has the batch prefetchCodes them all, once, and every
       // entry passes the handle to locate (BatchPrefetch; tx/cs/cs-api.md, Batches)
@@ -212,9 +212,9 @@ class BatchValidateWorker extends TerminologyWorker {
    * The unknown-cache-id check is done here, once, for the whole batch.
    *
    * @param {Object} params - the batch Parameters (req.body)
-   * @returns {boolean} true if resources were front-loaded into an unsealed cache
+   * @returns {Promise<boolean>} true if resources were front-loaded into an unsealed cache
    */
-  frontLoadBatch(params) {
+  async frontLoadBatch(params) {
     const cacheId = this.opContext ? this.opContext.cacheId : null;
     const cache = this.opContext ? this.opContext.resourceCache : null;
     if (!cacheId || !cache) {
@@ -241,7 +241,7 @@ class BatchValidateWorker extends TerminologyWorker {
         allParams.push(p);
       }
     }
-    const { txResources, primaryResources } = this.collectSuppliedResources({ parameter: allParams });
+    const { txResources, primaryResources } = await this.collectSuppliedResources({ parameter: allParams });
     const pool = txResources.concat(primaryResources);
     if (pool.length > 0) {
       this.addToClientCache(cacheId, pool);

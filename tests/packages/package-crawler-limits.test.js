@@ -45,10 +45,12 @@ function header(name, size) {
 
 // A package whose package.json is followed by a file of mb MB of spaces: a decompression
 // bomb that is about 1 KB per MB. Built from repeated gzip members (which gunzip joins up),
-// so the test doesn't need the memory it is checking the crawler doesn't use
+// so the test doesn't need the memory it is checking the crawler doesn't use. A bomb that is
+// package.json has no package.json before it (two would be refused as a duplicate name)
 function bomb(name, mb) {
   const pj = Buffer.from(packageJson());
-  const start = Buffer.concat([header('package/package.json', pj.length), pj, Buffer.alloc((512 - pj.length % 512) % 512), header(`package/${name}`, mb * MB)]);
+  const first = name === 'package.json' ? [] : [header('package/package.json', pj.length), pj, Buffer.alloc((512 - pj.length % 512) % 512)];
+  const start = Buffer.concat([...first, header(`package/${name}`, mb * MB)]);
   const member = zlib.gzipSync(Buffer.alloc(MB, ' '));
   return Buffer.concat([zlib.gzipSync(start), ...Array(mb).fill(member), zlib.gzipSync(Buffer.alloc(1024))]);
 }

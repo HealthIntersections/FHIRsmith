@@ -206,6 +206,70 @@
     return h;
   }
 
+  // ---- downloads: the document as JSON, a ZIP, or a PDF ----
+
+  /*
+   * Download the document. Used by the editors (create, below), and by a stored document's
+   * page (render.js renderSource).
+   *
+   *   IpsDocActions.download('json' | 'zip' | 'pdf', {
+   *     json: '...',                         // the document, as text
+   *     bundle: {...},                       // the document (for the PDF's HTML)
+   *     name: 'patient-ips',                 // the JSON file's name, without its extension
+   *     fileName: 'patient-document',        // optional: the ZIP or PDF's name (default: name)
+   *     vendor: { jspdf, html2canvas, pdflib, zip },   // where the libraries are (ips.js actionsConfig)
+   *     html: function (bundle) { ... },     // optional: the HTML for the PDF
+   *     attachments: function () { ... }     // optional: [{name, file, description}] for the PDF and ZIP
+   *   }) -> a promise, done when the file has been saved
+   *
+   * In the ZIP and attached to the PDF, the document is {name}.json.
+   */
+  function download(kind, o) {
+    var attachments = function () {
+      try { return (o.attachments && o.attachments()) || []; } catch (e) { return []; }
+    };
+    var jsonName = o.name + '.json';
+    if (kind === 'json') {
+      save(new Blob([o.json], { type: 'application/fhir+json' }), jsonName);
+      return Promise.resolve();
+    }
+    if (kind === 'zip') {
+      return loadScript(o.vendor.zip).then(function () {
+        window.zip.configure({ useWebWorkers: false });
+        var writer = new window.zip.ZipWriter(new window.zip.BlobWriter('application/zip'));
+        var adds = [writer.add(jsonName, new window.zip.TextReader(o.json))];
+        attachments().forEach(function (a) { adds.push(writer.add(a.name, new window.zip.BlobReader(a.file))); });
+        return Promise.all(adds).then(function () { return writer.close(); });
+      }).then(function (blob) {
+        save(blob, (o.fileName || o.name) + '.zip');
+      });
+    }
+    if (kind === 'pdf') {
+      var holder = el('div', { style: 'position: absolute; left: -10000px; top: 0; width: 675px; background: white; color: black; font-family: sans-serif; font-size: 12px' });
+      holder.innerHTML = o.html ? o.html(o.bundle) : defaultHtml(o.bundle);
+      document.body.appendChild(holder);
+      return Promise.all([loadScript(o.vendor.jspdf), loadScript(o.vendor.html2canvas), loadScript(o.vendor.pdflib)]).then(function () {
+        return new Promise(function (resolve, reject) {
+          var doc = new window.jspdf.jsPDF('p', 'pt', 'a4');
+          try {
+            doc.html(holder, { callback: resolve, margin: [20, 20, 20, 20], autoPaging: 'text', x: 0, y: 0, width: 555, windowWidth: 675 });
+          } catch (e) { reject(e); }
+        });
+      }).then(function (doc) {
+        return window.PDFLib.PDFDocument.load(doc.output('arraybuffer'));
+      }).then(function (pdf) {
+        var adds = [pdf.attach(new TextEncoder().encode(o.json), jsonName, { mimeType: 'application/fhir+json', description: 'IPS Document' })];
+        attachments().forEach(function (a) {
+          adds.push(a.file.arrayBuffer().then(function (bytes) { return pdf.attach(bytes, a.name, { mimeType: a.file.type || 'application/octet-stream', description: a.description || a.name }); }));
+        });
+        return Promise.all(adds).then(function () { return pdf.save(); });
+      }).then(function (bytes) {
+        save(new Blob([bytes], { type: 'application/pdf' }), (o.fileName || o.name) + '.pdf');
+      }).finally(function () { document.body.removeChild(holder); });
+    }
+    return Promise.reject(new Error('Unknown download ' + kind));
+  }
+
   // ---- the actions ----
 
   function create(container, cfg, hooks) {
@@ -229,9 +293,6 @@
     function failed(what, e) {
       messages.innerHTML = '';
       messages.appendChild(e.problems && e.problems.length ? problemList(what + ': ' + e.message, e.problems) : el('div', { class: 'alert alert-danger', text: what + ': ' + e.message }));
-    }
-    function attachments() {
-      try { return (hooks.attachments && hooks.attachments()) || []; } catch (e) { return []; }
     }
 
     // submit
@@ -282,47 +343,17 @@
       showToken();
     }
 
-    // downloads
-    function downloadJson() { save(new Blob([json()], { type: 'application/fhir+json' }), 'patient-ips.json'); }
-    function downloadZip() {
-      messages.innerHTML = '<p><i>Making the ZIP...</i></p>';
-      loadScript(cfg.urls.vendor.zip).then(function () {
-        window.zip.configure({ useWebWorkers: false });
-        var writer = new window.zip.ZipWriter(new window.zip.BlobWriter('application/zip'));
-        var adds = [writer.add('patient-ips.json', new window.zip.TextReader(json()))];
-        attachments().forEach(function (a) { adds.push(writer.add(a.name, new window.zip.BlobReader(a.file))); });
-        return Promise.all(adds).then(function () { return writer.close(); });
-      }).then(function (blob) {
-        save(blob, 'patient-document.zip');
-        messages.innerHTML = '';
-      }).catch(function (e) { failed('The ZIP could not be made', e); });
+    // downloads (download, above)
+    function downloadAs(kind, what) {
+      var o = { json: json(), bundle: bundle, name: 'patient-ips', fileName: 'patient-document', vendor: cfg.urls.vendor, html: hooks.html, attachments: hooks.attachments };
+      if (kind === 'json') { download('json', o); return; }
+      messages.innerHTML = '<p><i>Making the ' + what + '...</i></p>';
+      download(kind, o).then(function () { messages.innerHTML = ''; })
+        .catch(function (e) { failed('The ' + what + ' could not be made', e); });
     }
-    function downloadPdf() {
-      messages.innerHTML = '<p><i>Making the PDF...</i></p>';
-      var holder = el('div', { style: 'position: absolute; left: -10000px; top: 0; width: 675px; background: white; color: black; font-family: sans-serif; font-size: 12px' });
-      holder.innerHTML = hooks.html ? hooks.html(bundle) : defaultHtml(bundle);
-      document.body.appendChild(holder);
-      Promise.all([loadScript(cfg.urls.vendor.jspdf), loadScript(cfg.urls.vendor.html2canvas), loadScript(cfg.urls.vendor.pdflib)]).then(function () {
-        return new Promise(function (resolve, reject) {
-          var doc = new window.jspdf.jsPDF('p', 'pt', 'a4');
-          try {
-            doc.html(holder, { callback: resolve, margin: [20, 20, 20, 20], autoPaging: 'text', x: 0, y: 0, width: 555, windowWidth: 675 });
-          } catch (e) { reject(e); }
-        });
-      }).then(function (doc) {
-        return window.PDFLib.PDFDocument.load(doc.output('arraybuffer'));
-      }).then(function (pdf) {
-        var adds = [pdf.attach(new TextEncoder().encode(json()), 'patient-ips.json', { mimeType: 'application/fhir+json', description: 'IPS Document' })];
-        attachments().forEach(function (a) {
-          adds.push(a.file.arrayBuffer().then(function (bytes) { return pdf.attach(bytes, a.name, { mimeType: a.file.type || 'application/octet-stream', description: a.description || a.name }); }));
-        });
-        return Promise.all(adds).then(function () { return pdf.save(); });
-      }).then(function (bytes) {
-        save(new Blob([bytes], { type: 'application/pdf' }), 'patient-document.pdf');
-        messages.innerHTML = '';
-      }).catch(function (e) { failed('The PDF could not be made', e); })
-        .finally(function () { document.body.removeChild(holder); });
-    }
+    function downloadJson() { downloadAs('json', 'JSON'); }
+    function downloadZip() { downloadAs('zip', 'ZIP'); }
+    function downloadPdf() { downloadAs('pdf', 'PDF'); }
 
     // sharing
     var days = el('input', { type: 'number', min: 1, max: 365, value: String(cfg.shareDays || 5), class: 'form-control', style: 'display: inline-block; width: 5em', 'aria-label': 'Days the document is available' });
@@ -394,5 +425,5 @@
     return api;
   }
 
-  window.IpsDocActions = { create: create, defaultHtml: defaultHtml, sanitizeNarrative: sanitizeNarrative };
+  window.IpsDocActions = { create: create, download: download, defaultHtml: defaultHtml, sanitizeNarrative: sanitizeNarrative };
 })();

@@ -19,6 +19,8 @@ const ipaddr = require('ipaddr.js');
 const {debugLog} = require("../tx/operation-context");
 const {Parser: TarParser} = require('tar');
 const {integrityOfSync, verifyPackageSignature} = require('./npm-signing');
+const {MAX_UNPACKED_MB} = require('../library/package-limits');
+const {EntryNames, pathProblem} = require('../library/package-names');
 
 const MB = 1024 * 1024;
 
@@ -27,7 +29,8 @@ const MB = 1024 * 1024;
 // All can be set in the packages "crawler" config section:
 //   maxDownloadMB  the package file as downloaded (or read from a local feed)
 //   maxUnpackedMB  the total of the package's files once unzipped. The files are streamed,
-//                  not held, so this limits the work, not the memory
+//                  not held, so this limits the work, not the memory. The default is the
+//                  limit everywhere FHIRsmith unpacks a package (library/package-limits.js)
 //   maxFileMB      a file the crawler reads: package.json, .index.json, ig.ini, and each
 //                  .json file (for its url). Memory is bounded by this, not by the package
 //   maxFiles       the number of files in the package
@@ -35,7 +38,7 @@ const MB = 1024 * 1024;
 //   maxRequestSeconds  the longest a download (a feed or a package) may take, response included:
 //                  axios's timeout only covers the wait for the response to start, so a server
 //                  that then sends a byte now and then could hold the crawl for as long as it liked
-const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: 4096, maxFileMB: 50, maxFiles: 250000, maxFeedMB: 50, maxRequestSeconds: 300 };
+const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: MAX_UNPACKED_MB, maxFileMB: 50, maxFiles: 250000, maxFeedMB: 50, maxRequestSeconds: 300 };
 
 function crawlerLimits(config) {
   const c = { ...LIMIT_DEFAULTS, ...(config?.crawler || {}) };
@@ -1224,13 +1227,15 @@ class PackageCrawler {
   // Reads what the crawler needs from a package as the package is unzipped and untarred:
   // package.json, .index.json and ig.ini, the file names, and the url of each resource. Only
   // those files are held, one at a time, so memory is bounded by maxFileMB however large
-  // the package unpacks to (see crawlerLimits)
+  // the package unpacks to (see crawlerLimits). A package with a name with a .. segment, or
+  // two files of the same name (library/package-names.js), is refused
   async unpackPackage(packageBuffer) {
     const limits = crawlerLimits(this.config);
     const meta = {};
     const fileNames = [];
     const resourceUrls = [];
     const skipped = [];
+    const names = new EntryNames();
 
     await new Promise((resolve, reject) => {
       let unpacked = 0;
@@ -1246,6 +1251,11 @@ class PackageCrawler {
 
       const parser = new TarParser({
         onReadEntry: (entry) => {
+          // a name with a .. segment, or two files of the same name (see library/package-names.js)
+          const problem = failed ? null : pathProblem(entry.path) || (entry.type === 'Directory' ? null : names.add(entry.path));
+          if (problem) {
+            fail(new Error(problem));
+          }
           if (failed || !['File', 'OldFile', 'ContiguousFile'].includes(entry.type)) {
             entry.resume();
             return;

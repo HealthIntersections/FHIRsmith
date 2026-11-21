@@ -450,7 +450,8 @@ describe('the web pages', () => {
     expect(page.text).toContain('No known medications');
     expect(page.text).toContain('<a class="ips-step ips-step-waiting" title="validation - waiting" href="/ips/demo/Bundle/1?view=validation"><span class="ips-step-icon">&#9790;</span> Validation</a>');
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
-    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?download=1">Download</a>');
+    // downloading is in the source view's banner, not the facts
+    expect(page.text).not.toContain('?download=1');
     expect(page.text).not.toContain('Process again');
     const term = await html('/ips/demo/Bundle/1?view=terminology');
     expect(term.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=terminology">Terminology</a></li>');
@@ -480,6 +481,25 @@ describe('the web pages', () => {
     expect(dl.headers['content-type']).toMatch(/fhir\+json/);
     expect(dl.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.json"');
     expect(dl.body.resourceType).toBe('Bundle');
+    // the modified copy: not until the document has been processed
+    expect((await request(app).get('/ips/demo/Bundle/1?download=1&source=modified')).status).toBe(404);
+    const modified = structuredClone(mod.store.read(1).bundle);
+    modified.id = 'modified-copy';
+    mod.store.saveAnalysed(1, modified);
+    const dlm = await request(app).get('/ips/demo/Bundle/1?download=1&source=modified').set('Accept', 'text/html');
+    expect(dlm.headers['content-disposition']).toBe('attachment; filename="ips-demo-1-modified.json"');
+    expect(dlm.body.id).toBe('modified-copy');
+    expect((await request(app).get('/ips/demo/Bundle/1?_format=json&source=modified')).body.id).toBe('modified-copy');
+    // the source view's banner: download (JSON a link; ZIP and PDF made in the browser) and share
+    const source = await html('/ips/demo/Bundle/1?view=source');
+    expect(source.text).toContain('<div class="ips-doc-banner-group"><span class="ips-doc-banner-label">Download</span><a class="btn btn-default ips-download-json" href="/ips/demo/Bundle/1?download=1" title="this document (FHIR JSON)">JSON</a>');
+    expect(source.text).toContain('data-kind="zip"');
+    expect(source.text).toContain('data-kind="pdf"');
+    expect(source.text).toContain('data-name="ips-demo-1"');
+    expect(source.text).toContain('/doc-actions.js');
+    const sourceModified = await html('/ips/demo/Bundle/1?view=source&source=modified');
+    expect(sourceModified.text).toContain('href="/ips/demo/Bundle/1?download=1&amp;source=modified"');
+    expect(sourceModified.text).toContain('data-name="ips-demo-1-modified"');
     const fhir = await request(app).get('/ips/demo/Bundle/1?_format=json').set('Accept', 'text/html');
     expect(fhir.headers['content-type']).toMatch(/fhir\+json/);
   });
@@ -1635,7 +1655,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+    expect(STEPS.map(s => s.name)).toEqual(['signatures', 'nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -2189,10 +2209,10 @@ describe('sharing as SHL / VHL', () => {
   test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
     await post(app, 'demo', ips());
     // the buttons are on the source view, under the original / modified switch
-    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('class="ips-inline ips-share-form"');
     const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
-    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
-    expect(page.text).toContain('Share as VHL</button>');
+    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><input type="hidden" name="signUser" value=""/><input type="hidden" name="signSystem" value=""/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">SHL</button>');
+    expect(page.text).toContain('as a QR code">VHL</button>');
     expect(page.text).toContain('id="ips-share"');
     const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
     expect(r.status).toBe(200);
@@ -2222,6 +2242,34 @@ describe('sharing as SHL / VHL', () => {
     expect(html.text).toContain('<textarea class="ips-share-text" readonly rows="3">https://viewer.example.org/#shlink:/');
   });
 
+  test('shares a signed copy when asked: the system signs (rate limited); with no key, not shared', async () => {
+    const signatures = require('../../ips/signatures');
+    const keystore = require('../../library/keystore');
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    try {
+      await post(app, 'demo', ips());
+      const share = (extra) => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org')
+        .set('Accept', 'application/json').type('form').send({ kind: 'shl', source: 'original', ...extra });
+      const none = await share({ signSystem: '1' });
+      expect(none.status).toBe(409);
+      expect(none.body.error).toMatch(/The system has no EC P-256 or EC P-384 or Ed25519 or RSA key pair/);
+      keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
+      mod.config.signing = { systemSeconds: 0 };
+      const spy = jest.spyOn(signatures, 'sign').mockImplementation(async (bundle, signers) => ({ ...bundle, signature: { who: signers.system.url } }));
+      const ok = await share({ signSystem: '1' });
+      expect(ok.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1].user).toBeNull();
+      expect(spy.mock.calls[0][1].system.url).toMatch(/^https?:\/\/[^/]+\/keys\/key\/SHA256%3A/);
+      // not signed unless asked
+      await share({ signSystem: '' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    } finally {
+      keystore.shutdown();
+    }
+  });
+
   test('shares the modified copy of a document, once there is one', async () => {
     await post(app, 'demo', ips());
     const form = { kind: 'shl', source: 'modified' };
@@ -2232,13 +2280,13 @@ describe('sharing as SHL / VHL', () => {
     expect(none.body.error).toMatch(/has not been processed yet/);
     const empty = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
     expect(empty.text).toContain('it has not been processed yet');
-    expect(empty.text).not.toContain('Share as SHL');
+    expect(empty.text).not.toContain('class="ips-inline ips-share-form"');
     const modified = structuredClone(mod.store.read(1).bundle);
     modified.id = 'modified-copy';
     mod.store.saveAnalysed(1, modified);
     const page = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
     expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=source&amp;source=modified" class="active"');
-    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><input type="hidden" name="signUser" value=""/><input type="hidden" name="signSystem" value=""/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">SHL</button>');
     expect(page.text).toContain('&quot;modified-copy&quot;');
     const r = await share();
     expect(r.status).toBe(200);
@@ -2289,7 +2337,7 @@ describe('sharing as SHL / VHL', () => {
     const other = await makeApp();
     other.mod.store.createProject('demo', 'Demo', null);
     await post(other.app, 'demo', ips());
-    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('class="ips-inline ips-share-form"');
     expect((await request(other.app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
     other.mod.shutdown();
   });
@@ -3147,7 +3195,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+    expect(STEPS.map(s => s.name)).toEqual(['signatures', 'nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
   });
 });
 
@@ -3350,8 +3398,8 @@ describe('the nationality step', () => {
     expect(nationalityText(both)).toMatch(/^Jurisdiction unknown: the document has signs of more than one jurisdiction \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
   });
 
-  test('the step runs first, and the nation shows on the list, the document banner and the analysis', async () => {
-    expect(STEPS[0].name).toBe('nationality');
+  test('the step runs second (after the signatures), and the nation shows on the list, the document banner and the analysis', async () => {
+    expect(STEPS[1].name).toBe('nationality');
     mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'analysis');
     await post(app, 'demo', ips({ meta: { profile: [US_PCS] } }));
     await post(app, 'demo', ips());
@@ -3887,5 +3935,189 @@ describe('patients: matching, the Patient endpoint, $summary', () => {
     const p = cs.rest[0].resource.find(r => r.type === 'Patient');
     expect(p.interaction.map(i => i.code)).toEqual(['read', 'search-type']);
     expect(p.operation).toEqual([{ name: 'summary', definition: 'http://hl7.org/fhir/uv/ips/OperationDefinition/summary' }]);
+  });
+});
+
+describe('the signatures step', () => {
+  const signatures = require('../../ips/signatures');
+  const { KeyStoreKeyProvider } = require('../../ips/signature-keys');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.steps = STEPS.filter(s => s.name === 'signatures');
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mod.shutdown();
+  });
+
+  test('the empty implementation says so; no note for the status line; shown at the top of the analysis view', async () => {
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(1);
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: null });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'information', keyId: null, description: 'Signature checking is not implemented yet' }]);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<h4>Signatures</h4>');
+    expect(page.text).toContain('>Information</span> Signature checking is not implemented yet</li>');
+    expect(page.text).toContain('title="signatures - done"');
+  });
+
+  test('verify gets a copy of the document, a key provider, and when it was received; its outcomes are kept and shown', async () => {
+    const keys = { getKeyById: async () => null, getKeyByPublicKey: async () => null };
+    mod.keyProvider = keys;
+    const spy = jest.spyOn(signatures, 'verify').mockImplementation(async (bundle, provider, options) => {
+      bundle.entry = [];
+      expect(provider).toBe(keys);
+      expect(options.receivedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+      return [
+        { status: 'error', keyId: 'SHA256:abc<d>', description: 'The signature is not valid <b>' },
+        { status: 'warning', keyId: 'k2', description: 'The key is expired but the signature was valid' }
+      ];
+    });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(spy).toHaveBeenCalledTimes(1);
+    // the master document is as it was
+    expect(mod.store.read(1).bundle.entry.length).toBeGreaterThan(0);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('>Error</span> <code>SHA256:abc&lt;d&gt;</code>: The signature is not valid &lt;b&gt;</li>');
+    expect(page.text).toContain('>Warning</span> <code>k2</code>: The key is expired but the signature was valid</li>');
+  });
+
+  test('a check that throws, or answers wrongly, is an error outcome, and processing goes on', async () => {
+    jest.spyOn(signatures, 'verify').mockRejectedValueOnce(new Error('canonicalization blew up'))
+      .mockResolvedValueOnce([{ status: 'fatal', description: 'x' }, { status: 'information', keyId: null, description: 'fine' }])
+      .mockResolvedValueOnce('nonsense');
+    mod.steps = [...STEPS.filter(s => s.name === 'signatures'), { name: 'after', run: async () => 'after ran' }];
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'after ran' });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'error', keyId: null, description: 'The signature check failed: canonicalization blew up' }]);
+    const two = mod.store.readResult(2, 'signatures').result.outcomes;
+    expect(two[0]).toMatchObject({ status: 'error', description: expect.stringContaining('not of the right form') });
+    expect(two[1]).toEqual({ status: 'information', keyId: null, description: 'fine' });
+    expect(mod.store.readResult(3, 'signatures').result.outcomes[0].description).toBe('The signature check did not return a list of outcomes');
+  });
+
+  test('the key store\'s key provider: by id, and by public key; nothing when the key store is off', async () => {
+    const crypto = require('crypto');
+    const keystore = require('../../library/keystore');
+    keystore.shutdown();
+    const off = new KeyStoreKeyProvider();
+    expect(await off.getKeyById('anything')).toBeNull();
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    try {
+      const owner = auth.principalById(await makeUser('signer', null, { name: 'Sam Signer' }));
+      const made = keystore.create(owner, 'EC-P256');
+      const { publicKey } = crypto.generateKeyPairSync('ed25519');
+      const [uploaded] = keystore.upload(owner, publicKey.export({ type: 'spki', format: 'pem' }), { kid: 'sam-ed' });
+      keystore.revoke(owner, uploaded.id, { reason: 'lost', expires: '2026-10-01T00:00:00Z' });
+      const p = new KeyStoreKeyProvider();
+      const k = await p.getKeyById(made.key_id);
+      expect(k).toMatchObject({ keyId: made.key_id, alg: 'ES256', status: 'active', expires: null, owner: 'created by Sam Signer', origin: 'created', source: 'keystore' });
+      expect(k.key.asymmetricKeyType).toBe('ec');
+      expect(k.jwk).toMatchObject({ kty: 'EC', crv: 'P-256', kid: made.key_id });
+      // a signature made with it checks out with the key as given
+      const s = keystore.sign({ owner: owner.id, purpose: 'test:ips', payload: 'abc' });
+      expect(crypto.verify('sha256', Buffer.from('abc'), { key: k.key, dsaEncoding: 'ieee-p1363' }, s.signature)).toBe(true);
+      // a key that came in a signature's certificate: found by the key itself, revoked
+      expect(await p.getKeyByPublicKey(publicKey)).toMatchObject({ keyId: 'sam-ed', status: 'revoked', expires: '2026-10-01T00:00:00.000Z', reason: 'lost', alg: 'EdDSA', owner: 'uploaded by Sam Signer' });
+      expect(await p.getKeyByPublicKey(crypto.generateKeyPairSync('ed25519').publicKey)).toBeNull();
+      expect(await p.getKeyById('nope')).toBeNull();
+    } finally {
+      keystore.shutdown();
+    }
+  });
+});
+
+describe('signing a document for download', () => {
+  const signatures = require('../../ips/signatures');
+  const keystore = require('../../library/keystore');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    mod.store.createProject('demo', 'Demo', null);
+    await post(app, 'demo', ips());
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    keystore.shutdown();
+    mod.shutdown();
+  });
+  const signed = (agent, body, csrf) => {
+    let r = agent.post('/ips/demo/Bundle/1/signed').set('Accept', 'application/fhir+json');
+    if (csrf) {
+      r = r.set('X-CSRF-Token', csrf);
+    }
+    return r.send(body);
+  };
+
+  test('the Sign choices: you (logged in, with a key pair) and the system (with one); each disabled says why', async () => {
+    let page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<span class="ips-doc-banner-label">Sign document</span>');
+    expect(page.text).toContain('<input type="checkbox" name="sign-user" disabled/> You</label> <span class="ips-small">(<a href="/auth/login?return=');
+    expect(page.text).toContain('<input type="checkbox" name="sign-system" disabled/> System</label> <span class="ips-small">(the system has no EC-P256 or EC-P384 or Ed25519 or RSA key pair)');
+    // not on the other views
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Sign document');
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    const sys = keystore.create(admin, 'EC-P256', { system: true });
+    const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
+    page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="checkbox" name="sign-user" disabled/> Administrator</label> <span class="ips-small">(you have no EC-P256 or EC-P384 or Ed25519 or RSA key pair: <a href="/keys/mine">make one</a>)');
+    expect(page.text).toContain(`<input type="checkbox" name="sign-system" data-key="${sys.key_id}"/> System</label>`);
+    const mine = keystore.create(admin, 'Ed25519');
+    page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain(`<input type="checkbox" name="sign-user" data-key="${mine.key_id}"/> Administrator</label>`);
+    // the key store off: no Sign choices
+    keystore.shutdown();
+    page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).not.toContain('Sign document');
+  });
+
+  test('a signed copy: sign() gets a copy, and the signers - their public keys, private keys and permalinks; not kept', async () => {
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    keystore.create(admin, 'EC-P256', { system: true });
+    const mine = keystore.create(admin, 'RSA');
+    const spy = jest.spyOn(signatures, 'sign');
+    // anybody: the system, once in a while
+    let r = await signed(request(app), { source: 'original', system: true });
+    expect(r.status).toBe(200);
+    expect(r.body.resourceType).toBe('Bundle');
+    const [doc, signers] = spy.mock.calls[0];
+    expect(doc).toEqual(mod.store.read(1).bundle);
+    expect(signers.user).toBeNull();
+    expect(signers.system.key).toMatchObject({ status: 'active', origin: 'created', owner: 'created by System', alg: 'ES256' });
+    expect(signers.system.privateKey.type).toBe('private');
+    expect(signers.system.url).toMatch(/\/keys\/key\/SHA256%3A/);
+    r = await signed(request(app), { source: 'original', system: true });
+    expect(r.status).toBe(429);
+    expect(r.body.error).toMatch(/no more than once every 10 seconds/);
+    // yourself: logged in, with the CSRF token
+    expect((await signed(request(app), { source: 'original', user: true })).status).toBe(401);
+    const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
+    const csrf = await authCsrf(agent, '/auth/account');
+    expect((await signed(agent, { source: 'original', user: true })).status).toBe(403);
+    r = await signed(agent, { source: 'original', user: true }, csrf);
+    expect(r.status).toBe(200);
+    const [, both] = spy.mock.calls[1];
+    expect(both.system).toBeNull();
+    expect(both.user.key).toMatchObject({ keyId: mine.key_id, alg: 'RS256', owner: 'created by Administrator' });
+    expect(both.user.privateKey.asymmetricKeyType).toBe('rsa');
+    // every load is logged
+    expect(keystore.db.db.prepare("SELECT COUNT(*) AS n FROM key_events WHERE kind = 'load' AND operation = 'ips:sign-document'").get().n).toBe(2);
+    // the modified copy: not before it is processed
+    expect((await signed(agent, { source: 'modified', user: true }, csrf)).status).toBe(409);
+    expect((await signed(agent, { source: 'original' }, csrf)).status).toBe(400);
+    // sign() refusing
+    spy.mockRejectedValueOnce(new Error('cannot canonicalize'));
+    r = await signed(agent, { source: 'original', user: true }, csrf);
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('The document could not be signed: cannot canonicalize');
   });
 });

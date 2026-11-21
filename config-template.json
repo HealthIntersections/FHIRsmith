@@ -87,6 +87,22 @@
     // requests a minute per IP that bring a login or an API token (anonymous ones aren't counted)
     "requestsPerMinute": 1000
   },
+  // The key store (library/keystore/README.md): public keys anyone can see at /keys (and as a
+  // JWKS), and the key pairs the server holds for users and for itself, to sign with when a
+  // module asks. Off unless enabled; these are the defaults
+  "keystore": {
+    "enabled": false,
+    // the public keys, in the databases folder; and the private keys, in a file of their own (0600)
+    "database": "keystore.db",
+    "privateDatabase": "keystore-private.db",
+    // a user can upload this many keys, then uploadsPerDay a day; and have one key pair of each
+    // type made createsPerDay. Administrators have no limits
+    "uploadAllowance": 10,
+    "uploadsPerDay": 1,
+    "createsPerDay": 1,
+    // the size of the RSA keys the server makes (2048, 3072 or 4096)
+    "rsaBits": 3072
+  },
   // A markdown report on the server - its uptime since the last report, restarts and
   // upgrades, a paragraph from any module with something to say, and the version, logs
   // and free disk space - emailed at midnight (local time), or as soon as the server is
@@ -189,7 +205,7 @@
         // and each .json, for its url) - memory use is bounded by this; maxFiles: the number
         // of files in a package
         "maxDownloadMB": 250,
-        "maxUnpackedMB": 4096,
+        "maxUnpackedMB": 1536,
         "maxFileMB": 50,
         "maxFiles": 250000,
         // and on downloads: maxFeedMB, a feed (JSON or RSS; the largest, Simplifier's, is 5 MB);

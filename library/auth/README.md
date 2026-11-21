@@ -313,6 +313,8 @@ auth.defineRoles('mymodule', [
 ], { title: 'My module', path: '/mymodule' });
 // a page only administrators have: listed on their account page
 auth.addAdminPage('mymodule', { label: 'Settings', path: '/mymodule/admin', description: 'what the module does' });
+// a page every logged in user has (the key store's "Your keys"): listed on their account page
+auth.addAccountPage('mymodule', { label: 'Your things', path: '/mymodule/mine', description: 'what it is for' });
 
 // pages: the session, and the CSRF token for someone logged in
 router.get('/page', ...auth.web, handler);

@@ -2300,7 +2300,7 @@ class ValidateWorker extends TerminologyWorker {
     let mode;
 
     // Handle tx-resource and cache-id parameters
-    this.setupAdditionalResources(params);
+    await this.setupAdditionalResources(params);
 
     let txp = new TxParameters(this.languages, this.i18n, true);
     txp.readParams(params);
@@ -2383,7 +2383,7 @@ class ValidateWorker extends TerminologyWorker {
       this.log.debug(`CodeSystem/${id}/$validate-code with params:`, params);
 
       // Handle tx-resource and cache-id parameters
-      this.setupAdditionalResources(params);
+      await this.setupAdditionalResources(params);
 
       let txp = new TxParameters(this.languages, this.i18n, true);
       txp.readParams(params);
@@ -2439,7 +2439,7 @@ class ValidateWorker extends TerminologyWorker {
 
   async handleValueSetInner(params, req) {
     // Handle tx-resource and cache-id parameters
-    this.setupAdditionalResources(params);
+    await this.setupAdditionalResources(params);
 
     let txp = new TxParameters(this.languages, this.i18n, true);
     txp.readParams(params);
@@ -2476,7 +2476,7 @@ class ValidateWorker extends TerminologyWorker {
       this.log.debug(`ValueSet/${id}/$validate-code with params:`, params);
 
       // Handle tx-resource and cache-id parameters
-      this.setupAdditionalResources(params);
+      await this.setupAdditionalResources(params);
 
       let txp = new TxParameters(this.languages, this.i18n, true);
       txp.readParams(params);

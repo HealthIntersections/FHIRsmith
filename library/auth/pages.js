@@ -537,6 +537,13 @@ function canDoHtml(auth, p) {
     h += '<li>Read what this server shows everyone, and look after your account (below). ' +
       'You have no roles yet: an administrator gives them.</li>';
   }
+  // what every user has (library/auth addAccountPage)
+  for (const [, info] of [...auth.moduleInfo.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const page of info.accountPages || []) {
+      h += `<li><a href="${escape(page.path)}">${escape(page.label)}</a>` +
+        (page.description ? ` - ${escape(page.description)}` : '') + '</li>';
+    }
+  }
   return h + '</ul>';
 }
 

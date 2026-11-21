@@ -8,6 +8,8 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const tar = require('tar');
+const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('../library/package-limits');
+const { EntryNames, pathProblem } = require('../library/package-names');
 
 class PackageWatcher {
   constructor(packagePath, options = {}) {
@@ -100,7 +102,9 @@ class PackageWatcher {
   }
 
   /**
-   * Extract .tgz file to temp directory
+   * Extract .tgz file to temp directory. A package whose files come to more than
+   * MAX_UNPACKED_BYTES, or with a name with a .. segment or two files of the same name
+   * (library/package-names.js), is refused
    */
   extractTgz() {
     // Clear existing extracted content
@@ -109,12 +113,31 @@ class PackageWatcher {
     }
     fs.mkdirSync(this.extractDir, { recursive: true });
 
-    // Extract synchronously
+    // Extract synchronously. The limit is on the files' sizes as their headers give them, which
+    // is what extracting writes; once a package is refused, nothing more is written
+    const names = new EntryNames();
+    let total = 0;
+    let problem = null;
     tar.extract({
       file: this.packagePath,
       cwd: this.extractDir,
-      sync: true
+      sync: true,
+      filter: (entryPath, entry) => {
+        if (!problem) {
+          problem = pathProblem(entryPath);
+        }
+        if (!problem && entry.type !== 'Directory') {
+          total += entry.size || 0;
+          problem = names.add(entryPath) ||
+            (total > MAX_UNPACKED_BYTES ? `the package unzips to more than the limit of ${MAX_UNPACKED_MB} MB` : null);
+        }
+        return !problem;
+      }
     });
+    if (problem) {
+      fs.rmSync(this.extractDir, { recursive: true, force: true });
+      throw new Error(`Can't read ${this.packagePath}: ${problem}`);
+    }
 
     this.log.info(`Extracted .tgz to ${this.extractDir}`);
   }

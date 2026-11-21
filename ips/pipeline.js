@@ -9,17 +9,18 @@
  * One process works through the queue (ips.js: processQueue), and runs these steps over
  * each document, in this order:
  *
- *   0. nationality   which nation the document is from, as far as it says (nationality.js)
- *   1. analysis      look at each resource and section for what a reader should know (analysis.js)
- *   2. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
- *   3. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
- *   4. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
- *   5. national      validate it against each national profile (the national IGs' profiles on Bundle)
- *   6. terminology   check each CodeableConcept against the value sets for international exchange
- *   7. piqi          measure the quality of the document with PIQI                        (not yet)
- *   8. profiles      check the document against each clinical profile (profiles.js)
- *   9. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
- *  10. reports       run the document through every report's ViewDefinition, into the report tables (reports.js)
+ *   0. signatures    check the document's signatures (signatures.js), with the server's key store (signature-keys.js)
+ *   1. nationality   which nation the document is from, as far as it says (nationality.js)
+ *   2. analysis      look at each resource and section for what a reader should know (analysis.js)
+ *   3. translate     translate CodeableConcepts that fail the terminology check to codes that pass it
+ *   4. narrative     generate the narrative with the IPS presenter (presenter.js), into the analysed copy
+ *   5. validation    validate the (translated) document with the FHIR validator (fhir-validator-wrapper)
+ *   6. national      validate it against each national profile (the national IGs' profiles on Bundle)
+ *   7. terminology   check each CodeableConcept against the value sets for international exchange
+ *   8. piqi          measure the quality of the document with PIQI                        (not yet)
+ *   9. profiles      check the document against each clinical profile (profiles.js)
+ *  10. ai            assess the document for consistency and its terminology with an AI service (ai-client.js)
+ *  11. reports       run the document through every report's ViewDefinition, into the report tables (reports.js)
  *
  * Each step is { name, run(row, project, module) -> result }. A step keeps what it finds in
  * one of two places: as a result stored against the document (store.saveResult - the
@@ -40,6 +41,8 @@ const { evaluateAsync } = require('./fhirpath-ips');
 const { checkNarrative } = require('../library/narrative-check');
 const { analysisStep } = require('./analysis');
 const { nationalityStep } = require('./nationality');
+const signatures = require('./signatures');
+const { KeyStoreKeyProvider } = require('./signature-keys');
 
 const IPS_BUNDLE_PROFILE = 'http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips';
 const VALIDATE_TIMEOUT_MS = 120000;
@@ -87,6 +90,47 @@ function issueSummary(counts) {
   }
   return parts.length ? parts.join(', ') : 'no issues';
 }
+
+const SIGNATURE_STATUSES = ['error', 'warning', 'information'];
+const SIGNATURE_DESCRIPTION_MAX = 2000;
+
+/**
+ * An outcome of verify() as it is kept: one of the form signatures.js says, or an error saying
+ * what was wrong with it
+ */
+function signatureOutcome(o) {
+  if (!o || typeof o !== 'object' || !SIGNATURE_STATUSES.includes(o.status) || typeof o.description !== 'string' ||
+    !(o.keyId === undefined || o.keyId === null || typeof o.keyId === 'string')) {
+    return { status: 'error', keyId: null, description: 'The signature check gave an outcome that is not of the right form: ' + String(JSON.stringify(o)).substring(0, 200) };
+  }
+  return { status: o.status, keyId: o.keyId || null, description: o.description.substring(0, SIGNATURE_DESCRIPTION_MAX) };
+}
+
+/**
+ * Signatures: the document's signatures are checked (signatures.js), on a copy of the
+ * document as received, with keys from the server's key store (signature-keys.js; a test, or
+ * another key store, sets module.keyProvider). What it says is kept as the step's result, and
+ * shown at the top of the analysis view. It gives no note for the status line, and a check
+ * that fails is an error outcome, not a failed step: the rest of the processing goes on.
+ */
+const signaturesStep = {
+  name: 'signatures',
+  async run(row, project, module) {
+    const started = Date.now();
+    let outcomes;
+    try {
+      const found = await signatures.verify(structuredClone(row.bundle), module.keyProvider || new KeyStoreKeyProvider(),
+        { receivedAt: row.received || null, log: module.log });
+      outcomes = Array.isArray(found) ? found.map(signatureOutcome) :
+        [{ status: 'error', keyId: null, description: 'The signature check did not return a list of outcomes' }];
+    } catch (e) {
+      module.log.error(`IPS module: document ${row.id}: the signature check failed: ${e.message}`);
+      outcomes = [{ status: 'error', keyId: null, description: `The signature check failed: ${e.message}` }];
+    }
+    module.store.saveResult(row.id, 'signatures', { ms: Date.now() - started, outcomes });
+    return null;
+  }
+};
 
 /**
  * Validation: the document goes to the FHIR validator (started by the module from
@@ -1189,10 +1233,10 @@ const reportsStep = {
   }
 };
 
-const STEPS = [nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
+const STEPS = [signaturesStep, nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
 
 module.exports = {
-  STEPS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
+  STEPS, signatures: signaturesStep, signatureOutcome, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };
