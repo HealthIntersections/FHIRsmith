@@ -1,0 +1,26 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-medication-ingredient",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-medication-ingredient",
+  "name": "IpsMedicationIngredient",
+  "title": "Medication ingredients (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 410942007 |Drug or medicament|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "descendent-of",
+            "value": "410942007"
+          }
+        ]
+      }
+    ]
+  }
+}

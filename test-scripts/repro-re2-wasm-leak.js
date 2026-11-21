@@ -1,14 +1,15 @@
-﻿// Manual reproducer for the re2-wasm WASM heap leak.
-// See library/regex-utilities.js for the workaround.
+﻿// Historical reproducer for the re2-wasm WASM heap leak.
+// regex-utilities.js now sits on top of re2js (a pure-JS RE2 port), so the
+// underlying leak is gone. Kept as a stress test for the compile cache:
 //
 //   node test-scripts/repro-re2-wasm-leak.js            # same-pattern stress
 //   node test-scripts/repro-re2-wasm-leak.js --unique   # unique-pattern stress
 //
-// Without the cache, same-pattern OOMs at ~2965 iterations.
-// With the cache, same-pattern runs indefinitely.
-// Unique-pattern still OOMs (each pattern is a real compile and the underlying
-// re2-wasm heap leak still applies). A proper fix is to replace re2-wasm with
-// the native `re2` package.
+// Background (re2-wasm era): without the cache, same-pattern OOMed at ~2965
+// iterations; with the cache, same-pattern ran indefinitely but unique-pattern
+// still OOMed because every distinct pattern was a real compile and re2-wasm
+// could not free its WASM heap. Under re2js both modes now run indefinitely
+// (unique-pattern is bounded only by ordinary V8 heap growth from the cache).
 
 const re = require('../library/regex-utilities');
 

@@ -2,6 +2,10 @@ const fs = require('fs').promises;
 const sqlite3 = require('sqlite3').verbose();
 const { VersionUtilities } = require('../../library/version-utilities');
 const { ConceptMap } = require('../library/conceptmap');
+const { guarded } = require('../library/sqlite-utilities');
+// Key of the row written once the cache has been fully populated (see isComplete)
+const CACHE_COMPLETE_KEY = 'cache-complete';
+
 // Columns that can be returned directly without parsing JSON
 const INDEXED_COLUMNS = ['id', 'url', 'version', 'date', 'description', 'name', 'publisher', 'status', 'title'];
 
@@ -38,7 +42,7 @@ class ConceptMapDatabase {
    */
   async create() {
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, (err) => {
+      const db = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to create database: ${err.message}`));
           return;
@@ -113,6 +117,14 @@ class ConceptMapDatabase {
           db.run('CREATE INDEX idx_jurisdictions_code ON conceptmap_jurisdictions(code)');
           db.run('CREATE INDEX idx_systems_system ON conceptmap_systems(system)');
 
+          // Cache status (key-value) - holds the marker that population finished
+          db.run(`
+              CREATE TABLE cache_status (
+                                          key TEXT PRIMARY KEY,
+                                          value TEXT
+              )
+          `);
+
           db.close((err) => {
             if (err) {
               reject(new Error(`Failed to close database after creation: ${err.message}`));
@@ -121,7 +133,58 @@ class ConceptMapDatabase {
             }
           });
         });
-      });
+      }));
+    });
+  }
+
+  /**
+   * True if this cache was fully populated: markComplete() was reached. A cache
+   * whose population was cut short (the process killed part way through) has no
+   * marker - nor does one built before the marker existed, or a file too damaged
+   * to read - so it reports false.
+   * @returns {Promise<boolean>}
+   */
+  async isComplete() {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, guarded(reject, (err) => {
+        if (err) {
+          resolve(false);
+          return;
+        }
+        db.get('SELECT value FROM cache_status WHERE key = ?', [CACHE_COMPLETE_KEY], guarded(reject, (err, row) => {
+          db.close(() => resolve(!err && row != null));
+        }));
+      }));
+    });
+  }
+
+  /**
+   * Record that this cache has been fully populated. Called once, after the last
+   * concept map has been written
+   * @returns {Promise<void>}
+   */
+  async markComplete() {
+    return new Promise((resolve, reject) => {
+      const db = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
+        if (err) {
+          reject(new Error(`Failed to open database: ${err.message}`));
+          return;
+        }
+        db.serialize(() => {
+          db.run('CREATE TABLE IF NOT EXISTS cache_status (key TEXT PRIMARY KEY, value TEXT)');
+          db.run(`INSERT INTO cache_status (key, value) VALUES (?, ?)
+                    ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+            [CACHE_COMPLETE_KEY, new Date().toISOString()], guarded(reject, (err) => {
+              db.close(guarded(reject, (closeErr) => {
+                if (err || closeErr) {
+                  reject(new Error(`Failed to mark cache complete: ${(err || closeErr).message}`));
+                } else {
+                  resolve();
+                }
+              }));
+            }));
+        });
+      }));
     });
   }
 
@@ -136,28 +199,28 @@ class ConceptMapDatabase {
     }
 
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, (err) => {
+      const db = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to open database: ${err.message}`));
           return;
         }
 
         // Step 1: Delete existing related records
-        db.run('DELETE FROM conceptmap_identifiers WHERE conceptmap_id = ?', [conceptMap.id], (err) => {
+        db.run('DELETE FROM conceptmap_identifiers WHERE conceptmap_id = ?', [conceptMap.id], guarded(reject, (err) => {
           if (err) {
             db.close();
             reject(new Error(`Failed to delete identifiers: ${err.message}`));
             return;
           }
 
-          db.run('DELETE FROM conceptmap_jurisdictions WHERE conceptmap_id = ?', [conceptMap.id], (err) => {
+          db.run('DELETE FROM conceptmap_jurisdictions WHERE conceptmap_id = ?', [conceptMap.id], guarded(reject, (err) => {
             if (err) {
               db.close();
               reject(new Error(`Failed to delete jurisdictions: ${err.message}`));
               return;
             }
 
-            db.run('DELETE FROM conceptmap_systems WHERE conceptmap_id = ?', [conceptMap.id], (err) => {
+            db.run('DELETE FROM conceptmap_systems WHERE conceptmap_id = ?', [conceptMap.id], guarded(reject, (err) => {
               if (err) {
                 db.close();
                 reject(new Error(`Failed to delete systems: ${err.message}`));
@@ -188,7 +251,7 @@ class ConceptMapDatabase {
                 conceptMap.status || null,
                 conceptMap.title || null,
                 JSON.stringify(conceptMap)
-              ], (err) => {
+              ], guarded(reject, (err) => {
                 if (err) {
                   db.close();
                   reject(new Error(`Failed to insert main record: ${err.message}`));
@@ -197,11 +260,11 @@ class ConceptMapDatabase {
 
                 // Step 3: Insert related records
                 this._insertRelatedRecords(db, conceptMap, resolve, reject);
-              });
-            });
-          });
-        });
-      });
+              }));
+            }));
+          }));
+        }));
+      }));
     });
   }
 
@@ -331,13 +394,13 @@ class ConceptMapDatabase {
    */
   async loadAllConceptMaps() {
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to open database for loading: ${err.message}`));
           return;
         }
 
-        db.all('SELECT id, url, version, content FROM conceptmaps', [], (err, rows) => {
+        db.all('SELECT id, url, version, content FROM conceptmaps', [], guarded(reject, (err, rows) => {
           if (err) {
             db.close();
             reject(new Error(`Failed to load concept maps: ${err.message}`));
@@ -349,7 +412,16 @@ class ConceptMapDatabase {
             this.cmCount = rows.length;
 
             for (const row of rows) {
-              const conceptMap = new ConceptMap(JSON.parse(row.content));
+              let conceptMap;
+              try {
+                conceptMap = new ConceptMap(JSON.parse(row.content));
+              } catch (e) {
+                // one unacceptable concept map must not take the rest with it
+                require('../../library/logger').getInstance().child({ module: 'tx' })
+                  .warn(`ConceptMap database: skipping ConceptMap ${row.url || row.id}: ${e.message}`);
+                this.cmCount--;
+                continue;
+              }
 
               // Store by URL and id alone
               conceptMapMap.set(row.url, conceptMap);
@@ -386,8 +458,8 @@ class ConceptMapDatabase {
             db.close();
             reject(new Error(`Failed to parse concept map content: ${error.message}`));
           }
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -402,13 +474,18 @@ class ConceptMapDatabase {
     const canOptimize = elements && elements.length > 0 &&
       elements.every(e => INDEXED_COLUMNS.includes(e));
 
-    // Always include 'id' in the columns to select when optimizing
-    const columnsToSelect = canOptimize
+    // Always include 'id' in the columns to select when optimizing (and the version, when the
+    // results are matched on it - see versionSearchMatches)
+    const versionAsked = searchParams.filter(p => p.name.toLowerCase() === 'version').map(p => p.value);
+    let columnsToSelect = canOptimize
       ? (elements.includes('id') ? elements : ['id', ...elements])
       : null;
+    if (columnsToSelect && versionAsked.length > 0 && !columnsToSelect.includes('version')) {
+      columnsToSelect = [...columnsToSelect, 'version'];
+    }
 
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to open database for search: ${err.message}`));
           return;
@@ -416,7 +493,7 @@ class ConceptMapDatabase {
 
         const { query, params } = this._buildSearchQuery(searchParams, columnsToSelect);
 
-        db.all(query, params, (err, rows) => {
+        db.all(query, params, guarded(reject, (err, rows) => {
           if (err) {
             db.close();
             reject(new Error(`Search query failed: ${err.message}`));
@@ -451,6 +528,9 @@ class ConceptMapDatabase {
                 return parsed;
               });
             }
+            for (const criteria of versionAsked) {
+              results = results.filter(r => VersionUtilities.versionSearchMatches(criteria, r.version, VersionUtilities.versionAlgorithmOf(r)));
+            }
 
             db.close((err) => {
               if (err) {
@@ -463,8 +543,8 @@ class ConceptMapDatabase {
             db.close();
             reject(new Error(`Failed to parse search results: ${error.message}`));
           }
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -475,14 +555,14 @@ class ConceptMapDatabase {
    */
   async deleteOldConceptMaps(cutoffTimestamp) {
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, (err) => {
+      const db = new sqlite3.Database(this.dbPath, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to open database for cleanup: ${err.message}`));
           return;
         }
 
         // Get URLs to delete first
-        db.all('SELECT url FROM conceptmaps WHERE last_seen < ?', [cutoffTimestamp], (err, rows) => {
+        db.all('SELECT url FROM conceptmaps WHERE last_seen < ?', [cutoffTimestamp], guarded(reject, (err, rows) => {
           if (err) {
             db.close();
             reject(new Error(`Failed to find old records: ${err.message}`));
@@ -504,7 +584,7 @@ class ConceptMapDatabase {
             pendingDeletes--;
             if (pendingDeletes === 0 && !hasError) {
               // Finally delete main records
-              db.run('DELETE FROM conceptmaps WHERE last_seen < ?', [cutoffTimestamp], function(err) {
+              db.run('DELETE FROM conceptmaps WHERE last_seen < ?', [cutoffTimestamp], guarded(reject, function(err) {
                 if (err) {
                   db.close();
                   reject(new Error(`Failed to delete old records: ${err.message}`));
@@ -513,7 +593,7 @@ class ConceptMapDatabase {
                   db.close();
                   resolve(deletedCount);
                 }
-              });
+              }));
             }
           };
 
@@ -530,22 +610,22 @@ class ConceptMapDatabase {
 
           pendingDeletes = 3; // identifiers, jurisdictions, systems
 
-          db.run(`DELETE FROM conceptmap_identifiers WHERE conceptmap_id IN (${placeholders})`, idsToDelete, (err) => {
+          db.run(`DELETE FROM conceptmap_identifiers WHERE conceptmap_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
             if (err) deleteError(new Error(`Failed to delete identifier records: ${err.message}`));
             else deleteComplete();
-          });
+          }));
 
-          db.run(`DELETE FROM conceptmap_jurisdictions WHERE conceptmap_id IN (${placeholders})`, idsToDelete, (err) => {
+          db.run(`DELETE FROM conceptmap_jurisdictions WHERE conceptmap_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
             if (err) deleteError(new Error(`Failed to delete jurisdiction records: ${err.message}`));
             else deleteComplete();
-          });
+          }));
 
-          db.run(`DELETE FROM conceptmap_systems WHERE conceptmap_id IN (${placeholders})`, idsToDelete, (err) => {
+          db.run(`DELETE FROM conceptmap_systems WHERE conceptmap_id IN (${placeholders})`, idsToDelete, guarded(reject, (err) => {
             if (err) deleteError(new Error(`Failed to delete system records: ${err.message}`));
             else deleteComplete();
-          });
-        });
-      });
+          }));
+        }));
+      }));
     });
   }
 
@@ -555,7 +635,7 @@ class ConceptMapDatabase {
    */
   async getStatistics() {
     return new Promise((resolve, reject) => {
-      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, (err) => {
+      const db = new sqlite3.Database(this.dbPath, sqlite3.OPEN_READONLY, guarded(reject, (err) => {
         if (err) {
           reject(new Error(`Failed to open database for statistics: ${err.message}`));
           return;
@@ -579,7 +659,7 @@ class ConceptMapDatabase {
         };
 
         // Total count
-        db.get(queries[0], [], (err, row) => {
+        db.get(queries[0], [], guarded(reject, (err, row) => {
           if (err) {
             db.close();
             reject(err);
@@ -587,10 +667,10 @@ class ConceptMapDatabase {
           }
           results.totalConceptMaps = row.total;
           checkComplete();
-        });
+        }));
 
         // Status breakdown
-        db.all(queries[1], [], (err, rows) => {
+        db.all(queries[1], [], guarded(reject, (err, rows) => {
           if (err) {
             db.close();
             reject(err);
@@ -601,10 +681,10 @@ class ConceptMapDatabase {
             results.byStatus[row.status || 'null'] = row.count;
           }
           checkComplete();
-        });
+        }));
 
         // System count
-        db.get(queries[2], [], (err, row) => {
+        db.get(queries[2], [], guarded(reject, (err, row) => {
           if (err) {
             db.close();
             reject(err);
@@ -612,8 +692,8 @@ class ConceptMapDatabase {
           }
           results.totalSystems = row.systems;
           checkComplete();
-        });
-      });
+        }));
+      }));
     });
   }
 
@@ -634,13 +714,29 @@ class ConceptMapDatabase {
 
       switch (name.toLowerCase()) {
         case 'url':
-          conditions.push('v.url LIKE ?');
-          params.push(`%${value}%`);
+          // an exact match
+          conditions.push('v.url = ?');
+          params.push(value);
+          break;
+
+        case 'url:below':
+          // a left match (case-sensitive): the url starts with the value
+          conditions.push('substr(v.url, 1, length(?)) = ?');
+          params.push(value, value);
+          break;
+
+        case 'url:contains':
+          // the url contains the value, without regard to case - what the HTML search form asks
+          // for too (see SearchWorker.searchParamsFor)
+          conditions.push('instr(lower(v.url), lower(?)) > 0');
+          params.push(value);
           break;
 
         case 'version':
-          conditions.push('v.version LIKE ?');
-          params.push(`%${value}%`);
+          // version-aware matching (see VersionUtilities.versionSearchMatches): narrowed here to
+          // the versions that could match, and matched on the results (see search)
+          conditions.push("v.version LIKE ? ESCAPE '\\'");
+          params.push(VersionUtilities.versionSearchPrefix(value).replace(/[\\%_]/g, c => '\\' + c) + '%');
           break;
 
         case 'name':
@@ -724,10 +820,6 @@ class ConceptMapDatabase {
     return { query, params };
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    // nothing - we don't do any assigning.
-  }
 }
 
 module.exports = {

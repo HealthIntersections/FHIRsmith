@@ -62,7 +62,21 @@ class LanguageVariant extends LanguageEntry {}
  * Individual language representation based on BCP 47
  */
 class Language {
-  constructor(code = '', languageDefinitions = null) {
+  /**
+   * @param {string} code - the language tag
+   * @param {LanguageDefinitions} [languageDefinitions] - registry to validate against; without
+   *   one the tag is only broken into parts, not checked
+   * @param {object} [options] - extra checking, off by default so that existing callers
+   *   (Accept-Language handling above all) keep the behaviour they were written against
+   * @param {boolean} [options.caseInsensitive] - fold subtags to their registry case before
+   *   looking them up. BCP 47 s2.1.1 says tags are case-insensitive and the conventional
+   *   casing is a recommendation, so `en-us` is a valid way to write `en-US`
+   * @param {boolean} [options.checkCombinations] - apply the registry's statements about
+   *   which subtags may go together: the Prefix on an extlang or variant, and that a
+   *   variant is registered at all
+   */
+  constructor(code = '', languageDefinitions = null, options = {}) {
+    this.options = options || {};
     this.code = code;
     this.language = '';
     this.extLang = [];
@@ -115,14 +129,26 @@ class Language {
   _parse(languageDefinitions) {
     if (!this.code) return;
 
+    // Grandfathered tags are whole tags, and most do not decompose into valid subtags
+    // (i-klingon has no language 'i'), so they have to be recognised before the tag is
+    // split up. Redundant entries are deliberately NOT here: zh-Hans decomposes, and
+    // matching it whole would rob the caller of the script.
+    if (languageDefinitions && languageDefinitions.wholeTags.has(this.code.toLowerCase())) {
+      const entry = languageDefinitions.wholeTags.get(this.code.toLowerCase());
+      this.language = entry.code;
+      this.wholeTag = entry;
+      return;
+    }
+
+    const fold = this.options.caseInsensitive;
     const parts = this.code.split('-');
     let index = 0;
 
     // Language (required)
     if (index < parts.length) {
-      this.language = parts[index];
+      this.language = fold ? parts[index].toLowerCase() : parts[index];
       if (this.language != '*' && languageDefinitions && !languageDefinitions.languages.has(this.language)) {
-        throw new Error("The language '"+this.language+"' in the code '"+this.code+"' is not valid");
+        throw new Error("The language '"+parts[index]+"' in the code '"+this.code+"' is not valid");
       }
       index++;
     }
@@ -130,9 +156,13 @@ class Language {
     // Extended language (up to 3)
     for (let i = 0; i < 3 && index < parts.length; i++) {
       const part = parts[index];
+      const key = fold ? part.toLowerCase() : part;
       if (part.length === 3 && /^[a-zA-Z]{3}$/.test(part)) {
-        if (languageDefinitions && !languageDefinitions.extLanguages.has(part)) {
+        if (languageDefinitions && !languageDefinitions.extLanguages.has(key)) {
           throw new Error("The extLanguage '"+part+"' in the code '"+this.code+"' is not valid");
+        }
+        if (this.options.checkCombinations && languageDefinitions) {
+          this._checkPrefix(languageDefinitions.extLanguages.get(key), 'extLanguage', part);
         }
         this.extLang.push(part.toLowerCase());
         index++;
@@ -145,7 +175,8 @@ class Language {
     if (index < parts.length) {
       const part = parts[index];
       if (part.length === 4 && /^[a-zA-Z]{4}$/.test(part)) {
-        if (languageDefinitions && !languageDefinitions.scripts.has(part)) {
+        const key = fold ? part.charAt(0).toUpperCase() + part.slice(1).toLowerCase() : part;
+        if (languageDefinitions && !languageDefinitions.scripts.has(key)) {
           throw new Error("The script '"+part+"' in the code '"+this.code+"' is not valid");
         }
         this.script = part.charAt(0).toUpperCase() + part.slice(1).toLowerCase();
@@ -158,7 +189,8 @@ class Language {
       const part = parts[index];
       if ((part.length === 2 && /^[a-zA-Z]{2}$/.test(part)) ||
         (part.length === 3 && /^[0-9]{3}$/.test(part))) {
-        if (languageDefinitions && !languageDefinitions.regions.has(part)) {
+        const key = fold ? part.toUpperCase() : part;
+        if (languageDefinitions && !languageDefinitions.regions.has(key)) {
           throw new Error("The region '"+part+"' in the code '"+this.code+"' is not valid");
         }
         this.region = part.toUpperCase();
@@ -171,7 +203,16 @@ class Language {
       const part = parts[index];
       if ((part.length >= 5 && part.length <= 8) ||
         (part.length === 4 && /^[0-9]/.test(part))) {
-        this.variant = part.toLowerCase();
+        const key = part.toLowerCase();
+        if (this.options.checkCombinations && languageDefinitions) {
+          // The variant is the one subtag whose existence was never checked at all -
+          // 'en-abcdef' parsed happily with variant 'abcdef'.
+          if (!languageDefinitions.variants.has(key)) {
+            throw new Error("The variant '"+part+"' in the code '"+this.code+"' is not valid");
+          }
+          this._checkPrefix(languageDefinitions.variants.get(key), 'variant', part);
+        }
+        this.variant = key;
         index++;
       }
     }
@@ -194,6 +235,36 @@ class Language {
       } else {
         throw new Error("Unable to recognised '"+parts[index]+"' as a valid part in the language code "+this.code);
       }
+    }
+  }
+
+  /**
+   * The registry's Prefix field names the language(s) a subtag may follow; it is the only
+   * thing lang.dat says about which subtags go together. An entry with no Prefix may
+   * follow anything.
+   *
+   * The prefix itself may be a multi-subtag tag (variant 'nedis' has Prefix 'sl-rozaj'),
+   * so what has been parsed so far is reassembled and compared from the left.
+   *
+   * @param {object} entry - the registry entry, carrying `prefixes`
+   * @param {string} what - 'extLanguage' or 'variant', for the message
+   * @param {string} part - the subtag as written, for the message
+   * @private
+   */
+  _checkPrefix(entry, what, part) {
+    if (!entry || !entry.prefixes || entry.prefixes.length === 0) {
+      return;
+    }
+    const soFar = [this.language.toLowerCase()]
+      .concat(this.extLang.map(e => e.toLowerCase()))
+      .concat(this.script ? [this.script.toLowerCase()] : [])
+      .concat(this.region ? [this.region.toLowerCase()] : [])
+      .join('-');
+    const ok = entry.prefixes.some(prefix => soFar === prefix || soFar.startsWith(prefix + '-'));
+    if (!ok) {
+      throw new Error("The " + what + " '" + part + "' in the code '" + this.code
+        + "' may only be used with " + entry.prefixes.map(p => "'" + p + "'").join(' or ')
+        + ", not with '" + soFar + "'");
     }
   }
 
@@ -491,19 +562,95 @@ class Languages {
     }
     return parts.join(', ');
   }
+
+  /**
+   * The languages as they were asked for, in the form a displayLanguage parameter takes
+   * (the Accept-Language syntax: "en,it;q=0.8,*"). Unlike asString, which is for reading
+   * in messages, there are no spaces; unlike toString, implicit languages are left out.
+   */
+  asParameter() {
+    return this.languages.filter(lang => !lang.implicit).map(lang => {
+      if (lang.quality === undefined || lang.quality === 1.0) {
+        return lang.code;
+      } else {
+        return `${lang.code};q=${lang.quality}`;
+      }
+    }).join(',');
+  }
 }
 
 /**
  * Global language definitions loaded from IETF registry
  */
 class LanguageDefinitions {
+  // Private use tags of any length are valid, so the cache of parsed tags is capped
+  // with a simple LRU (as RegExUtilities does), or unique tags would grow it forever.
+  // Default for languageTagCacheSize: an 8 KB tag takes about 46 KB parsed, so 1,000
+  // such tags are at most about 46 MB; real requests use far fewer distinct tags.
+  static MAX_PARSED = 1000;
+
   constructor() {
     this.languages = new Map();
     this.extLanguages = new Map();
     this.scripts = new Map();
     this.regions = new Map();
     this.variants = new Map();
+    // Whole tags that predate the current syntax (i-klingon, en-GB-oed) or that the
+    // registry records as ready-made combinations (az-Arab). They are matched as
+    // complete tags, before the tag is broken into subtags, because most of them do
+    // not decompose into valid subtags at all. Keyed lower case: BCP 47 tags are
+    // case-insensitive, and the registry writes these in mixed case.
+    this.wholeTags = new Map();
     this.parsed = new Map(); // Cache for parsed languages
+    this.maxParsed = LanguageDefinitions.MAX_PARSED; // Infinity = no limit
+  }
+
+  /**
+   * Expand a registry subtag range into its members.
+   *
+   * The registry writes private-use allocations as ranges - `QM..QZ`, `Qaaa..Qabx`,
+   * `qaa..qtz`, `XA..XZ` - in a single record. Stored literally, the key `QM..QZ` is
+   * one nobody will ever look up, and every code in the range reads as unregistered:
+   * `en-QM` was rejected while `en-AA` (allocated singly) was accepted.
+   *
+   * Only the trailing letters vary, so the shared prefix is kept and the remainder is
+   * counted through base 26, rendered in the case the range itself uses.
+   *
+   * @param {string} subtag - a subtag, with or without `..`
+   * @returns {string[]} every code the entry covers; a single-element array if not a range
+   */
+  static expandSubtagRange(subtag) {
+    const at = subtag.indexOf('..');
+    if (at === -1) {
+      return [subtag];
+    }
+    const from = subtag.substring(0, at);
+    const to = subtag.substring(at + 2);
+    if (from.length !== to.length || !/^[a-zA-Z]+$/.test(from) || !/^[a-zA-Z]+$/.test(to)) {
+      return [subtag];
+    }
+    let shared = 0;
+    while (shared < from.length && from[shared] === to[shared]) {
+      shared++;
+    }
+    const prefix = from.substring(0, shared);
+    const upper = /[A-Z]/.test(from.substring(shared));
+    const A = 'a'.charCodeAt(0);
+    const toIndex = (text) => [...text.toLowerCase()].reduce((n, ch) => n * 26 + (ch.charCodeAt(0) - A), 0);
+    const width = from.length - shared;
+    const render = (n) => {
+      let out = '';
+      for (let i = 0; i < width; i++) {
+        out = String.fromCharCode(A + (n % 26)) + out;
+        n = Math.floor(n / 26);
+      }
+      return upper ? out.toUpperCase() : out;
+    };
+    const result = [];
+    for (let n = toIndex(from.substring(shared)); n <= toIndex(to.substring(shared)); n++) {
+      result.push(prefix + render(n));
+    }
+    return result;
   }
 
   /**
@@ -564,8 +711,12 @@ class LanguageDefinitions {
             this._loadVariant(vars);
             break;
           case 'grandfathered':
+            this._loadWholeTag(vars);
+            break;
           case 'redundant':
-            // Skip these for now
+            // Nothing to do: a redundant entry is called that because it decomposes into
+            // subtags that already say the same thing (zh-Hans is zh + Hans), so the
+            // normal path handles it and gives the caller the parts as well.
             break;
           default:
             throw new Error(`Unknown type: ${vars.Type} at line ${i + 1}`);
@@ -577,15 +728,41 @@ class LanguageDefinitions {
   }
 
   /**
+   * Load a grandfathered entry - a whole tag from before the current syntax, most of
+   * which cannot be decomposed into valid subtags at all ('i-klingon' has no language
+   * 'i'), so they are matched entire.
+   */
+  _loadWholeTag(vars) {
+    const tag = vars.Tag || vars.Subtag;
+    if (!tag) {
+      return;
+    }
+    this.wholeTags.set(tag.toLowerCase(), {
+      code: tag,
+      displays: vars.Description ? vars.Description.split('|') : [],
+      deprecated: !!vars.Deprecated,
+      preferred: vars['Preferred-Value'] || ''
+    });
+  }
+
+  /**
    * Read variables from the registry format
    */
   _readVars(lines, startIndex) {
     const vars = {};
     let i = startIndex;
 
+    let lastKey = null;
     while (i < lines.length && lines[i].trim() !== '%%') {
-      const line = lines[i].trim();
-      if (line && !line.startsWith(' ')) {
+      const raw = lines[i];
+      if (raw.startsWith(' ') && lastKey) {
+        // continuation line (RFC 5646 s3.1.1 folding): belongs to the latest value of the last field
+        const more = raw.trim();
+        if (more) {
+          vars[lastKey] += ' ' + more;
+        }
+      } else {
+        const line = raw.trim();
         const colonIndex = line.indexOf(':');
         if (colonIndex > 0) {
           const key = line.substring(0, colonIndex).trim();
@@ -596,6 +773,7 @@ class LanguageDefinitions {
           } else {
             vars[key] = value;
           }
+          lastKey = key;
         }
       }
       i++;
@@ -696,11 +874,12 @@ class LanguageDefinitions {
     lang.suppressScript = vars['Suppress-Script'] || '';
     lang.scope = vars.Scope || '';
 
-    if (this.languages.has(lang.code)) {
-      throw new Error(`Duplicate language code: ${lang.code}`);
+    for (const code of LanguageDefinitions.expandSubtagRange(lang.code)) {
+      if (this.languages.has(code)) {
+        throw new Error(`Duplicate language code: ${code}`);
+      }
+      this.languages.set(code, lang.code === code ? lang : Object.assign(Object.create(Object.getPrototypeOf(lang)), lang, { code }));
     }
-
-    this.languages.set(lang.code, lang);
   }
 
   /**
@@ -710,12 +889,15 @@ class LanguageDefinitions {
     const extLang = new LanguageExtLang();
     extLang.code = vars.Subtag;
     extLang.displays = vars.Description ? vars.Description.split('|') : [];
+    // Prefix is the registry saying which language(s) this subtag may follow
+    extLang.prefixes = vars.Prefix ? vars.Prefix.split('|').map(v => v.trim().toLowerCase()) : [];
 
-    if (this.extLanguages.has(extLang.code)) {
-      throw new Error(`Duplicate extlang code: ${extLang.code}`);
+    for (const code of LanguageDefinitions.expandSubtagRange(extLang.code)) {
+      if (this.extLanguages.has(code)) {
+        throw new Error(`Duplicate extlang code: ${code}`);
+      }
+      this.extLanguages.set(code, extLang.code === code ? extLang : Object.assign(Object.create(Object.getPrototypeOf(extLang)), extLang, { code }));
     }
-
-    this.extLanguages.set(extLang.code, extLang);
   }
 
   /**
@@ -726,11 +908,12 @@ class LanguageDefinitions {
     script.code = vars.Subtag;
     script.displays = vars.Description ? vars.Description.split('|') : [];
 
-    if (this.scripts.has(script.code)) {
-      throw new Error(`Duplicate script code: ${script.code}`);
+    for (const code of LanguageDefinitions.expandSubtagRange(script.code)) {
+      if (this.scripts.has(code)) {
+        throw new Error(`Duplicate script code: ${code}`);
+      }
+      this.scripts.set(code, script.code === code ? script : Object.assign(Object.create(Object.getPrototypeOf(script)), script, { code }));
     }
-
-    this.scripts.set(script.code, script);
   }
 
   /**
@@ -741,11 +924,12 @@ class LanguageDefinitions {
     region.code = vars.Subtag;
     region.displays = vars.Description ? vars.Description.split('|') : [];
 
-    if (this.regions.has(region.code)) {
-      throw new Error(`Duplicate region code: ${region.code}`);
+    for (const code of LanguageDefinitions.expandSubtagRange(region.code)) {
+      if (this.regions.has(code)) {
+        throw new Error(`Duplicate region code: ${code}`);
+      }
+      this.regions.set(code, region.code === code ? region : Object.assign(Object.create(Object.getPrototypeOf(region)), region, { code }));
     }
-
-    this.regions.set(region.code, region);
   }
 
   /**
@@ -755,12 +939,14 @@ class LanguageDefinitions {
     const variant = new LanguageVariant();
     variant.code = vars.Subtag;
     variant.displays = vars.Description ? vars.Description.split('|') : [];
+    variant.prefixes = vars.Prefix ? vars.Prefix.split('|').map(v => v.trim().toLowerCase()) : [];
 
-    if (this.variants.has(variant.code)) {
-      throw new Error(`Duplicate variant code: ${variant.code}`);
+    for (const code of LanguageDefinitions.expandSubtagRange(variant.code)) {
+      if (this.variants.has(code)) {
+        throw new Error(`Duplicate variant code: ${code}`);
+      }
+      this.variants.set(code, variant.code === code ? variant : Object.assign(Object.create(Object.getPrototypeOf(variant)), variant, { code }));
     }
-
-    this.variants.set(variant.code, variant);
   }
 
   /**
@@ -768,7 +954,7 @@ class LanguageDefinitions {
    *
    * @return {Language} parsed language (or null)
    */
-  parse(code, msg) {
+  parse(code, msg, options = {}) {
     if (!code) {
       if (msg) {
         msg.message = 'No code provided';
@@ -776,15 +962,24 @@ class LanguageDefinitions {
       return null;
     }
 
-    // Check cache first
-    if (this.parsed.has(code)) {
-      return this.parsed.get(code);
+    // The cache key carries the options: the same tag can be valid under one set of
+    // rules and not another, so a lenient parse must not be served to a strict caller.
+    const key = (options.caseInsensitive ? 'i' : '') + (options.checkCombinations ? 'c' : '') + ':' + code;
+    const cached = this.parsed.get(key);
+    if (cached) {
+      // Move to most-recently-used position by re-inserting.
+      this.parsed.delete(key);
+      this.parsed.set(key, cached);
+      return cached;
     }
 
     try {
-      const lang = new Language(code, this);
-      // Cache the result
-      this.parsed.set(code, lang);
+      const lang = new Language(code, this, options);
+      if (this.parsed.size >= this.maxParsed) {
+        // Evict the oldest entry: Map iteration order is insertion order.
+        this.parsed.delete(this.parsed.keys().next().value);
+      }
+      this.parsed.set(key, lang);
       return lang;
     } catch (e) {
       if (msg) {

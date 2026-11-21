@@ -3,6 +3,7 @@
   "consoleErrors": false,
   "host" : "local.host",
   "librarySource": "tx/fixtures/test-cases.yml",
+"conceptMapValueSetMatching": true,
   "endpoints": [
     {
       "path": "/r5",
@@ -14,5 +15,24 @@
       "fhirVersion": "4.0",
       "context": null
     }
-  ]
+  ],
+  "ecosystem": {
+    "use": true,
+    "excludedServers": [ "tx.fhir.org" ],
+    "excludedPatterns": [ "http://hl7.org/*", "http://terminology.hl7.org/*" ]
+  },
+  "closure": {
+    "enabled": true,
+    "database": "closures-testing.db",
+    "requireUuidNames": false,
+    "maxTables": 1000,
+    "maxConceptsPerTable": 10000,
+    "maxConceptsPerRequest": 1000,
+    "maxEntriesPerTable": 250000,
+    "maxEntriesPerRequest": 50000,
+    "maxConfigSize": 5242880,
+    "maxQueue": 10,
+    "lockTimeout": 60,
+    "retentionDays": 90
+  }
 }

@@ -10,7 +10,10 @@ const folders = require('./folder-setup');
 
 const DEFAULTS = {
   level:          'info',       // error, warn, info, debug, verbose
-  console:        true,         // write to stdout/stderr
+  // write to stdout/stderr. Not when SUPPRESS_LOGS is set (CI runs the tests with it): the code
+  // under test logs everything it does, tens of thousands of lines that bury the test results
+  // and get the job log truncated. It still all goes to the log files in data/logs
+  console:        process.env.SUPPRESS_LOGS !== 'true',
   consoleErrors:  false,        // include error/warn on console (when running as service, these go to journal)
   maxFiles:       14,           // number of daily log files to keep
   maxSize:        0,            // max bytes per file (0 = unlimited)
@@ -226,6 +229,17 @@ class Logger {
 
     if (messageOrError instanceof Error) {
       message = messageOrError.message;
+      // Expected, client-facing errors - an OperationOutcome/Issue carrying a 4xx
+      // statusCode (e.g. "code not found", "cache-id unknown", "code system not
+      // found") - are the answer to the request, which the request's own log line
+      // already records (its status). Logged as errors or warnings, they are noise:
+      // they appear only when debug logging is enabled. Genuinely unexpected errors
+      // (5xx, or no statusCode at all) are logged, with their stack.
+      const sc = messageOrError.statusCode;
+      const expected = typeof sc === 'number' && sc >= 400 && sc < 500;
+      if (expected && (level === 'error' || level === 'warn') && !this._shouldLog('debug')) {
+        return;
+      }
       stack = messageOrError.stack;
     } else {
       message = String(messageOrError);
@@ -272,8 +286,9 @@ class Logger {
 
     const wrap = (level) => (messageOrError, meta = {}) => {
       if (messageOrError instanceof Error) {
+        // (the statusCode goes with it: it decides whether the error is logged - see _log)
         const prefixed = modulePrefix
-            ? Object.assign(new Error(`${modulePrefix}: ${messageOrError.message}`), { stack: messageOrError.stack })
+            ? Object.assign(new Error(`${modulePrefix}: ${messageOrError.message}`), { stack: messageOrError.stack, statusCode: messageOrError.statusCode })
             : messageOrError;
         self._log(level, prefixed, meta, childOptions);
       } else {
@@ -290,6 +305,37 @@ class Logger {
       verbose: wrap('verbose'),
       log: (level, message, meta = {}) => wrap(level)(message, meta)
     };
+  }
+
+  // Apply config.logging to a logger that is already running (the server starts logging with the
+  // defaults before config.json is read). Same options as the constructor; anything not given keeps
+  // its default
+  configure(options = {}) {
+    this._flushSync();
+    this.level = options.level || DEFAULTS.level;
+    this.maxFiles = options.maxFiles ?? DEFAULTS.maxFiles;
+    this.maxSize = Logger._parseSize(options.maxSize) || DEFAULTS.maxSize;
+    this.showConsole = options.console ?? DEFAULTS.console;
+    this.consoleErrors = options.consoleErrors ?? DEFAULTS.consoleErrors;
+    this._flushSize = options.flushSize ?? DEFAULTS.flushSize;
+
+    clearInterval(this._flushTimer);
+    this._flushTimer = setInterval(() => this._flush(), options.flushInterval ?? DEFAULTS.flushInterval);
+    if (this._flushTimer.unref) this._flushTimer.unref();
+
+    if (options.logDir && path.resolve(options.logDir) !== path.resolve(this.logDir)) {
+      if (this._fd !== null) {
+        try { fs.closeSync(this._fd); } catch (_) { /* intentional */ }
+      }
+      this._fd = null;
+      this._currentDate = null;
+      this._currentFileSize = 0;
+      this.logDir = options.logDir;
+      if (!fs.existsSync(this.logDir)) {
+        fs.mkdirSync(this.logDir, { recursive: true });
+      }
+    }
+    this.info('Logger configured @ ' + this.logDir + ', level ' + this.level, {});
   }
 
   setLevel(level) {

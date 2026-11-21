@@ -10,13 +10,12 @@ const { XMLParser } = require('fast-xml-parser');
 
 
 const {
-  UcumException, Decimal, Pair, Registry, UcumVersionDetails
+  UcumException, Decimal, Pair, Registry
 } = require('../../tx/library/ucum-types.js');
 const { UcumService} = require('../../tx/library/ucum-service');
 
 describe('UCUM Library Tests', () => {
   let ucumService;
-  const jestConsole = console;
 
   beforeEach(() => {
     global.console = require('console');
@@ -41,6 +40,37 @@ describe('UCUM Library Tests', () => {
   describe('Issue 50: Unit Comparability', () => {
     test('should recognize [iU] as comparable to itself', () => {
       expect(ucumService.isComparable('[iU]', '[iU]')).toBe(true);
+    });
+  });
+
+  describe('Issue 252: special-unit handlers register under their real code (not undefined)', () => {
+    // CelsiusHandler/FahrenheitHandler override getCode() but never set a `.code`
+    // field; register() must key on getCode() so they don't both land under
+    // `undefined` (with Fahrenheit overwriting Celsius).
+    let registry;
+    beforeAll(() => { registry = new Registry(); });
+
+    test('Cel is registered under "Cel"', () => {
+      expect(registry.exists('Cel')).toBe(true);
+      expect(registry.get('Cel').getCode()).toBe('Cel');
+    });
+
+    test('[degF] is registered under "[degF]"', () => {
+      expect(registry.exists('[degF]')).toBe(true);
+      expect(registry.get('[degF]').getCode()).toBe('[degF]');
+    });
+
+    test('Celsius and Fahrenheit are distinct (no overwrite)', () => {
+      expect(registry.get('Cel')).not.toBe(registry.get('[degF]'));
+    });
+
+    test('nothing is registered under the undefined key', () => {
+      expect(registry.exists(undefined)).toBe(false);
+    });
+
+    test('offset-free special units (HoldingHandler) still register correctly', () => {
+      expect(registry.exists('[pH]')).toBe(true);
+      expect(registry.get('[pH]').getCode()).toBe('[pH]');
     });
   });
 
@@ -290,7 +320,7 @@ describe('UCUM Library Tests', () => {
         // Test a smaller range for performance
         for (let i = 90.5; i < 91; i += 0.01) {
           const decimal = new Decimal(i.toString());
-          const expected = i * 2.2046226218487758072297380134503;
+          const expected = i / 0.45359237; // pounds per kg = 1 / 0.45359237 (exact lb definition)
           const actual = ucumService.convert(decimal, 'kg', '[lb_av]');
           const actualFloat = parseFloat(actual.asDecimal());
 
@@ -298,7 +328,6 @@ describe('UCUM Library Tests', () => {
         }
 
         const elapsed = Date.now() - start;
-        console.log(`Performance test elapsed: ${elapsed}ms`);
         expect(elapsed).toBeLessThan(5000); // Should complete in reasonable time
       });
     });
@@ -478,7 +507,6 @@ try {
   const xmlPath = path.join(__dirname, '../data/UcumFunctionalTests.xml');
   const xmlContent = readFileSync(xmlPath, 'utf8');
   functionalTestCases = parseXmlTestCases(xmlContent);
-  console.log(`Loaded ${functionalTestCases.length} functional test cases from XML`);
 } catch (error) {
   console.warn('Could not load UcumFunctionalTests.xml - skipping XML tests:', error.message);
   functionalTestCases = [];
@@ -561,12 +589,6 @@ if (functionalTestCases.length > 0) {
     });
 
     // Helper functions
-
-    function getTestCasesByType(type) {
-      return functionalTestCases
-        .filter(tc => tc.type === type)
-        .map(tc => [tc.id, tc]);
-    }
 
     function runValidationCase(testCase) {
       const { id, unit, valid, reason } = testCase.attributes;
@@ -673,8 +695,6 @@ if (functionalTestCases.length > 0) {
           throw new Error(`Test case ${targetId} not found`);
         }
 
-        // console.log(`Running specific test: ${targetId} (${testCase.type})`);
-
         switch (testCase.type) {
           case 'validation':
             runValidationCase(testCase);
@@ -694,14 +714,13 @@ if (functionalTestCases.length > 0) {
           default:
             throw new Error(`Unknown test type: ${testCase.type}`);
         }
-
-        // console.log(`✓ Test ${targetId} passed`);
       });
     });
   }); // End of describe block for XML tests
 } else {
   describe('UCUM XML Functional Tests from UcumFunctionalTests.xml', () => {
     test('XML tests skipped - could not load test file', () => {
+      // eslint-disable-next-line no-console -- why the XML tests are skipped
       console.log('UcumFunctionalTests.xml not found or could not be parsed - XML tests skipped');
     });
   });
@@ -751,11 +770,8 @@ function parseXmlTestCases(xmlContent) {
   // Process each section type
   for (const sectionType of validSectionTypes) {
     if (!ucumTests[sectionType]) {
-      // console.log(`No ${sectionType} section found`);
       continue;
     }
-
-    // console.log(`Processing ${sectionType} section...`);
 
     const section = ucumTests[sectionType];
     let cases = section.case;
@@ -791,14 +807,6 @@ function parseXmlTestCases(xmlContent) {
       });
     }
   }
-
-  // Log summary of loaded tests
-  const testCounts = testCases.reduce((counts, tc) => {
-    counts[tc.type] = (counts[tc.type] || 0) + 1;
-    return counts;
-  }, {});
-
-  // console.log('Loaded test cases by type:', testCounts);
 
   return testCases;
 }

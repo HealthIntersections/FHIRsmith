@@ -5,11 +5,93 @@
 //
 
 const axios = require('axios');
-const {XMLParser} = require('fast-xml-parser');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
+const { parseXmlOffThread } = require('../library/xml-off-thread');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const fs = require('fs');
 const path = require('path');
+const dns = require('dns');
+const net = require('net');
+const http = require('http');
+const https = require('https');
+const ipaddr = require('ipaddr.js');
 const {debugLog} = require("../tx/operation-context");
+const {Parser: TarParser} = require('tar');
+const {integrityOfSync, verifyPackageSignature} = require('./npm-signing');
+const {MAX_UNPACKED_MB} = require('../library/package-limits');
+const {EntryNames, pathProblem} = require('../library/package-names');
+
+const MB = 1024 * 1024;
+
+// Limits on what a package can make the crawler download, unpack and hold in memory, so
+// that a hostile or broken package (a decompression bomb, say) costs a bounded amount.
+// All can be set in the packages "crawler" config section:
+//   maxDownloadMB  the package file as downloaded (or read from a local feed)
+//   maxUnpackedMB  the total of the package's files once unzipped. The files are streamed,
+//                  not held, so this limits the work, not the memory. The default is the
+//                  limit everywhere FHIRsmith unpacks a package (library/package-limits.js)
+//   maxFileMB      a file the crawler reads: package.json, .index.json, ig.ini, and each
+//                  .json file (for its url). Memory is bounded by this, not by the package
+//   maxFiles       the number of files in the package
+//   maxFeedMB      a feed (JSON or RSS) as downloaded. The largest, Simplifier's, is 5 MB (Nov 2026)
+//   maxRequestSeconds  the longest a download (a feed or a package) may take, response included:
+//                  axios's timeout only covers the wait for the response to start, so a server
+//                  that then sends a byte now and then could hold the crawl for as long as it liked
+const LIMIT_DEFAULTS = { maxDownloadMB: 250, maxUnpackedMB: MAX_UNPACKED_MB, maxFileMB: 50, maxFiles: 250000, maxFeedMB: 50, maxRequestSeconds: 300 };
+
+function crawlerLimits(config) {
+  const c = { ...LIMIT_DEFAULTS, ...(config?.crawler || {}) };
+  return {
+    maxDownloadBytes: c.maxDownloadMB * MB,
+    maxUnpackedBytes: c.maxUnpackedMB * MB,
+    maxFileBytes: c.maxFileMB * MB,
+    maxFiles: c.maxFiles,
+    maxFeedBytes: c.maxFeedMB * MB,
+    maxRequestMs: c.maxRequestSeconds * 1000
+  };
+}
+
+// The files in a package that the crawler reads for its metadata
+const META_FILES = new Set(['package.json', '.index.json', 'ig.ini']);
+
+// True if an IP literal is anything other than a normal public (unicast) address:
+// loopback, private, link-local (incl. 169.254.169.254 cloud metadata), unique-local,
+// CGNAT, multicast, reserved, etc. IPv4-mapped IPv6 addresses are unwrapped first.
+function isNonPublicAddress(ip) {
+  try {
+    let addr = ipaddr.parse(ip);
+    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
+      addr = addr.toIPv4Address();
+    }
+    return addr.range() !== 'unicast';
+  } catch (e) {
+    return true; // unparseable - treat as unsafe
+  }
+}
+
+// True for a loopback address: 127.0.0.0/8, ::1, and IPv4-mapped forms of them
+function isLoopbackAddress(ip) {
+  try {
+    let addr = ipaddr.parse(ip);
+    if (addr.kind() === 'ipv6' && addr.isIPv4MappedAddress()) {
+      addr = addr.toIPv4Address();
+    }
+    return addr.range() === 'loopback';
+  } catch (e) {
+    return false;
+  }
+}
+
+// A mirror file is written as <file>.tgz.tmp-<pid> and then renamed into place
+const MIRROR_TMP_MARKER = '.tmp-';
+
+// crawler.signatures: what to do with publishers' package signatures (see signingFor)
+const SIGNATURE_MODES = ['ignore', 'check', 'require'];
+// a signature file is a few KB; anything much bigger isn't one
+const MAX_SIGNATURE_BYTES = 1024 * 1024;
+// A temporary mirror file older than this was left by a crawler that stopped mid-write
+const MIRROR_TMP_MAX_AGE_MS = 60 * 60 * 1000;
 
 class PackageCrawler {
   log;
@@ -23,6 +105,15 @@ class PackageCrawler {
     this.crawlerLog = {};
     this.errors = '';
     this.abortController = null;
+    // the npm signing key (NpmSigner), or null when this server doesn't sign
+    this.signer = null;
+    this.skippedFeeds = new Set();
+    // publisher signatures (fhir:signature in a feed, keys in package-feeds.json): ignore,
+    // check, or require - see signingFor()
+    this.signatureMode = (config.crawler && config.crawler.signatures) || 'check';
+    if (!SIGNATURE_MODES.includes(this.signatureMode)) {
+      throw new Error(`crawler.signatures must be one of ${SIGNATURE_MODES.join(', ')}, not ${this.signatureMode}`);
+    }
     this.db.run('PRAGMA journal_mode = WAL');
     this.db.run('PRAGMA busy_timeout = 5000');
   }
@@ -49,6 +140,7 @@ class PackageCrawler {
   async crawl(log) {
     this.log = log;
     this.packages.clear();
+    this.skippedFeeds = new Set();
     this.abortController = new AbortController();
 
     const startTime = Date.now();
@@ -61,6 +153,11 @@ class PackageCrawler {
     };
 
     this.log.info('Running web crawler for packages using master URL: '+ this.config.masterUrl);
+    try {
+      await this.cleanMirrorTempFiles();
+    } catch (e) {
+      this.log.warn(`Could not clean the package mirror: ${e.message}`);
+    }
     this.stats.task('Package Crawler', 'Running');
 
     try {
@@ -83,9 +180,12 @@ class PackageCrawler {
         }
         try {
           let url = this.fixUrl(feedConfig.url)
+          if (this.skipUnsigned(feedConfig)) {
+            continue;
+          }
           if (!url.includes('simplifier')) {
             this.stats.task('Package Crawler', 'Running for '+feedConfig.url);
-            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions);
+            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions, this.signingFor(feedConfig.signing));
           }
         } catch (feedError) {
           this.log.error(`Failed to process feed ${feedConfig.url}: `+ feedError.message);
@@ -102,9 +202,12 @@ class PackageCrawler {
 
         try {
           let url = this.fixUrl(feedConfig.url)
+          if (this.skipUnsigned(feedConfig)) {
+            continue;
+          }
           if (url.includes('simplifier')) {
             this.stats.task('Package Crawler', 'Running for '+feedConfig.url);
-            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions);
+            await this.updateTheFeed(url, this.config.masterUrl,feedConfig.errors ? feedConfig.errors.replace(/\|/g, '@').replace(/_/g, '.') : '', packageRestrictions, this.signingFor(feedConfig.signing));
           }
         } catch (feedError) {
           this.log.error(`Failed to process feed ${feedConfig.url}: `+ feedError.message);
@@ -139,18 +242,125 @@ class PackageCrawler {
     return url.replace(/^http:/, 'https:');
   }
 
+  // Roots under which local-file feed reads are permitted. Reading local files supports
+  // locally-configured feeds (e.g. for testing); allowed roots come from
+  // config.localFeedDirs, plus the directory of a local master feed url. Anything else
+  // is rejected so a third-party feed can't point a read at an arbitrary server file.
+  allowedLocalRoots() {
+    const roots = [];
+    const cfg = this.config && this.config.localFeedDirs;
+    if (Array.isArray(cfg)) {
+      roots.push(...cfg);
+    } else if (typeof cfg === 'string' && cfg.length > 0) {
+      roots.push(cfg);
+    }
+    if (this.config && typeof this.config.masterUrl === 'string' && this.config.masterUrl.startsWith('/')) {
+      roots.push(path.dirname(this.config.masterUrl));
+    }
+    return roots.map((r) => path.resolve(r));
+  }
+
+  // A DNS lookup wrapper that rejects any host resolving to a non-public address.
+  // Enforced at connection time (so it also covers redirect targets and defeats
+  // DNS-rebinding), this is the SSRF guard for all outbound http(s) fetches.
+  // Set config.allowPrivateAddresses = true to disable (e.g. for local test registries).
+  // allowLoopback lets loopback addresses through, and nothing else that isn't public.
+  ssrfLookup(allowLoopback = false) {
+    const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
+    return (hostname, options, callback) => {
+      if (typeof options === 'function') {
+        callback = options;
+        options = {};
+      }
+      const wantAll = !!(options && options.all);
+      dns.lookup(hostname, Object.assign({}, options, { all: true }), (err, addresses) => {
+        if (err) {
+          callback(err);
+          return;
+        }
+        if (!allowPrivate) {
+          for (const a of addresses) {
+            if (isNonPublicAddress(a.address) && !(allowLoopback && isLoopbackAddress(a.address))) {
+              callback(new Error('Blocked request to non-public address ' + a.address + ' (host ' + hostname + ')'));
+              return;
+            }
+          }
+        }
+        if (wantAll) {
+          callback(null, addresses);
+        } else {
+          callback(null, addresses[0].address, addresses[0].family);
+        }
+      });
+    };
+  }
+
+  // http/https agents that route every connection through the SSRF lookup. Cached so
+  // connections can be pooled across requests. Node doesn't do a lookup when the host is
+  // an IP address (http://127.0.0.1/, http://169.254.169.254/), so those are checked here.
+  // allowLoopback: loopback addresses are allowed too (/npm-check, so it can check this
+  // server itself); other non-public addresses are still refused. The crawler doesn't use it.
+  guardedAgents({allowLoopback = false} = {}) {
+    this._guardedAgentSets = this._guardedAgentSets || {};
+    const key = allowLoopback ? 'loopback' : 'public';
+    if (!this._guardedAgentSets[key]) {
+      const lookup = this.ssrfLookup(allowLoopback);
+      const allowPrivate = !!(this.config && this.config.allowPrivateAddresses);
+      const blockedLiteral = (options) => {
+        const host = String(options.host || options.hostname || '').replace(/^\[(.*)\]$/, '$1');
+        if (!allowPrivate && net.isIP(host) && isNonPublicAddress(host) && !(allowLoopback && isLoopbackAddress(host))) {
+          return new Error('Blocked request to non-public address ' + host);
+        }
+        return null;
+      };
+      class GuardedHttpAgent extends http.Agent {
+        createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
+          return super.createConnection(Object.assign({}, options, { lookup }), cb);
+        }
+      }
+      class GuardedHttpsAgent extends https.Agent {
+        createConnection(options, cb) {
+          const err = blockedLiteral(options);
+          if (err) {
+            process.nextTick(() => cb(err));
+            return undefined;
+          }
+          return super.createConnection(Object.assign({}, options, { lookup }), cb);
+        }
+      }
+      this._guardedAgentSets[key] = {
+        httpAgent: new GuardedHttpAgent({ keepAlive: true }),
+        httpsAgent: new GuardedHttpsAgent({ keepAlive: true })
+      };
+    }
+    return this._guardedAgentSets[key];
+  }
+
+  // Resolve a local feed path and confine it to an allowed root (path-injection guard).
+  resolveLocalReadPath(url) {
+    const resolved = path.resolve(url);
+    const roots = this.allowedLocalRoots();
+    const allowed = roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+    if (!allowed) {
+      throw new Error('Refusing to read local file outside the allowed feed directories: ' + url);
+    }
+    return resolved;
+  }
+
   async fetchJson(url) {
     try {
       if (url.startsWith("/")) {
-        const content = await fs.promises.readFile(url, "utf8");
+        const content = await fs.promises.readFile(this.resolveLocalReadPath(url), "utf8");
         return JSON.parse(content);
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 30000,
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          }
+          maxContentLength: crawlerLimits(this.config).maxFeedBytes
         });
         return response.data;
       }
@@ -159,68 +369,101 @@ class PackageCrawler {
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
-      throw new Error(`Failed to fetch JSON from ${url}: ${error.message}`);
+      throw new Error(`Failed to fetch JSON from ${url}: ${this.feedFailure(error)}`);
     }
   }
 
+  /**
+   * axios.get for a feed or a package, with a deadline for the whole request (maxRequestSeconds),
+   * also stopped if the crawl is. A request that runs out of time fails saying so; other failures
+   * are axios's own (so a 429 or a size limit can still be told apart)
+   */
+  async getRemote(url, options) {
+    const limits = crawlerLimits(this.config);
+    const deadline = requestDeadline(limits.maxRequestMs, this.abortController?.signal);
+    try {
+      return await axios.get(url, {
+        ...options,
+        signal: deadline.signal,
+        headers: {
+          'User-Agent': 'FHIR Package Crawler/1.0'
+        },
+        httpAgent: this.guardedAgents().httpAgent,
+        httpsAgent: this.guardedAgents().httpsAgent
+      });
+    } catch (e) {
+      if (deadline.expired()) {
+        throw new Error(`${describeRequestFailure(e, { timeoutMs: limits.maxRequestMs, deadline })} (maxRequestSeconds)`, { cause: e });
+      }
+      throw e;
+    }
+  }
+
+  /** why a feed couldn't be read, in words */
+  feedFailure(error) {
+    if (/maxContentLength/.test(error.message)) {
+      return `the feed is more than the limit of ${crawlerLimits(this.config).maxFeedBytes / MB} MB (maxFeedMB)`;
+    }
+    return error.message;
+  }
+
   async fetchXml(url) {
+    // parsed in a worker thread: a big feed (hl7.org's) held the event loop for seconds
+    const options = {
+      ignoreAttributes: false,
+      attributeNamePrefix: '@_',
+      textNodeName: '#text',
+      entityExpansionLimit: 100000
+    };
     try {
       if (url.startsWith("/")) {
-        const content = await fs.promises.readFile(url, 'utf8');
-        const parser = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: '@_',
-          textNodeName: '#text',
-          entityExpansionLimit: 100000
-        });
-        return parser.parse(content);
+        const content = await fs.promises.readFile(this.resolveLocalReadPath(url), 'utf8');
+        return await parseXmlOffThread(content, options);
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 30000,
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          }
+          maxContentLength: crawlerLimits(this.config).maxFeedBytes
         });
-
-        const parser = new XMLParser({
-          ignoreAttributes: false,
-          attributeNamePrefix: '@_',
-          textNodeName: '#text',
-          entityExpansionLimit: 100000
-        });
-        return parser.parse(response.data);
+        return await parseXmlOffThread(response.data, options);
       }
     } catch (error) {
       debugLog(`Failed to fetch XML from ${url}: ${error.message}`);
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
-      throw new Error(`Failed to fetch XML from ${url}: ${error.message}`);
+      throw new Error(`Failed to fetch XML from ${url}: ${this.feedFailure(error)}`);
     }
   }
 
   async fetchUrl(url) {
     try {
+      const limits = crawlerLimits(this.config);
       if (url.startsWith("/")) {
-        const buffer = await fs.promises.readFile(url);
+        const localPath = this.resolveLocalReadPath(url);
+        const size = (await fs.promises.stat(localPath)).size;
+        if (size > limits.maxDownloadBytes) {
+          throw new Error(`the package is ${Math.round(size / MB)} MB, more than the limit of ${limits.maxDownloadBytes / MB} MB (maxDownloadMB)`);
+        }
+        const buffer = await fs.promises.readFile(localPath);
         this.totalBytes += buffer.byteLength;
         return buffer;
       } else {
-        const response = await axios.get(url, {
+        const response = await this.getRemote(url, {
           timeout: 60000,
           responseType: 'arraybuffer',
-          signal: this.abortController?.signal,
-          headers: {
-            'User-Agent': 'FHIR Package Crawler/1.0'
-          }
+          // We want the package file's own bytes: decodePackageBody undoes the Content-Encoding
+          decompress: false,
+          maxContentLength: limits.maxDownloadBytes
         });
 
         this.totalBytes += response.data.byteLength;
-        return Buffer.from(response.data);
+        return this.decodePackageBody(Buffer.from(response.data), response.headers['content-encoding']);
       }
     } catch (error) {
       debugLog(`Failed to fetch ${url}: ${error.message}`);
+      if (/maxContentLength/.test(error.message)) {
+        throw new Error(`Failed to fetch ${url}: the package is more than the limit of ${crawlerLimits(this.config).maxDownloadBytes / MB} MB (maxDownloadMB)`);
+      }
       if (error.response && error.response.status === 429) {
         throw new Error(`RATE_LIMITED: Server returned 429 Too Many Requests for ${url}`);
       }
@@ -228,7 +471,56 @@ class PackageCrawler {
     }
   }
 
-  async updateTheFeed(url, source, email, packageRestrictions) {
+  // Undoes the HTTP Content-Encoding of a downloaded package. A .tgz is already gzip, and some
+  // servers (doc.mednet.swiss, for one) label it Content-Encoding: gzip / x-gzip whatever the
+  // request asks for, as if the tar had been compressed for transfer. Unzipping that, as an
+  // HTTP client normally would, leaves a bare tar. So for gzip, the body is taken as the
+  // package unless unzipping it gives another gzip file - a server that really did compress
+  // a .tgz for transfer.
+  decodePackageBody(body, contentEncoding) {
+    // undoing the transfer encoding gives the package file, so the download limit applies
+    const max = { maxOutputLength: crawlerLimits(this.config).maxDownloadBytes };
+    const tooBig = (e) => e.code === 'ERR_BUFFER_TOO_LARGE'
+      ? new Error(`the package is more than the limit of ${max.maxOutputLength / MB} MB (maxDownloadMB) once its Content-Encoding is undone`) : e;
+    const encodings = String(contentEncoding || '').toLowerCase().split(',').map(e => e.trim()).filter(e => e && e !== 'identity');
+    for (const enc of encodings.reverse()) {
+      if (enc === 'gzip' || enc === 'x-gzip') {
+        let start;
+        try {
+          // only the start is needed to see whether it is gzip inside: a tar unzipped
+          // from a .tgz can be far larger than the download limit
+          start = zlib.gunzipSync(body.subarray(0, 4096), { finishFlush: zlib.constants.Z_SYNC_FLUSH });
+        } catch (e) {
+          // not gzip after all: leave it for extractNpmPackage to report
+          continue;
+        }
+        if (start[0] === 0x1f && start[1] === 0x8b) {
+          try {
+            body = zlib.gunzipSync(body, max);
+          } catch (e) {
+            throw tooBig(e);
+          }
+        }
+      } else if (enc === 'br') {
+        try {
+          body = zlib.brotliDecompressSync(body, max);
+        } catch (e) {
+          throw tooBig(e);
+        }
+      } else if (enc === 'deflate') {
+        try {
+          body = zlib.inflateSync(body, max);
+        } catch (e) {
+          throw tooBig(e);
+        }
+      } else {
+        throw new Error(`Unsupported Content-Encoding ${enc}`);
+      }
+    }
+    return body;
+  }
+
+  async updateTheFeed(url, source, email, packageRestrictions, signing = null) {
     const feedLog = {
       url: url,
       items: []
@@ -284,7 +576,7 @@ class PackageCrawler {
         for (let i = 0; i < items.length; i++) {
           if (this.abortController?.signal.aborted) break;
           try {
-            await this.updateItem(currentUrl, items[i], i, packageRestrictions, feedLog);
+            await this.updateItem(currentUrl, items[i], i, packageRestrictions, feedLog, signing);
           } catch (itemError) {
             if (itemError.message.includes('RATE_LIMITED')) {
               this.log.info(`Rate limited while downloading package from ${currentUrl}, stopping feed processing`);
@@ -330,7 +622,8 @@ class PackageCrawler {
     }
   }
 
-  async updateItem(source, item, index, packageRestrictions, feedLog) {
+  // signing: how this feed's signatures are checked (signingFor), or null
+  async updateItem(source, item, index, packageRestrictions, feedLog, signing = null) {
     const itemLog = {
       status: '??'
     };
@@ -382,6 +675,7 @@ class PackageCrawler {
 
       if (this.packages.has(id)) {
         this.log.info(`Ignoring package ${id} because it's already been seen in another feed`);
+        itemLog.status = 'Seen in another feed';
         return;
       }
       this.packages.add(id);
@@ -389,7 +683,25 @@ class PackageCrawler {
       // Check if already processed
       if (await this.hasStored(guid)) {
         itemLog.status = 'Already Processed';
+        await this.checkStoredSignature(item, guid, signing, itemLog);
         return;
+      }
+
+      // A new GUID for an id#version we already hold: decide before downloading anything.
+      // store() checks again against the id#version inside the tarball.
+      const [titleId, titleVersion] = id.split('#');
+      if (titleId && titleVersion) {
+        const check = await this.checkVersion(titleId, titleVersion, guid);
+        if (check.action === 'skip') {
+          itemLog.status = 'Already Stored';
+          return;
+        }
+        if (check.action === 'error') {
+          this.log.error(check.reason);
+          itemLog.status = 'error';
+          itemLog.error = check.reason;
+          return;
+        }
       }
 
       // Parse publication date
@@ -416,9 +728,10 @@ class PackageCrawler {
       this.log.info('Fetching package: ' + url);
 
       const packageContent = await this.fetchUrl(url, 'application/tar+gzip');
-      await this.store(source, url, guid, pubDate, packageContent, id, itemLog);
+      const signature = signing ? await this.fetchSignature(item) : null;
+      const outcome = await this.store(source, url, guid, pubDate, packageContent, id, itemLog, signing, signature);
 
-      itemLog.status = 'Fetched';
+      itemLog.status = {stored: 'Fetched', replaced: 'Replaced Simplifier copy', skipped: 'Already Stored'}[outcome];
 
     } catch (error) {
       this.log.error(`Exception processing item ${itemLog.guid || index} from ${source}: `+ error.message);
@@ -479,6 +792,141 @@ class PackageCrawler {
     }
   }
 
+  // --- publisher signatures (see npm-signing.js) --------------------------------------------------
+  //
+  // A feed may list keys in package-feeds.json (feeds[].signing: {required, keys}), and its items
+  // may link a signature (fhir:signature). crawler.signatures says what to do with them:
+  //   ignore  - nothing
+  //   check   - (the default) check each signature of a feed that lists keys; one that fails is
+  //             logged, and the package is stored anyway, unless the feed says signing.required
+  //   require - as check, but an unsigned package, or one whose signature fails, is refused, for
+  //             every feed that lists keys
+  // Feeds that list no keys are never affected. The signature file is kept (PackageSignatures) as
+  // it was when it was checked, valid or not.
+
+  // With crawler.signatures = require, a feed that lists no keys isn't read at all: none of its
+  // packages could be accepted. Noted in the crawl log.
+  skipUnsigned(feedConfig) {
+    if (this.signatureMode !== 'require' || this.signingFor(feedConfig.signing)) {
+      return false;
+    }
+    if (!this.skippedFeeds.has(feedConfig.url)) {
+      this.skippedFeeds.add(feedConfig.url);
+      this.log.info(`Skipping feed ${feedConfig.url}: it lists no signing keys, and signatures are required`);
+      this.crawlerLog.feeds.push({ url: feedConfig.url, skipped: 'it lists no signing keys, and signatures are required', items: [] });
+    }
+    return true;
+  }
+
+  // How a feed's signatures are checked, or null if they aren't
+  signingFor(feedSigning) {
+    if (this.signatureMode === 'ignore' || !feedSigning || !Array.isArray(feedSigning.keys) || feedSigning.keys.length === 0) {
+      return null;
+    }
+    return { keys: feedSigning.keys, required: this.signatureMode === 'require' || feedSigning.required === true };
+  }
+
+  signatureUrl(item) {
+    const s = item['fhir:signature'];
+    const v = s && typeof s === 'object' ? s['#text'] : s;
+    return v ? String(v).trim() : null;
+  }
+
+  // The item's signature file: {url, text}, {url: null} if it has none, or {url, fetchError}
+  async fetchSignature(item) {
+    const url = this.signatureUrl(item);
+    if (!url) {
+      return { url: null };
+    }
+    try {
+      const content = await this.fetchUrl(this.fixUrl(url), 'application/json');
+      if (content.length > MAX_SIGNATURE_BYTES) {
+        return { url, fetchError: `it is too large (${content.length} bytes)` };
+      }
+      return { url, text: content.toString('utf8') };
+    } catch (e) {
+      if (e.message.includes('RATE_LIMITED')) {
+        throw e;
+      }
+      return { url, fetchError: e.message };
+    }
+  }
+
+  // Checks a package's signature. Returns {record} - what to keep in PackageSignatures - and
+  // {refuse} - why the package must not be stored - either or neither
+  checkSignature(signing, signature, packageBuffer, id, version, date, itemLog) {
+    if (!signing) {
+      return {};
+    }
+    if (!signature || !signature.url) {
+      itemLog.signature = 'unsigned';
+      return signing.required ? { refuse: 'it is not signed, and this feed\'s packages must be' } : {};
+    }
+    if (signature.fetchError) {
+      itemLog.signature = `the signature ${signature.url} could not be fetched: ${signature.fetchError}`;
+      this.log.error(`Signature for ${id}#${version} could not be fetched (${signature.url}): ${signature.fetchError}`);
+      return signing.required ? { refuse: itemLog.signature } : {};
+    }
+    const record = { url: signature.url, bundle: signature.text, keyid: null, valid: false, message: null };
+    try {
+      let bundle;
+      try {
+        bundle = JSON.parse(signature.text);
+      } catch (e) {
+        throw new Error('the signature file is not JSON');
+      }
+      const v = verifyPackageSignature(packageBuffer, bundle, signing.keys, id, version, date instanceof Date && !isNaN(date) ? date : null);
+      record.keyid = v.keyid;
+      record.valid = true;
+      itemLog.signature = `valid (${v.keyid})`;
+      return { record };
+    } catch (e) {
+      record.message = e.message;
+      itemLog.signature = `invalid: ${e.message}`;
+      this.log.error(`Signature check failed for ${id}#${version} (${signature.url}): ${e.message}`);
+      return { record, refuse: signing.required ? `its signature is not valid: ${e.message}` : null };
+    }
+  }
+
+  async recordSignature(id, version, record) {
+    await this.run(`INSERT OR REPLACE INTO PackageSignatures (PackageVersionKey, Url, KeyId, Valid, Message, Checked, Bundle)
+                    SELECT PackageVersionKey, ?, ?, ?, ?, datetime('now'), ? FROM PackageVersions WHERE Id = ? AND Version = ?`,
+      [record.url, record.keyid, record.valid ? 1 : 0, record.message, record.bundle, id, version]);
+  }
+
+  // A package stored before its feed was signed (or before this server checked): its signature is
+  // checked against the stored bytes, once. Never refused - it is already held - but a failure is
+  // logged and kept. A signature that can't be fetched is tried again next crawl.
+  async checkStoredSignature(item, guid, signing, itemLog) {
+    if (!signing || !this.signatureUrl(item)) {
+      return;
+    }
+    const row = await new Promise((resolve, reject) => {
+      this.db.get(`SELECT v.PackageVersionKey, v.Id, v.Version, v.PubDate, s.PackageVersionKey AS Checked
+                   FROM PackageVersions v LEFT JOIN PackageSignatures s ON s.PackageVersionKey = v.PackageVersionKey
+                   WHERE v.GUID = ?`, [guid], (err, r) => err ? reject(err) : resolve(r));
+    });
+    if (!row || row.Checked) {
+      return;
+    }
+    const signature = await this.fetchSignature(item);
+    if (signature.fetchError) {
+      itemLog.signature = `the signature ${signature.url} could not be fetched: ${signature.fetchError}`;
+      this.log.warn(`Signature for ${row.Id}#${row.Version} could not be fetched (${signature.url}): ${signature.fetchError}`);
+      return;
+    }
+    const content = await new Promise((resolve, reject) => {
+      this.db.get('SELECT Content FROM PackageVersions WHERE PackageVersionKey = ?', [row.PackageVersionKey], (err, r) => err ? reject(err) : resolve(r));
+    });
+    if (!content) {
+      return;
+    }
+    const verdict = this.checkSignature({ ...signing, required: false }, signature, content.Content, row.Id, row.Version, new Date(row.PubDate), itemLog);
+    if (verdict.record) {
+      await this.recordSignature(row.Id, row.Version, verdict.record);
+    }
+  }
+
   async hasStored(guid) {
     return new Promise((resolve, reject) => {
       this.db.get('SELECT COUNT(*) as count FROM PackageVersions WHERE GUID = ?', [guid], (err, row) => {
@@ -489,6 +937,137 @@ class PackageCrawler {
         }
       });
     });
+  }
+
+  // Simplifier re-publishes packages that other feeds publish directly. Its copy is a
+  // secondary echo: kept only until the version arrives directly from a publisher's feed.
+  isSimplifierGuid(guid) {
+    return /^https?:\/\/packages\.simplifier\.net\//i.test(guid || '');
+  }
+
+  async findStoredVersions(id, version) {
+    return new Promise((resolve, reject) => {
+      this.db.all('SELECT PackageVersionKey, GUID FROM PackageVersions WHERE Id = ? AND Version = ? ORDER BY PackageVersionKey',
+        [id, version], (err, rows) => err ? reject(err) : resolve(rows || []));
+    });
+  }
+
+  // An id#version is stored once. For a copy arriving with a GUID we haven't stored:
+  //   store    - we don't hold id#version
+  //   replace  - we only hold Simplifier copies, and this copy is direct: it takes their place
+  //   skip     - we already hold it, and this copy is a Simplifier echo
+  //   error    - we already hold it directly, from a different GUID: the new copy is ignored
+  async checkVersion(id, version, guid) {
+    const rows = await this.findStoredVersions(id, version);
+    if (rows.length === 0) {
+      return { action: 'store' };
+    }
+    if (this.isSimplifierGuid(guid)) {
+      return { action: 'skip', reason: `${id}#${version} from ${guid} ignored: already stored from ${rows[0].GUID}` };
+    }
+    const direct = rows.filter(r => !this.isSimplifierGuid(r.GUID));
+    if (direct.length === 0) {
+      return { action: 'replace', keys: rows.map(r => r.PackageVersionKey) };
+    }
+    return { action: 'error', reason: `${id}#${version} from ${guid} ignored: already stored from ${direct[0].GUID}` };
+  }
+
+  run(sql, params = []) {
+    return new Promise((resolve, reject) => {
+      this.db.run(sql, params, (err) => err ? reject(err) : resolve());
+    });
+  }
+
+  // Runs fn inside a database transaction: all of its writes commit, or none do. The crawler
+  // stores one package at a time, so its transactions never nest. The connection is shared
+  // with the web side, so a write it makes meanwhile joins the transaction (the download counts
+  // don't: they have a connection of their own - PackagesModule.openCountsConnection).
+  async transaction(fn) {
+    await this.run('BEGIN IMMEDIATE');
+    try {
+      const result = await fn();
+      await this.run('COMMIT');
+      return result;
+    } catch (e) {
+      try {
+        await this.run('ROLLBACK');
+      } catch (rollbackError) {
+        this.log?.error?.(`Rollback failed: ${rollbackError.message}`);
+      }
+      throw e;
+    }
+  }
+
+  // Removes mirror files that a crawler stopped before renaming into place. Only files old
+  // enough that nothing can still be writing them: the mirror may be shared, and in a
+  // container the pid in the name is no guide.
+  //
+  // Asynchronous: the mirror holds every package (tens of thousands of files), and listing it
+  // with readdirSync at the start of a crawl, on a server just started (nothing of the folder
+  // in the disk cache), held npm.fhir.org's event loop for 2.3 s (2026-11-16).
+  async cleanMirrorTempFiles(maxAgeMs = MIRROR_TMP_MAX_AGE_MS) {
+    if (!this.config.mirrorPath || !fs.existsSync(this.config.mirrorPath)) {
+      return 0;
+    }
+    const cutoff = Date.now() - maxAgeMs;
+    let removed = 0;
+    for (const name of await fs.promises.readdir(this.config.mirrorPath)) {
+      if (!name.includes(MIRROR_TMP_MARKER)) {
+        continue;
+      }
+      const file = path.join(this.config.mirrorPath, name);
+      try {
+        const stat = await fs.promises.stat(file);
+        if (stat.isFile() && stat.mtimeMs < cutoff) {
+          await fs.promises.rm(file, { force: true });
+          removed++;
+        }
+      } catch (e) {
+        this.log?.warn?.(`Could not remove stale mirror file ${name}: ${e.message}`);
+      }
+    }
+    if (removed > 0) {
+      this.log?.info?.(`Removed ${removed} stale temporary file(s) from the package mirror`);
+    }
+    return removed;
+  }
+
+  // Point Packages.CurrentVersion at the most recent version of id
+  async refreshCurrentVersion(id) {
+    const latest = await new Promise((resolve, reject) => {
+      this.db.get(`SELECT PackageVersionKey, Canonical FROM PackageVersions
+                   WHERE Id = ? AND Version != 'current'
+                   ORDER BY PubDate DESC, Version DESC LIMIT 1`, [id], (err, row) => err ? reject(err) : resolve(row));
+    });
+    if (latest) {
+      await this.run('UPDATE Packages SET CurrentVersion = ?, Canonical = ? WHERE Id = ?',
+        [latest.PackageVersionKey, latest.Canonical, id]);
+    }
+  }
+
+  // A direct copy replacing the Simplifier copies we held: it takes over the first row (so its
+  // key and download count survive), and any further Simplifier rows go.
+  async replaceVersion(keys, packageBuffer, npmPackage, date, guid, id, version, canonical, urls) {
+    const [vkey, ...extra] = keys;
+    await this.run(`UPDATE PackageVersions
+                    SET GUID = ?, PubDate = ?, Indexed = datetime('now'), Kind = ?, Canonical = ?,
+                        FhirVersions = ?, Description = ?, Hash = ?, Author = ?, License = ?,
+                        HomePage = ?, Content = ?
+                    WHERE PackageVersionKey = ?`,
+      [guid, date.toISOString(), npmPackage.kind, canonical, npmPackage.fhirVersionList,
+        npmPackage.description, this.genHash(packageBuffer), npmPackage.author, npmPackage.license,
+        npmPackage.url, packageBuffer, vkey]);
+    for (const key of keys) {
+      for (const table of ['PackageFHIRVersions', 'PackageDependencies', 'PackageURLs', 'PackageDist', 'PackageSignatures']) {
+        await this.run(`DELETE FROM ${table} WHERE PackageVersionKey = ?`, [key]);
+      }
+    }
+    for (const key of extra) {
+      await this.run('DELETE FROM PackageVersions WHERE PackageVersionKey = ?', [key]);
+    }
+    await this.insertRelatedData(vkey, npmPackage, urls);
+    await this.storeDist(vkey, id, version, packageBuffer);
+    await this.refreshCurrentVersion(id);
   }
 
   parsePubDate(dateStr) {
@@ -516,7 +1095,8 @@ class PackageCrawler {
     return date;
   }
 
-  async store(source, url, guid, date, packageBuffer, idver, itemLog) {
+  // signing and signature: the feed's signature checking (signingFor) and what fetchSignature got
+  async store(source, url, guid, date, packageBuffer, idver, itemLog, signing = null, signature = null) {
     try {
       // Extract and parse the NPM package
       const npmPackage = await this.extractNpmPackage(packageBuffer, `${source}#${guid}`);
@@ -534,36 +1114,74 @@ class PackageCrawler {
         throw new Error(`NPM Id "${id}" is not valid from ${source}`);
       }
 
-      // Save to mirror if configured
-      if (this.config.mirrorPath) {
-        let fid = this.fixPrefix(id);
-        const filename = `${fid}-${version}.tgz`;
-        const filepath = path.join(this.config.mirrorPath, filename);
-        fs.writeFileSync(filepath, packageBuffer);
+      // The id#version in the tarball is what counts, which need not be what the feed said
+      const check = await this.checkVersion(id, version, guid);
+      if (check.action === 'skip') {
+        this.log.info(check.reason);
+        return 'skipped';
+      }
+      if (check.action === 'error') {
+        throw new Error(check.reason);
       }
 
-      if (!this.isValidSemVersion(version)) {
-        throw new Error(`NPM Version "${version}" is not valid from ${source}`);
-      }
+      const canonical = this.checkPackageContent(npmPackage, idver, source);
 
-      let canonical = npmPackage.canonical || `http://simplifier.net/packages/${id}`;
-      if (!this.isAbsoluteUrl(canonical)) {
-        throw new Error(`NPM Canonical "${canonical}" is not valid from ${source}`);
-      }
-
-      const isTemplate = npmPackage.kind === 2; // fhir.template
-      if (npmPackage.hasInstallScripts) {
-        throw new Error(`Package ${idver} rejected: contains install scripts (preinstall/install/postinstall)`);
-      }
-      if (npmPackage.hasJavaScript && !isTemplate && id !== 'hl7.fhir.pubpack') {
-        throw new Error(`Package ${idver} rejected: contains JavaScript files but is not a template package`);
+      const verdict = this.checkSignature(signing, signature, packageBuffer, id, version, date, itemLog);
+      if (verdict.refuse) {
+        throw new Error(`Package ${idver} rejected: ${verdict.refuse}`);
       }
 
       // Extract URLs from package
       const urls = this.processPackageUrls(npmPackage);
 
-      // Commit to database
-      await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls);
+      // The mirror file has to be complete before the registry advertises the package (the
+      // download redirect points at it), and a replacement must not touch the file served for
+      // the copy we hold unless it commits. So: write the new file beside its target first;
+      // a new package's file is put in place before the transaction, a replacement's at the
+      // end of it, just before COMMIT, so a failed rename rolls the replacement back.
+      // Rename within a directory is atomic, so readers see the old file or the whole new one.
+      let filepath = null;
+      let tmpPath = null;
+      if (this.config.mirrorPath) {
+        let fid = this.fixPrefix(id);
+        filepath = path.join(this.config.mirrorPath, `${fid}-${version}.tgz`);
+        // id and version are validated, but the file must land in the mirror whatever they say
+        if (path.dirname(path.resolve(filepath)) !== path.resolve(this.config.mirrorPath)) {
+          throw new Error(`Package ${id}#${version} rejected: its mirror file name is not a plain file name`);
+        }
+        tmpPath = `${filepath}${MIRROR_TMP_MARKER}${process.pid}`;
+      }
+      const replacing = check.action === 'replace';
+      let placed = false;
+      try {
+        if (tmpPath) {
+          fs.writeFileSync(tmpPath, packageBuffer);
+          if (!replacing) {
+            fs.renameSync(tmpPath, filepath);
+            placed = true;
+          }
+        }
+        await this.transaction(async () => {
+          await this.commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, check.keys);
+          if (tmpPath && replacing) {
+            fs.renameSync(tmpPath, filepath);
+          }
+        });
+      } catch (e) {
+        if (tmpPath) {
+          fs.rmSync(tmpPath, { force: true });
+        }
+        if (placed) {
+          // a new package that didn't commit isn't advertised, so its file goes too
+          fs.rmSync(filepath, { force: true });
+        }
+        throw e;
+      }
+
+      if (verdict.record) {
+        await this.recordSignature(id, version, verdict.record);
+      }
+      return check.action === 'replace' ? 'replaced' : 'stored';
 
     } catch (error) {
       debugLog(error);
@@ -572,56 +1190,163 @@ class PackageCrawler {
     }
   }
 
+  // What a package must be to be stored (beyond being new): a valid id, a whole semver version,
+  // an absolute canonical, no install scripts, no JavaScript unless it's a template, and not
+  // flagged notForPublication. Throws saying what's wrong; returns the canonical. Shared with
+  // the feed check (feed-check.js), which stores nothing.
+  checkPackageContent(npmPackage, idver, source) {
+    const {id, version} = npmPackage;
+    if (!this.isValidPackageId(id)) {
+      throw new Error(`NPM Id "${id}" is not valid from ${source}`);
+    }
+    if (!this.isValidSemVersion(version)) {
+      throw new Error(`NPM Version "${version}" is not valid from ${source}`);
+    }
+
+    let canonical = npmPackage.canonical || `http://simplifier.net/packages/${id}`;
+    if (!this.isAbsoluteUrl(canonical)) {
+      throw new Error(`NPM Canonical "${canonical}" is not valid from ${source}`);
+    }
+
+    const isTemplate = npmPackage.kind === 2; // fhir.template
+    if (npmPackage.hasInstallScripts) {
+      throw new Error(`Package ${idver} rejected: contains install scripts (preinstall/install/postinstall)`);
+    }
+    if (npmPackage.hasJavaScript && !isTemplate && id !== 'hl7.fhir.pubpack') {
+      throw new Error(`Package ${idver} rejected: contains JavaScript files but is not a template package`);
+    }
+    // The feed gate (item.notForPublication) only sees the RSS entry. A package whose
+    // feed entry is clean can still carry notForPublication inside the tarball - that is
+    // a draft build that must never enter the registry. Reject it here too.
+    if (npmPackage.notForPublication) {
+      throw new Error(`Package ${idver} rejected: tarball is flagged notForPublication (draft build, not suitable for publication)`);
+    }
+    return canonical;
+  }
+
+  // Reads what the crawler needs from a package as the package is unzipped and untarred:
+  // package.json, .index.json and ig.ini, the file names, and the url of each resource. Only
+  // those files are held, one at a time, so memory is bounded by maxFileMB however large
+  // the package unpacks to (see crawlerLimits). A package with a name with a .. segment, or
+  // two files of the same name (library/package-names.js), is refused
+  async unpackPackage(packageBuffer) {
+    const limits = crawlerLimits(this.config);
+    const meta = {};
+    const fileNames = [];
+    const resourceUrls = [];
+    const skipped = [];
+    const names = new EntryNames();
+
+    await new Promise((resolve, reject) => {
+      let unpacked = 0;
+      let failed = false;
+      const gunzip = zlib.createGunzip();
+      const fail = (e) => {
+        if (!failed) {
+          failed = true;
+          gunzip.destroy();
+          reject(e);
+        }
+      };
+
+      const parser = new TarParser({
+        onReadEntry: (entry) => {
+          // a name with a .. segment, or two files of the same name (see library/package-names.js)
+          const problem = failed ? null : pathProblem(entry.path) || (entry.type === 'Directory' ? null : names.add(entry.path));
+          if (problem) {
+            fail(new Error(problem));
+          }
+          if (failed || !['File', 'OldFile', 'ContiguousFile'].includes(entry.type)) {
+            entry.resume();
+            return;
+          }
+          const name = entry.path.replace(/^package\//, '');
+          fileNames.push(name);
+          if (fileNames.length > limits.maxFiles) {
+            fail(new Error(`the package has more than ${limits.maxFiles} files (maxFiles)`));
+            entry.resume();
+            return;
+          }
+          const isMeta = META_FILES.has(name);
+          if (!isMeta && !name.endsWith('.json')) {
+            entry.resume();
+            return;
+          }
+          if (entry.size > limits.maxFileBytes) {
+            if (name === 'package.json') {
+              fail(new Error(`package.json is ${Math.round(entry.size / MB)} MB, more than the limit of ${limits.maxFileBytes / MB} MB (maxFileMB)`));
+            } else {
+              skipped.push(name);
+            }
+            entry.resume();
+            return;
+          }
+          const chunks = [];
+          entry.on('data', (chunk) => chunks.push(chunk));
+          entry.on('end', () => {
+            if (failed) {
+              return;
+            }
+            const text = Buffer.concat(chunks).toString('utf8');
+            if (isMeta) {
+              meta[name] = text;
+            }
+            if (name.endsWith('.json') && name !== 'package.json' && name !== '.index.json') {
+              try {
+                const json = JSON.parse(text);
+                if (json.url && json.resourceType) {
+                  resourceUrls.push(json.url);
+                }
+              } catch (e) {
+                // not a resource
+              }
+            }
+          });
+        }
+      });
+      parser.on('warn', (code, message) => {
+        if (code === 'TAR_BAD_ARCHIVE') {
+          fail(new Error(`not a tar file once unzipped (${message})`));
+        }
+      });
+      parser.on('error', fail);
+      parser.on('end', () => {
+        if (!failed) {
+          resolve();
+        }
+      });
+
+      gunzip.on('data', (chunk) => {
+        if (failed) {
+          return;
+        }
+        unpacked += chunk.length;
+        if (unpacked > limits.maxUnpackedBytes) {
+          fail(new Error(`the package unzips to more than the limit of ${limits.maxUnpackedBytes / MB} MB (maxUnpackedMB)`));
+          return;
+        }
+        parser.write(chunk);
+      });
+      gunzip.on('end', () => {
+        if (!failed) {
+          parser.end();
+        }
+      });
+      gunzip.on('error', (e) => fail(new Error(`could not unzip the package: ${e.message}`)));
+      gunzip.end(packageBuffer);
+    });
+
+    return { meta, fileNames, resourceUrls, skipped };
+  }
+
   async extractNpmPackage(packageBuffer, source) {
     try {
-      const files = {};
-      const zlib = require('zlib');
-
-      // First decompress the gzip
-      const decompressed = zlib.gunzipSync(packageBuffer);
-
-      // Parse tar manually without any file system operations
-      let offset = 0;
-
-      while (offset < decompressed.length) {
-        // Read tar header (512 bytes)
-        if (offset + 512 > decompressed.length) break;
-
-        const header = decompressed.slice(offset, offset + 512);
-
-        // Check if this is the end (null header)
-        if (header[0] === 0) break;
-
-        // Extract filename (first 100 bytes, null-terminated)
-        let filename = '';
-        for (let i = 0; i < 100; i++) {
-          if (header[i] === 0) break;
-          filename += String.fromCharCode(header[i]);
-        }
-
-        // Extract file size (12 bytes starting at offset 124, octal)
-        let sizeStr = '';
-        for (let i = 124; i < 136; i++) {
-          if (header[i] === 0 || header[i] === 32) break; // null or space
-          sizeStr += String.fromCharCode(header[i]);
-        }
-        const fileSize = parseInt(sizeStr, 8) || 0;
-
-        // Move past header
-        offset += 512;
-
-        // Extract file content if we need this file
-        if (fileSize > 0) {
-          const cleanFilename = filename.replace(/^package\//, ''); // Remove package/ prefix
-
-          const fileContent = decompressed.slice(offset, offset + fileSize);
-          files[cleanFilename] = fileContent.toString('utf8');
-        }
-
-        // Move to next file (files are padded to 512-byte boundaries)
-        const paddedSize = Math.ceil(fileSize / 512) * 512;
-        offset += paddedSize;
+      if (packageBuffer.length < 2 || packageBuffer[0] !== 0x1f || packageBuffer[1] !== 0x8b) {
+        const start = packageBuffer.subarray(0, 8).toString('hex');
+        throw new Error(`not a gzip file (it starts with ${start || 'nothing'})`);
       }
+
+      const { meta: files, fileNames, resourceUrls, skipped } = await this.unpackPackage(packageBuffer);
 
       // Parse package.json (required)
       if (!files['package.json']) {
@@ -636,7 +1361,7 @@ class PackageCrawler {
           packageJson.scripts.postinstall
         )
       );
-      const hasJavaScript = Object.keys(files).some(f => f.endsWith('.js') || f.endsWith('.mjs') || f.endsWith('.cjs'));
+      const hasJavaScript = fileNames.some(f => f.endsWith('.js') || f.endsWith('.mjs') || f.endsWith('.cjs'));
 
       // Extract basic NPM fields
       const id = packageJson.name || '';
@@ -728,6 +1453,10 @@ class PackageCrawler {
         }
       }
 
+      if (skipped.length > 0) {
+        this.log.warn(`Package ${id}#${version}: ${skipped.length} file(s) are more than the limit of ${crawlerLimits(this.config).maxFileBytes / MB} MB (maxFileMB), so were not read for their url: ${skipped.slice(0, 5).join(', ')}${skipped.length > 5 ? ', ...' : ''}`);
+      }
+
       // Default fhirVersion if not found
       if (!fhirVersion) {
         fhirVersion = '4.0.1'; // Default to R4
@@ -749,7 +1478,8 @@ class PackageCrawler {
         hasInstallScripts,
         hasJavaScript,
         notForPublication,
-        files
+        fileNames,
+        resourceUrls
       };
 
     } catch (error) {
@@ -806,8 +1536,9 @@ class PackageCrawler {
   }
 
   isValidSemVersion(version) {
-    // Simple semantic version validation
-    return /^\d+\.\d+\.\d+/.test(version);
+    // The whole version must be semver: it goes into the database, URLs and the mirror
+    // file name, so a version like 1.0.0/../../x must not get through
+    return /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(version);
   }
 
   isAbsoluteUrl(url) {
@@ -820,31 +1551,8 @@ class PackageCrawler {
   }
 
   processPackageUrls(npmPackage) {
-    const urls = [];
-
-    try {
-
-      for (const filename of Object.keys(npmPackage.files)) {
-        try {
-          const bytes = npmPackage.files[filename];
-          if (filename.endsWith('.json')) {
-            try {
-              const jsonContent = JSON.parse(bytes);
-
-              if (jsonContent.url && jsonContent.resourceType) {
-                urls.push(jsonContent.url);
-              }
-            } catch (fileError) {
-              // this.log.warn(`Error processing package file ${npmPackage.name}#${npmPackage.version}/package/${filename}: ${fileError.message}`);
-            }
-          }
-        } catch (fileError) {
-          this.log.warn(`Error processing package file ${npmPackage.name}#${npmPackage.version}/package/${filename}: ${fileError.message}`);
-        }
-      }
-    } catch (error) {
-      this.log.warn(`Error processing package URLs for ${npmPackage.name}#${npmPackage.version}:`, error.message);
-    }
+    // the resources' urls are read as the package is unpacked (unpackPackage)
+    const urls = [...(npmPackage.resourceUrls || [])];
 
     // Include main package URL
     if (npmPackage.url) {
@@ -858,7 +1566,20 @@ class PackageCrawler {
     return crypto.createHash('sha1').update(data).digest('hex');
   }
 
-  async commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls) {
+  // The version's dist.integrity, and its registry signature when this server signs
+  // (this.signer, set by the packages module - see npm-signing.js). In their own table,
+  // PackageDist: a column after Content in PackageVersions can only be read by walking the
+  // tarball's overflow pages, and the package document reads these for every version.
+  async storeDist(vkey, id, version, packageBuffer) {
+    const integrity = integrityOfSync(packageBuffer);
+    await this.run('INSERT OR REPLACE INTO PackageDist (PackageVersionKey, Integrity, KeyId, Signature) VALUES (?, ?, ?, ?)',
+      [vkey, integrity, this.signer ? this.signer.keyid : null, this.signer ? this.signer.sign(id, version, integrity) : null]);
+  }
+
+  async commit(packageBuffer, npmPackage, date, guid, id, version, canonical, urls, replaceKeys = null) {
+    if (replaceKeys && replaceKeys.length > 0) {
+      return this.replaceVersion(replaceKeys, packageBuffer, npmPackage, date, guid, id, version, canonical, urls);
+    }
     return new Promise((resolve, reject) => {
       // Get next version key
       this.db.get('SELECT MAX(PackageVersionKey) as maxKey FROM PackageVersions', (err, row) => {
@@ -891,10 +1612,11 @@ class PackageCrawler {
           }
 
           // Insert FHIR versions, dependencies, and URLs
-          this.insertRelatedData(vkey, npmPackage, urls).then(() => {
+          this.insertRelatedData(vkey, npmPackage, urls)
+            .then(() => this.storeDist(vkey, id, version, packageBuffer))
             // Handle package table (insert or update)
-            this.upsertPackage(id, vkey, canonical).then(resolve).catch(reject);
-          }).catch(reject);
+            .then(() => this.upsertPackage(id, vkey, canonical))
+            .then(resolve).catch(reject);
         });
       });
     });

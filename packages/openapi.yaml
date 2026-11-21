@@ -1,0 +1,965 @@
+# OpenAPI description of the FHIRsmith package server (/packages).
+#
+# This file is the contract for the public, read-only package API. It is maintained by
+# hand, and tests/packages/openapi.test.js keeps it honest: every route the router
+# registers must be described here or explicitly excluded, and the query parameter
+# names, lengths and patterns must match the validation rules in packages.js.
+#
+# Administrative endpoints (crawl, update-package) and operational pages (log, stats,
+# status) are deliberately not described. info.version is filled in from package.json
+# when the spec is served.
+
+openapi: 3.1.0
+info:
+  title: FHIRsmith Package Server
+  version: "0.0.0"
+  summary: Search and download FHIR NPM packages
+  description: |
+    A registry of FHIR packages, built by crawling the package feeds listed in the
+    FHIR package registry. It implements the parts of the npm registry protocol that
+    FHIR tooling uses (package documents and tarball downloads), plus FHIR-specific
+    search by canonical URL, FHIR version and dependency.
+
+    **Content negotiation.** Most endpoints return JSON. If the request's `Accept`
+    header contains `text/html`, they return a browsable HTML page instead. The JSON
+    form is the contract; the HTML form is for people and may change at any time.
+
+    **Query parameters are strict.** An unknown parameter, a repeated parameter, a
+    value that is too long, or one that does not match the documented pattern is
+    rejected with a 400 `Error` response rather than being ignored.
+  license:
+    name: BSD-3-Clause
+    url: https://opensource.org/license/bsd-3-clause
+externalDocs:
+  description: FHIR NPM package specification
+  url: https://hl7.org/fhir/packages.html
+servers:
+  - url: /packages
+tags:
+  - name: search
+    description: Find packages
+  - name: registry
+    description: npm-compatible package documents and downloads
+  - name: reports
+    description: Registry-wide reports
+  - name: tools
+    description: Tools for other registries
+
+paths:
+  /catalog:
+    get:
+      tags: [search]
+      operationId: searchCatalog
+      summary: Search packages
+      description: |
+        Returns the packages matching all of the supplied criteria. With no criteria,
+        returns every package.
+
+        Unless `name` contains a `#version`, each package appears once, described by
+        its current version, and `count` gives its total download count. When `name`
+        contains `#`, every matching version is returned and `count` is omitted.
+
+        Results are ordered by publication date unless `sort` is given.
+      parameters:
+        - $ref: '#/components/parameters/name'
+        - $ref: '#/components/parameters/dependson'
+        - $ref: '#/components/parameters/pkgcanonical'
+        - $ref: '#/components/parameters/canonical'
+        - $ref: '#/components/parameters/fhirversion'
+        - $ref: '#/components/parameters/dependency'
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/objWrapper'
+        - $ref: '#/components/parameters/prerelease'
+      responses:
+        '200':
+          description: The matching packages
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items: { $ref: '#/components/schemas/PackageSummary' }
+                  - $ref: '#/components/schemas/WrappedSearchResult'
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /-/v1/search:
+    get:
+      tags: [search]
+      operationId: searchV1
+      summary: Search packages (npm registry search API)
+      description: |
+        The npm registry search API, so `npm search --registry` works against this
+        server. It takes npm's `text`, `size` and `from` parameters as well as the FHIR
+        search parameters of `/catalog`, and returns npm's result shape.
+
+        Differences from the npm registry:
+
+        * `text` terms match the package id or description; every term must match.
+          npm qualifiers (`keywords:`, `author:`, `scope:`, `not:`, `is:` ...) are
+          ignored.
+        * There is no relevance ranking: `quality`, `popularity` and `maintenance` are
+          accepted and ignored, and every `score` is 1. Unless `sort` is given, a
+          package whose id is the whole of `text` comes first (as on npm), then the
+          rest in publication order.
+        * Without `size`, every result is returned (npm defaults to 20, but npm's own
+          clients always send `size`).
+        * `keywords` and `maintainers` are always empty, and there is no `publisher`.
+      parameters:
+        - name: text
+          in: query
+          description: Space-separated search terms.
+          schema:
+            type: string
+            maxLength: 200
+            pattern: '^[a-zA-Z0-9._:@/#| -]*$'
+          example: ips
+        - name: size
+          in: query
+          description: Maximum number of results to return (at most 250).
+          schema:
+            type: string
+            maxLength: 3
+            pattern: '^\d{1,3}$'
+          example: '20'
+        - name: from
+          in: query
+          description: Offset of the first result to return.
+          schema:
+            type: string
+            default: '0'
+            maxLength: 6
+            pattern: '^\d{1,6}$'
+        - name: quality
+          in: query
+          description: npm ranking weight. Ignored.
+          schema: { type: string, maxLength: 10, pattern: '^(\d+(\.\d+)?)?$' }
+        - name: popularity
+          in: query
+          description: npm ranking weight. Ignored.
+          schema: { type: string, maxLength: 10, pattern: '^(\d+(\.\d+)?)?$' }
+        - name: maintenance
+          in: query
+          description: npm ranking weight. Ignored.
+          schema: { type: string, maxLength: 10, pattern: '^(\d+(\.\d+)?)?$' }
+        - $ref: '#/components/parameters/name'
+        - $ref: '#/components/parameters/dependson'
+        - $ref: '#/components/parameters/pkgcanonical'
+        - $ref: '#/components/parameters/canonical'
+        - $ref: '#/components/parameters/fhirversion'
+        - $ref: '#/components/parameters/dependency'
+        - $ref: '#/components/parameters/sort'
+        - $ref: '#/components/parameters/objWrapper'
+        - $ref: '#/components/parameters/prerelease'
+      responses:
+        '200':
+          description: The matching packages
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NpmSearchResult' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /-/fhir/v1/signatures/{spec}:
+    get:
+      tags: [registry]
+      operationId: getPublisherSignature
+      summary: The publisher's signature of a package version
+      description: |
+        The signature a package's publisher made of it (its `{package}.tgz.sigstore.json`,
+        linked from the publisher's feed by `fhir:signature`), exactly as this registry fetched
+        and checked it. It is a Sigstore bundle: an ECDSA P-256 signature of an in-toto
+        statement naming the package (`pkg:npm/{name}@{version}`) and the sha512 of the
+        `.tgz`. The keys a feed may sign with are listed in the FHIR package registry's
+        `package-feeds.json`; a client can check the signature against them itself.
+
+        Each version's `dist.fhir-signature` in the package document links this, with what
+        the registry made of it (`confirmed` or `rejected`). It isn't `dist.attestations`:
+        npm would try to verify it as a Sigstore attestation, which it isn't (it has no
+        transparency log entry, and the publisher's key isn't the registry's).
+      parameters:
+        - name: spec
+          in: path
+          required: true
+          description: '`{name}@{version}`, as npm writes it (a scope''s `/` escaped).'
+          schema: { type: string }
+          example: hl7.fhir.uv.ips@2.0.0
+      responses:
+        '200':
+          description: The signature bundle, as fetched
+          content:
+            application/json:
+              schema: { type: object }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: No signature is held for this package version
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /-/npm/v1/keys:
+    get:
+      tags: [registry]
+      operationId: getSigningKeys
+      summary: The registry's signing keys (npm registry signatures)
+      description: |
+        The public keys this registry signs package versions with, in the npm registry's
+        format, so `npm audit signatures` can check packages installed from here. Each
+        version's `dist.signatures` holds the signature of `{id}@{version}:{dist.integrity}`
+        (ECDSA P-256, SHA-256, base64 DER).
+
+        A signature says this registry served that tarball. It is the registry's, not the
+        publisher's: this registry signs every version it holds, wherever it was crawled
+        from.
+
+        A 404 means the registry doesn't sign, which npm accepts. It is also the answer
+        while the registry is still signing versions it stored before it signed, since
+        npm reports an unsigned version from a registry with keys as an error.
+      responses:
+        '200':
+          description: The keys
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SigningKeys' }
+        '404':
+          description: This registry doesn't sign packages (or hasn't finished signing them)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /updates:
+    get:
+      tags: [search]
+      operationId: listUpdates
+      summary: Package versions published since a date
+      description: |
+        Lists every package version published on or after a date, most recent first.
+        The date is either relative (`daysValue` days ago, the default) or absolute
+        (`dateValue`).
+      parameters:
+        - name: dateType
+          in: query
+          description: Whether the cut-off is relative to today or an absolute date.
+          schema:
+            type: string
+            enum: [relative, absolute]
+            default: relative
+            maxLength: 10
+            pattern: '^(relative|absolute)?$'
+        - name: daysValue
+          in: query
+          description: With `dateType=relative`, how many days back to go.
+          schema:
+            type: string
+            default: '10'
+            maxLength: 3
+            pattern: '^\d{1,3}$'
+        - name: dateValue
+          in: query
+          description: With `dateType=absolute`, the cut-off date. Defaults to today.
+          schema:
+            type: string
+            format: date
+            maxLength: 10
+            pattern: '^\d{4}-\d{2}-\d{2}$'
+      responses:
+        '200':
+          description: The package versions published since the cut-off
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PackageUpdate' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /broken:
+    get:
+      tags: [reports]
+      operationId: listBrokenDependencies
+      summary: Package versions with unresolvable dependencies
+      description: |
+        Reports every package version that declares a dependency on a package
+        version this registry does not hold. Dependencies are matched on package id
+        and major.minor version, so a dependency on `1.1.0` is satisfied by `1.1.2`.
+      parameters:
+        - name: filter
+          in: query
+          description: Only report package versions whose `id#version` contains this text.
+          schema:
+            type: string
+            maxLength: 100
+            pattern: '^[a-zA-Z0-9._-]*$'
+      responses:
+        '200':
+          description: The broken dependencies, keyed by the package version that declares them
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BrokenDependencies' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /npm-check:
+    get:
+      tags: [tools]
+      operationId: checkNpmRegistry
+      summary: Check a registry against the npm registry protocol
+      description: |
+        Runs the npm registry protocol checks against any registry, the way an npm client
+        uses it: search for the package by name, read its package document, read the
+        version's document, and download the version's tarball. Returns a report of each
+        check, pass or fail, with the reason for each failure and the requests it was based
+        on. The same checks run, as a control, against registry.npmjs.org once a day.
+
+        With `Accept: text/html` and no parameters, this is a form for running the checks.
+
+        If the registry lists signing keys (`/-/npm/v1/keys`), it also checks that every
+        version of the package is signed with one of them, as `npm audit signatures` does.
+
+        A run makes about ten requests, each limited in time and size, and only to public
+        addresses. Runs are rate limited per client address, and the server runs only a
+        few at once. A server can turn the check off (`npmCheck.enabled` in its
+        configuration), and then this returns 404.
+      parameters:
+        - name: registry
+          in: query
+          required: true
+          description: The registry's base URL, as given to `npm --registry`.
+          schema:
+            type: string
+            maxLength: 500
+            pattern: '^https?:\/\/[^\s<>"''`]+$'
+          example: https://packages2.fhir.org/packages
+        - name: package
+          in: query
+          required: true
+          description: A package the registry holds.
+          schema:
+            type: string
+            maxLength: 100
+            pattern: '^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$'
+          example: hl7.fhir.r4.core
+        - name: version
+          in: query
+          required: true
+          description: A version of that package the registry holds.
+          schema:
+            type: string
+            maxLength: 50
+            pattern: '^[a-zA-Z0-9._-]+$'
+          example: 4.0.1
+      responses:
+        '200':
+          description: The report
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/NpmCheckReport' }
+            text/html:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: The check is turned off on this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '429':
+          description: Too many runs from this client address; try again later
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: The server is already running as many checks as it allows; try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /feed-check:
+    get:
+      tags: [tools]
+      operationId: checkPackageFeed
+      summary: Check a package feed the way the crawler reads it
+      description: |
+        Reads a package feed (RSS, as listed in the FHIR package registry's package-feeds.json)
+        the way this registry's crawler does, and reports what it finds, without storing
+        anything: for each item, its package (downloaded, unpacked and checked as the crawler
+        checks it before storing), whether the registry's package-restrictions allow it from
+        this feed, its signature (against the keys the registry lists for the feed), and
+        whether this registry already holds it. Next pages are followed, up to an item limit.
+
+        A check runs in the background: this starts one and returns `202` with its id
+        (`303` to its report page, for a browser). Poll `/feed-check/{run}` for the report.
+        With `Accept: text/html` and no `url`, this is a form.
+
+        Every request a check makes goes only to public addresses. Only one check runs at a
+        time, across all users. A server can turn the check off (`feedCheck.enabled`), and then
+        this returns 404.
+      parameters:
+        - name: url
+          in: query
+          required: true
+          description: The feed's URL.
+          schema:
+            type: string
+            maxLength: 500
+            pattern: '^https?:\/\/[^\s<>"''`]+$'
+          example: https://hl7.org/fhir/package-feed.xml
+        - name: signing
+          in: query
+          required: false
+          description: |
+            The feed's signing keys, as JSON: its `signing` block as it would be in
+            package-feeds.json (`{"required": false, "keys": [{"keyid": ..., "key": ..., "expires": null}]}`),
+            or the feed's whole entry. Signatures are checked against these instead of the keys
+            the registry lists for the feed.
+          schema:
+            type: string
+            maxLength: 5000
+            pattern: '^[^<>`]*$'
+      responses:
+        '202':
+          description: The check has started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string }
+                  state: { type: string, enum: [running] }
+                  report: { type: string, description: Where to get the report }
+        '303': { description: 'For a browser: the report page' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: The check is turned off on this server
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '503':
+          description: A check is already running (one at a time); try again shortly
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /feed-check/{run}:
+    get:
+      tags: [tools]
+      operationId: getFeedCheck
+      summary: A feed check's report
+      description: |
+        The report of a check started with `/feed-check`: `state` is `running` (the report so
+        far), `done` or `failed`. Reports are kept for a while (an hour, by default) after the
+        check finishes. A browser gets a page that reloads until the check is done.
+      parameters:
+        - name: run
+          in: path
+          required: true
+          description: The check's id, as `/feed-check` returned it.
+          schema: { type: string }
+      responses:
+        '200':
+          description: The check and its report
+          content:
+            application/json:
+              schema: { type: object }
+            text/html:
+              schema: { type: string }
+        '404':
+          description: No such check (or its report has been discarded)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /{id}:
+    get:
+      tags: [registry]
+      operationId: getPackage
+      summary: Package document (npm registry format)
+      description: |
+        The npm registry document for a package: every version this registry holds,
+        with its metadata, dependencies and tarball URL. `dist-tags.latest` is the most
+        recently published version.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The package id, e.g. `hl7.fhir.r4.core`.
+          schema: { type: string }
+          example: hl7.fhir.uv.ips
+      responses:
+        '200':
+          description: The package document
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PackageDocument' }
+            text/html:
+              schema: { type: string }
+        '404':
+          description: No package with this id is known
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+  /{id}/{version}:
+    get:
+      tags: [registry]
+      operationId: downloadPackage
+      summary: Download a package tarball, or get a version's document
+      description: |
+        Returns the package tarball (`.tgz`) - or, when the request's `Accept` header
+        prefers JSON, the version's npm document: the same object as that version's entry
+        in the package document. Preferring JSON means ranking `application/json` (or npm's
+        `application/vnd.npm.install-v1+json`) above any `*/*`, `application/*` or tarball
+        type by q-value: `application/json` alone does, but `application/json, text/plain, */*`
+        (axios's default, which SUSHI sends) does not. The response varies on `Accept` and
+        `FHIR-Package-Download`.
+
+        A request with a `FHIR-Package-Download` header always gets the tarball. The
+        HL7 Java tools send it; a client that downloads tarballs from this URL while
+        asking for JSON should send it too.
+
+        `latest` in place of a version (npm's dist-tag) means the version in the package
+        document's `dist-tags.latest`.
+
+        If no version matches exactly, the most recently published pre-release of that
+        version (`{version}-*`) is returned instead, so `1.0.0` will find `1.0.0-ballot`
+        when there is no `1.0.0`.
+
+        If the server is configured to serve packages from bucket storage, this
+        redirects to the tarball there.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: |
+            The package id. A scoped id (`@scope/name`) must have its `/` encoded as `%2F`.
+          schema:
+            type: string
+            maxLength: 100
+            pattern: '^(@[a-z0-9._-]+\/)?[a-zA-Z0-9._-]+$'
+          example: hl7.fhir.uv.ips
+        - name: version
+          in: path
+          required: true
+          description: The package version.
+          schema:
+            type: string
+            maxLength: 50
+            pattern: '^[a-zA-Z0-9._-]+$'
+          example: 1.1.0
+        - name: FHIR-Package-Download
+          in: header
+          required: false
+          description: Present (with any value, conventionally `tarball`), the tarball is returned whatever `Accept` says.
+          schema: { type: string }
+          example: tarball
+      responses:
+        '200':
+          description: The package tarball, or the version document
+          headers:
+            Content-Disposition:
+              description: '`attachment; filename="{id}#{version}.tgz"`'
+              schema: { type: string }
+          content:
+            application/tar+gzip:
+              schema:
+                type: string
+                contentEncoding: binary
+            application/json:
+              schema: { $ref: '#/components/schemas/PackageVersion' }
+        '302':
+          description: Redirect to the tarball in bucket storage
+          headers:
+            Location:
+              schema: { type: string, format: uri }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404':
+          description: No such package version is known
+          content:
+            text/plain:
+              schema: { type: string }
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '500': { $ref: '#/components/responses/ServerError' }
+
+components:
+  parameters:
+    name:
+      name: name
+      in: query
+      description: |
+        Packages whose id contains this text. Append `#version` to search specific
+        versions (every version containing that text is then returned, not just the
+        current one). Matched with SQL `LIKE`, so `_` matches any single character.
+      schema:
+        type: string
+        maxLength: 100
+        pattern: '^[a-zA-Z0-9._#-]*$'
+      example: hl7.fhir.uv.ips
+    dependson:
+      name: dependson
+      in: query
+      description: |
+        Packages with a dependency whose `id@version` contains this text. `#` or `|`
+        may be used in place of `@`.
+      schema:
+        type: string
+        maxLength: 100
+        pattern: '^[a-zA-Z0-9._#|@-]*$'
+    pkgcanonical:
+      name: pkgcanonical
+      in: query
+      description: |
+        The package's canonical URL. Matched exactly, or as a prefix if the value ends
+        with `%`.
+      schema:
+        type: string
+        maxLength: 200
+        pattern: '^[a-zA-Z0-9._:/-]*%?$'
+      example: http://hl7.org/fhir/uv/ips
+    canonical:
+      name: canonical
+      in: query
+      description: Packages containing a resource whose canonical URL starts with this value.
+      schema:
+        type: string
+        maxLength: 200
+        pattern: '^[a-zA-Z0-9._:/-]*$'
+      example: http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips
+    fhirversion:
+      name: fhirversion
+      in: query
+      description: |
+        Packages for this FHIR release: R2 (1.0.x), R2B (1.4.x), R3 (3.0.x), R4 (4.0.x),
+        R4B (4.3.x), R5 (5.0.x) or R6 (6.0.x, including ballots).
+      schema:
+        type: string
+        maxLength: 10
+        pattern: '^(R2|R2B|R3|R4|R4B|R5|R6)?$'
+        enum: [R2, R2B, R3, R4, R4B, R5, R6]
+    dependency:
+      name: dependency
+      in: query
+      description: |
+        Packages that depend on this package. Either `id` (any version), or
+        `id#version`, `id|version` or `id@version`; a version is matched as a prefix.
+      schema:
+        type: string
+        maxLength: 100
+        pattern: '^[a-zA-Z0-9._#|@-]*$'
+      example: hl7.fhir.r4.core#4.0.1
+    sort:
+      name: sort
+      in: query
+      description: |
+        Sort field; prefix with `-` for descending order. Versions sort semver-style,
+        with a pre-release (`1.0.0-ballot`) before its release. Without `sort`, results
+        are in publication order.
+      schema:
+        type: string
+        maxLength: 20
+        pattern: '^-?(name|version|date|count|fhirversion|kind|canonical)$'
+      example: -date
+    objWrapper:
+      name: objWrapper
+      in: query
+      description: |
+        `true` wraps the results as `{"objects": [{"package": ...}]}`, the core of the npm
+        search result shape. Retained for older clients; new clients wanting the npm
+        shape should use `/-/v1/search`.
+      schema:
+        type: string
+        maxLength: 10
+        pattern: '^(true|false)?$'
+        enum: ['true', 'false']
+    prerelease:
+      name: prerelease
+      in: query
+      description: |
+        Sent by the HL7 Java package client. Accepted for compatibility; it has no effect,
+        since searches already include pre-release versions.
+      schema:
+        type: string
+        maxLength: 5
+        pattern: '^(true|false)?$'
+        enum: ['true', 'false']
+
+  responses:
+    BadRequest:
+      description: A parameter was unknown, repeated, too long or badly formed
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ServerError:
+      description: The server failed to process the request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+    FhirVersion:
+      type: string
+      description: |
+        The FHIR version(s) the package is for, e.g. `4.0.1`. Packages for more than
+        one version list them separated by `, `.
+      example: 4.0.1
+    PackageKind:
+      type: string
+      enum: [fhir.core, fhir.ig, fhir.template]
+
+    PackageSummary:
+      type: object
+      description: A package version, as returned by search.
+      required: [name, version, fhirVersion, kind, url]
+      properties:
+        name: { type: string, description: Package id, example: hl7.fhir.uv.ips }
+        version: { type: string, example: 1.1.0 }
+        fhirVersion: { $ref: '#/components/schemas/FhirVersion' }
+        canonical: { type: string, format: uri, description: The package's canonical URL }
+        kind: { $ref: '#/components/schemas/PackageKind' }
+        url: { type: string, format: uri, description: Where to download the tarball }
+        date: { type: string, format: date-time, description: Publication date }
+        count:
+          type: integer
+          description: Total downloads of the package (all versions). Omitted for versioned searches.
+        description: { type: string }
+
+    WrappedSearchResult:
+      type: object
+      required: [objects]
+      properties:
+        objects:
+          type: array
+          items:
+            type: object
+            required: [package]
+            properties:
+              package: { $ref: '#/components/schemas/PackageSummary' }
+
+    NpmSearchResult:
+      type: object
+      description: The npm registry search result shape.
+      required: [objects, total, time]
+      properties:
+        objects:
+          type: array
+          items:
+            type: object
+            required: [package, score, searchScore]
+            properties:
+              package:
+                allOf:
+                  - $ref: '#/components/schemas/PackageSummary'
+                  - type: object
+                    required: [keywords, maintainers]
+                    properties:
+                      keywords: { type: array, items: { type: string }, maxItems: 0 }
+                      maintainers: { type: array, items: { type: object }, maxItems: 0 }
+              score:
+                type: object
+                properties:
+                  final: { type: number }
+                  detail:
+                    type: object
+                    properties:
+                      quality: { type: number }
+                      popularity: { type: number }
+                      maintenance: { type: number }
+              searchScore: { type: number }
+        total: { type: integer, description: Number of matches before size/from are applied }
+        time: { type: string, description: When the search ran }
+
+    PackageUpdate:
+      type: object
+      description: A package version published since the requested date.
+      required: [name, version, date, fhirVersion, kind, url]
+      properties:
+        name: { type: string }
+        version: { type: string }
+        date: { type: string, format: date-time }
+        fhirVersion: { $ref: '#/components/schemas/FhirVersion' }
+        canonical: { type: string, format: uri }
+        kind: { $ref: '#/components/schemas/PackageKind' }
+        url: { type: string, format: uri }
+        description: { type: string }
+
+    PackageDocument:
+      type: object
+      description: An npm registry package document.
+      required: [_id, name, dist-tags, versions]
+      properties:
+        _id: { type: string }
+        name: { type: string }
+        description: { type: string }
+        dist-tags:
+          type: object
+          required: [latest]
+          properties:
+            latest: { type: string, description: The most recently published version }
+        versions:
+          type: object
+          description: Every version this registry holds, keyed by version.
+          additionalProperties: { $ref: '#/components/schemas/PackageVersion' }
+        time:
+          type: object
+          description: |
+            Publication time of each version, keyed by version, plus `created` (the
+            earliest) and `modified` (the latest), as in npm's package document.
+          required: [created, modified]
+          properties:
+            created: { type: string, format: date-time }
+            modified: { type: string, format: date-time }
+          additionalProperties: { type: string, format: date-time }
+
+    PackageVersion:
+      type: object
+      required: [name, version, date, fhirVersion, kind, count, url, dist]
+      properties:
+        name: { type: string }
+        _id: { type: string, description: '`{id}@{version}`' }
+        version: { type: string }
+        date: { type: string, format: date-time }
+        fhirVersion: { $ref: '#/components/schemas/FhirVersion' }
+        kind: { $ref: '#/components/schemas/PackageKind' }
+        count: { type: integer, description: Downloads of this version }
+        canonical: { type: string, format: uri }
+        url: { type: string, format: uri }
+        homepage: { type: string }
+        license: { type: string }
+        author:
+          type: object
+          properties:
+            name: { type: string }
+        description: { type: string }
+        dependencies:
+          type: object
+          description: Package id to version.
+          additionalProperties: { type: string }
+          example: { hl7.fhir.r4.core: 4.0.1 }
+        dist:
+          type: object
+          required: [tarball]
+          properties:
+            shasum: { type: string, description: sha1 of the tarball, hex }
+            integrity: { type: string, description: 'sha512 of the tarball, as an SRI string (`sha512-{base64}`)' }
+            tarball: { type: string, format: uri }
+            signatures:
+              type: array
+              description: |
+                The registry's signatures of `{id}@{version}:{integrity}`, by the keys at
+                `/-/npm/v1/keys`. Absent when the registry doesn't sign.
+              items:
+                type: object
+                required: [keyid, sig]
+                properties:
+                  keyid: { type: string }
+                  sig: { type: string, description: 'base64 DER ECDSA signature' }
+            fhir-signature:
+              type: object
+              description: |
+                The publisher's signature of this version, as this registry checked it, when
+                there is one. Absent when the package isn't signed, or its feed lists no keys.
+              required: [url, status]
+              properties:
+                url: { type: string, format: uri, description: 'The signature: `/-/fhir/v1/signatures/{name}@{version}`' }
+                status: { type: string, enum: [confirmed, rejected] }
+                keyid: { type: string, description: The key that signed it (when confirmed) }
+
+    SigningKeys:
+      type: object
+      required: [keys]
+      properties:
+        keys:
+          type: array
+          items:
+            type: object
+            required: [keyid, keytype, scheme, key]
+            properties:
+              keyid: { type: string, description: '`SHA256:` and the base64 sha256 of the key' }
+              keytype: { type: string, const: ecdsa-sha2-nistp256 }
+              scheme: { type: string, const: ecdsa-sha2-nistp256 }
+              key: { type: string, description: 'The public key: base64 DER SubjectPublicKeyInfo' }
+              expires: { type: [string, 'null'], format: date-time, description: 'null: no expiry' }
+
+    BrokenDependencies:
+      type: object
+      description: |
+        Keys are `id#version` of the package versions with broken dependencies; each
+        value lists the unresolvable dependencies as `id@version`. `date` is when the
+        report was generated.
+      required: [date]
+      properties:
+        date: { type: string, format: date-time }
+      additionalProperties:
+        type: array
+        items: { type: string }
+      example:
+        date: '2026-10-04T00:00:00.000Z'
+        'example.fhir.ig#1.0.0': ['hl7.fhir.uv.missing@2.0.0']
+
+    NpmCheckReport:
+      type: object
+      description: The result of running the npm registry protocol checks against a registry.
+      required: [registry, package, version, started, finished, passed, failed, steps, requests]
+      properties:
+        registry: { type: string, format: uri }
+        package: { type: string }
+        version: { type: string }
+        started: { type: string, format: date-time }
+        finished: { type: string, format: date-time }
+        passed: { type: integer, description: Checks that passed }
+        failed: { type: integer, description: Checks that failed }
+        steps:
+          type: array
+          items:
+            type: object
+            required: [id, title, request, checks]
+            properties:
+              id: { type: string, enum: [search, package, version, tarball] }
+              title: { type: string }
+              request: { type: string, description: The request the step is about }
+              checks:
+                type: array
+                items:
+                  type: object
+                  required: [step, title, uses, status]
+                  properties:
+                    step: { type: string }
+                    title: { type: string }
+                    status: { type: string, enum: [pass, fail] }
+                    message: { type: string, description: Why the check failed }
+                    uses:
+                      type: array
+                      description: The requests (keys of `requests`) the check is based on
+                      items: { type: string }
+        requests:
+          type: object
+          description: Every request the checks made, by name.
+          additionalProperties:
+            type: object
+            required: [url]
+            properties:
+              url: { type: string, format: uri }
+              status: { type: integer }
+              contentType: { type: string }
+              bytes: { type: integer }
+              error: { type: string, description: Why the request failed, when it did }
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { type: string }
+        message: { type: string }
+        parameter: { type: string, description: The offending parameter, for repeated parameters }

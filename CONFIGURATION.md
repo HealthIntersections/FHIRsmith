@@ -1,0 +1,426 @@
+# FHIRsmith Configuration
+
+The server is configured by `config.json` in the data directory (see
+[Data Directory](README.md#data-directory)), plus a few environment variables.
+`config-template.json` is a starting point: it has every section, with comments, and every
+module turned off - set `"enabled": true` on the ones you run. `config.json` is JSON, except that
+it may have comments: `//` to the end of the line, and `/* ... */`.
+
+Upgrading? See [Upgrading to 1.0.0](#upgrading-to-100).
+
+To check a configuration without starting the server, see [Checking the configuration](#checking-the-configuration).
+
+The top level of `config.json` has the server-wide settings described here, and a
+`modules` section with an entry for each module (see [Modules](#modules)).
+
+## Checking the configuration
+
+`node server.js --check` (or `-t`, as with `nginx -t`; `npm run check`; `fhirsmith --check` for a
+global install) checks the configuration and exits, without starting anything: no folder is
+made, nothing is written to the log, no database is opened and nothing is downloaded. It prints
+one line for each problem and a verdict, and exits 0 if there are no errors, 1 if there are:
+
+```
+fhirsmith: [info] modules: enabled: packages, tx
+fhirsmith: [warn] modules.tx.cacheTimout: is not a setting FHIRsmith knows: did you mean cacheTimeout? It is ignored
+fhirsmith: [error] modules.tx.externalLimit: is 200000, more than internalLimit (100000): an expansion can't return more codes than it builds
+fhirsmith: the configuration file /var/lib/fhirsmith/config.json test failed (1 error, 1 warning)
+```
+
+It checks:
+
+- that `config.json` reads (as JSON with comments)
+- every setting against the settings FHIRsmith has: one it doesn't know is a **warning** (the
+  server ignores it, so it is usually a typo, with the setting it may have meant). A key that
+  starts with `_` or `x-` is taken to be parked on purpose, and isn't reported. A module that
+  isn't enabled isn't checked, beyond being an object
+- settings that have been replaced (an error, naming the replacement), and settings the server
+  sets itself (an error: they can't be set in the file)
+- types, ranges and allowed values: ports, sizes, limits, cron schedules, choices such as
+  `logging.level`, and settings that go together (the tx expansion limits)
+- for enabled modules, the files the configuration names: the tx library (which must parse, with
+  well-formed sources and unique id prefixes, and `folder:`/`file:` sources that exist), the SHL
+  certificates, the publisher's GitHub App key
+- that the data folder, the log folder and the terminology cache are writable, or can be made
+- the environment: the Node.js version, and that the native SQLite modules load (they must be
+  built for this Node.js: see [Changing the Node.js version](README.md#changing-the-nodejs-version))
+
+It does not reach out to anything: an address in the configuration isn't tried, and the
+databases the library downloads aren't looked for.
+
+With a role (`node server.js --check --role=tx-worker --instance-code=tx1`, or `FHIRSMITH_ROLE`),
+it also checks what the role makes of the configuration. `node cluster.js --check` (or
+`fhirsmith-cluster --check`), with the launcher's own flags, checks the launcher's settings and
+the configuration as the master and each worker will have it, and reports the ports and the
+number of workers it would start (see [cluster.md](cluster.md)).
+
+As it starts, the server logs the same errors and warnings (`Configuration: ...`) and goes on:
+what it can't run with, it refuses as it starts, as it always has.
+
+Where to run it:
+
+- by hand, after editing `config.json`, before restarting the server
+- under systemd, as `ExecStartPre=/usr/bin/node server.js --check` (or `cluster.js --check`): a
+  configuration with errors then stops the start, and `systemctl status` shows why
+- with Docker, against the mounted data folder before replacing the running container:
+  `docker run --rm -e FHIRSMITH_DATA_DIR=/app/data -v /path/to/data:/app/data ghcr.io/healthintersections/fhirsmith:latest node server.js --check`,
+  or inside the running one: `docker exec fhirsmith node server.js --check`
+
+## Server
+
+Create a `config.json` file in your data directory (use `config-template.json` as a starting point):
+
+```json
+{
+  "hostName" : "[descriptive name for the server]",
+  "server": {
+    "port": 3000,
+    "cors": {
+      "origin": "*"
+    }
+  },
+  "modules": {
+    // per modules...
+  }
+}
+```
+
+`server.cors` is handed to the [cors](https://www.npmjs.com/package/cors) package. Don't set
+`"credentials": true`: with it, browsers let a script on another site - one on the same domain,
+such as `build.fhir.org` for `tx.fhir.org` - read what the logged in user sees. API clients send
+their token in a header, which needs no credentials mode. (The server also ignores a login
+cookie on a request whose `Origin` is another site.) `node server.js --check` warns about it.
+
+| Option | Default | Description |
+|---|---|---|
+| `server.maxBodyMB` | `50` | Largest request body accepted, in MB. A body is read whole into memory before it is parsed, so this bounds what one request can take. A bigger body gets a 413: an OperationOutcome (too-costly) on a tx endpoint, and the module's own handling elsewhere. The largest IG Publisher request seen on build.fhir.org was 1.39 MB, so 50 leaves plenty of room. The ips module reads its own bodies, with its own limit |
+
+Behind nginx, nginx's `client_max_body_size` is checked first. If it is lower than `maxBodyMB`, nginx refuses a bigger body with its own 413 HTML page before FHIRsmith sees it, so set it at or above `maxBodyMB` to get FHIRsmith's OperationOutcome; if it is higher, `maxBodyMB` applies. Requests of over 100 MB have been seen, caused by client-side issues: choose `maxBodyMB` (default 50) and the nginx limit with that in mind. See [nginx.md](nginx.md).
+
+### Memory
+
+`server.memory` sets the memory guard: fractions of the memory limit (the cgroup limit, such
+as `MemoryMax` on the systemd unit, or else the machine's RAM), measured against process RSS;
+with a role, against the whole cgroup's private memory (see [cluster.md](cluster.md#memory)).
+
+| Option | Default | Description |
+|---|---|---|
+| `server.memory.rejectFraction` | `0.85` | Above this, new requests get 503 + `Retry-After` |
+| `server.memory.abortFraction` | `0.92` | Above this, running operations are aborted with 422 too-costly |
+| `server.memory.trimAllocator` | `false`; `true` with a role | Whether the server returns the C allocator's free memory (`malloc_trim`, Linux) while refusing, and, with a role, once after loading. Without a role it is off unless set `true`; with one, `false` is for diagnosis. See [cluster.md](cluster.md#memory) |
+
+### Cluster
+
+To use more than one CPU core for terminology on one machine, a master and several tx
+workers share the data directory and `config.json` (started by `node cluster.js`, or by hand
+with `--role`). Their settings are in `server.cluster`, documented with the arrangement in
+[cluster.md](cluster.md): the launcher's (`workers`, `maxOutstanding`, `queueSeconds`,
+`recycleSeconds`, the fast lane, ...) under
+[The launcher](cluster.md#the-launcher-clusterjs), and what the processes share
+(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`) under
+[Options](cluster.md#options). With no role, `server.cluster` is ignored.
+The status panel's snapshot of every process (`statusSeconds`) is under
+[Status](cluster.md#status).
+
+### Statistics
+
+`stats` sets the request counters and the graphs on `/` and `/dashboard`.
+
+| Option | Default | Description |
+|---|---|---|
+| `stats.enabled` | `true` | `false`: the counters are kept in memory only |
+| `stats.database` | `stats.db` | The counters' SQLite file, under the data folder's `databases` directory |
+| `stats.intervalMinutes` | `10` | How often the counters are written to the database; also the graphs' sample interval, unless `sampleSeconds` is set (a server with no role, as before) |
+| `stats.sampleSeconds` | `intervalMinutes`; with a role, 60 at most | How often the graphs take a sample. With a role (cluster.md), at most a minute unless set, so the graphs of a short session can be read. The graphs show 24 hours; under the launcher at most 1,440 samples a process, so with less than a minute they show less. The counters are still written every `intervalMinutes` |
+
+## Logging
+
+Add a `logging` section to `config.json` to control log behaviour. All fields are optional and have sensible defaults:
+
+```json
+{
+  "logging": {
+    "level": "info",
+    "console": true,
+    "consoleErrors": false,
+    "maxFiles": 14,
+    "maxSize": "50m",
+    "flushInterval": 2000,
+    "flushSize": 200
+  }
+}
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `level` | `"info"` | Minimum level to log: `error`, `warn`, `info`, `debug`, or `verbose` |
+| `console` | `true` | Write log lines to stdout/stderr. Disable when running as a systemd service where console output goes to the journal and is redundant |
+| `consoleErrors` | `false` | Whether `error` and `warn` levels appear on the console. When `false`, errors and warnings are written to the log file only |
+| `maxFiles` | `14` | Number of daily log files to retain before old ones are deleted |
+| `maxSize` | `0` (unlimited) | Maximum size per log file before rotation. Accepts human-readable strings: `"20m"`, `"1g"`, or a raw byte count |
+| `flushInterval` | `2000` | Milliseconds between buffered writes to disk. Increase to reduce I/O under heavy load |
+| `flushSize` | `200` | Number of buffered log lines that trigger an immediate flush regardless of the timer |
+| `stallReportSeconds` | `30` | When the event loop hasn't run for this long (seconds) - a request holding the process with code that never yields - a watchdog thread reads the main thread's stack, and again every as long while the stall lasts (up to 5 times). The stacks go to `logs/stall-<instance code or pid>-<time>.txt` straight away, and into the log as a warning once the event loop runs again. On Linux the file also has, for each second of the stall, what `/proc` says: the main thread's state (`R` running, `D` waiting on the disk, `S` sleeping) and what it waits in, the CPU time it used and the major page faults it took, the process's RSS and swap, the machine's pressure (PSI: cpu, io, memory) and its available, dirty and writeback memory; and a summary over the stall, which goes into the log too. A stack that is empty says the thread wasn't running JavaScript; these say why: CPU time going up is native code, `D` with page faults is the disk or memory, `R` with little CPU time a machine short of CPU. 0: not watched |
+
+The event loop held for 2 seconds or more - synchronous work during which the process answers
+nothing - is logged as a warning, with the requests that were in flight when it began, those that
+finished as it ended first (most likely the one that held it):
+`Event loop blocked for 12.3s; in flight when it began: GET /r4/CodeSystem?url=... (finished as it ended), ...`.
+Each one is counted too, for the daily report (below). This isn't configurable; `stallReportSeconds`
+is for the long ones, while they are still going on (`library/block-monitor.js`).
+
+Errors that are the answer to a request - a client error (4xx) such as an unknown code, an unknown code system or cache-id, or a bad `Accept-Language` - aren't logged: the request's own log line has its status. They are logged (with their stack) when `level` is `debug`.
+
+Log files are written to the `logs/` subdirectory of the data directory as `server-YYYY-MM-DD.log`. A `server.log` symlink always points to the current day's file, so `tail -f data/logs/server.log` tracks the active log without needing to know the date.
+
+## Email and the Daily Report
+
+The server can email a short markdown report on itself once a day. It needs two things in
+`config.json`: an SMTP server to send through, and someone to send to:
+
+```json
+{
+  "email": {
+    "host": "smtp.example.org",
+    "port": 587,
+    "user": "fhirsmith",
+    "password": "...",
+    "from": "FHIRsmith <fhirsmith@example.org>"
+  },
+  "dailyReport": {
+    "to": ["ops@example.org"]
+  }
+}
+```
+
+`user`/`password` are optional (an open relay); `secure` defaults to true for port 465 and
+to STARTTLS otherwise. Without an `email` block nothing is emailed, and without
+`dailyReport.to` there's no report (`dailyReport.enabled: false` turns it off explicitly).
+
+The report, titled "`{hostName}` daily report", goes out at midnight (the server's local
+time), or as soon as the server is up again if it was down at midnight. It has a paragraph
+on the server's stability since the last report - how much of the time it was up, restarts,
+the longest outage, any upgrade (from the run history in the statistics database, so
+`stats.enabled: false` leaves the uptime unknown), and how many times the event loop was held
+for 2, 5 and 10 seconds or more (see [Logging](#logging)); under the launcher (`cluster.js`), a
+paragraph on the cluster - processes that exited or were recycled, how long they were
+unavailable, and the requests the launcher refused or abandoned itself (see
+[cluster.md](cluster.md#the-daily-report)); a paragraph from each running module that
+has something to report (by default, none do); and a paragraph on the system - version,
+Node.js and OS, how long this run has been up, the log files and the free disk space they're
+drawing on, plus anything the npm audit check has found (packages with known vulnerabilities and
+what to do about them, or a newer FHIRsmith release). If any background task's last run failed, a
+final section lists them. When the last report was sent is kept in `daily-report.json` in the data
+directory.
+
+A module takes part by implementing `dailyReport({since, now})`, returning its paragraph as
+markdown (or a promise of it); an empty return means it has nothing to say that day. The
+request counts a module quotes come from `stats.countsSince(since, now)`, the per-operation
+counts in the statistics database for the period. The modules that report:
+
+| Module | Reports |
+|---|---|
+| Users and logins ([library/auth](library/auth/README.md)), first, when there are any accounts | logins (with a password, with GitHub, with Google), failed logins (altogether, for names that aren't accounts, and for each account), the user accounts (disabled, new), and the sessions logged in now |
+| Terminology server | how many of each operation were performed, over all its endpoints |
+| Terminology server registry | client requests answered by the API, servers registered, and any server that answered none of the registry's scans in the period |
+| Packages | packages served (tarball downloads) and new package versions found by the crawler |
+| XIG | pages served, and whether the database could be accessed (and whether the last download failed) |
+| Testing | pages served, test reports received, and the number held |
+| SMART Health Links | QR codes created (SMART Health Links and Verifiable Health Links), link accesses, and the documents stored to serve them |
+| IPS | pages served, IPS documents received, and the number stored |
+| Publisher | publication runs started, and how many finished successfully |
+
+## Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `FHIRSMITH_DATA_DIR` | Path to the data directory | `./data` |
+| `PORT` | Server port (overrides config) | from config.json |
+| `FHIRSMITH_ROLE` | `master` or `tx-worker`, as `--role` (see [cluster.md](cluster.md#roles)). Not set: an ordinary single server | none |
+| `FHIRSMITH_INSTANCE_CODE` | This process's cache-id prefix, as `--instance-code` (see [cluster.md](cluster.md#roles)) | a master: `modules.tx.instanceCode`, and with none it stops with an error; a worker: none, and it stops with an error. The launcher gives `m0`, `tx1`, ... |
+| `FHIRSMITH_WORKERS` | How many tx-workers `node cluster.js` starts, as `--workers` (`server.cluster.workers`) | from the CPUs and memory |
+| `FHIRSMITH_CACHE_WAIT_MS` | How long a tx-worker waits for the master to build a cache it reads (see [cluster.md](cluster.md#what-runs-where)) | `300000` (5 minutes) |
+| `NODE_ENV` | Node environment. Express and other libraries check it (in development mode, Express's error pages include stack traces). If it isn't set the server sets it to `production`, or to `development` when run with `npm run dev` | `production` |
+| `SUPPRESS_LOGS` | `true`: the log isn't written to the console unless `logging.console` says it is - this changes the default (the log files are written either way). CI runs the tests with it: the code under test logs tens of thousands of lines, which bury the results and get the job's log truncated | not set |
+| `UV_THREADPOOL_SIZE` | Threads in libuv's pool, which runs the sqlite3 queries (LOINC, RxNorm, ICD-11, VSAC, the packages and XIG databases), file reads and async gzip. Node's own default is 4, which a few slow queries can fill, holding everything else up. Each process (each cluster worker) has its own pool | `16` |
+
+## Users and logins
+
+The top-level `auth` block configures the server's one login system: the users, roles and API
+tokens of every module, who the administrators are, and logging in with GitHub and Google. See
+[library/auth/README.md](library/auth/README.md). In brief:
+
+```json
+"auth": {
+  "sessionSecret": "a long random string",
+  "administrators": ["you@example.org", "github:yourname", "google:you@gmail.com"],
+  "github": { "clientId": "...", "clientSecret": "..." },
+  "google": { "clientId": "....apps.googleusercontent.com", "clientSecret": "..." }
+}
+```
+
+An administrator's password is set from a link: *Forgotten your password?* on the login page
+(emailed, so `email` must be configured), or `node server.js --password-link you@example.org` on
+the server.
+
+## Keys
+
+The top-level `keystore` block turns on the server's key store: public keys anyone can see at
+`/keys` (and as a JWKS at `/keys/jwks.json`), uploaded by users, and key pairs the server makes
+and holds for users and for itself, to sign with when a module asks. See
+[library/keystore/README.md](library/keystore/README.md).
+
+```json
+"keystore": { "enabled": true }
+```
+
+The private keys are in a database of their own (`keystore-private.db`, mode 0600) in the
+databases folder.
+
+## Modules
+
+Each module has its own entry under `modules`, documented with the module:
+
+| Module | Configuration |
+|---|---|
+| `tx` - terminology server | [tx/README.md](tx/README.md#configuration) |
+| `registry` - terminology server registry | [registry/documentation/configuration.md](registry/documentation/configuration.md) |
+| `packages` - package server | [packages/readme.md](packages/readme.md) |
+| `shl` - SMART Health Links | [shl/readme.md](shl/readme.md) |
+| `ips` - IPS documents | [ips/readme.md](ips/readme.md) |
+| `testing` - test reports | [testing/readme.md](testing/readme.md) |
+| `folder` | [folder/readme.md](folder/readme.md) |
+| `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |
+| `xig` | [xig/readme.md](xig/readme.md) |
+| `vcl` | [vcl/readme.md](vcl/readme.md) |
+| `publisher` | [publisher/readme.md](publisher/readme.md) |
+
+## Upgrading to the single login
+
+The modules' own logins, users and passwords are gone: the server has one login system
+([library/auth](library/auth/README.md)). Users are not carried over - start again:
+
+1. add the `auth` block (above): `sessionSecret`, and yourself in `administrators`
+2. set your password (*Forgotten your password?*, or `node server.js --password-link {email}`), or log in with GitHub or Google
+3. give users the modules' roles on `/auth/admin/users` (IPS project managers also on the IPS projects page), and make API tokens for the software that used the old shared tokens (packages crawl, testing submissions and deletes, `/shl/create`, folder uploads, a secured registry's clients)
+4. take the old settings out. Until then they are warnings in the log and in `--check`, and the old shared tokens are no longer accepted - but a registry with `security.apiToken` or `users`, and a testing module with `token`, stay closed rather than open
+
+The table of old settings and what replaces each is in [library/auth/README.md](library/auth/README.md#upgrading).
+Two to keep: copy `modules.ips.sessionSecret` to `modules.ips.aiKeySecret` if projects keep
+their own AI keys (they were encrypted with it), and in a pool of instances behind one host
+name, share `auth.database` and `auth.sessionSecret` between them ([nginx.md](nginx.md)).
+
+## Upgrading to 1.0.0
+
+1.0.0 is a big upgrade from 0.17 and 0.18. Most servers won't need to change any settings, but
+every operator should check these. Each item says who it affects; the [CHANGELOG](CHANGELOG.md)
+has the detail.
+
+### Every server
+
+- **Node.js 24** or later (`engines` in package.json). After upgrading Node, `npm ci` (there
+  are new dependencies) - or `npm rebuild` for the native ones.
+- **Start command**: `npm start` is now `node --expose-gc server.js`. A service that runs
+  `node server.js` still works (the memory guard sets the flag itself), but add `--expose-gc`.
+  `--port` or `--instance-code` without `--role` now stops the server with an error (they used
+  to be ignored): drop them from a single server's command line.
+- **`NODE_ENV`** is `production` when it isn't set (`npm run dev`: `development`). Set it
+  yourself if you relied on development mode (Express's error pages with stack traces).
+- **Keep-alive**: idle connections are kept for 65 s (was Node's 5 s), longer than nginx's
+  upstream `keepalive_timeout` (60 s by default). If you set nginx's higher, keep it under 65 s.
+- **Memory guard** (new, on by default): above 85% of the memory limit (the cgroup's - systemd
+  `MemoryMax` - or else the machine's RAM) new requests get 503, and above 92% running
+  operations are aborted (422). If your memory limit is tight, check `server.memory` ([Memory](#memory)).
+- **Request size**: `server.maxBodyMB` (default 50) is now a setting. nginx's
+  `client_max_body_size` must be at least as big, or clients get nginx's HTML 413 rather than an
+  OperationOutcome.
+- **`config.json` may have comments** (`//` and `/* */`), and `config-template.json` now has
+  every module turned off.
+- **New, optional**: `email` and `dailyReport.to` ([the daily report](#email-and-the-daily-report) -
+  nothing is sent without both), `npmAudit` (a periodic `npm audit` of the server; set
+  `"enabled": false` on a server with no internet access), `accessibility.checkPanel`,
+  `stats.sampleSeconds`.
+- **Cluster mode** (`node cluster.js`, [cluster.md](cluster.md)) is new and opt-in: `server.js`
+  runs as before.
+
+### tx (terminology server)
+
+- **Expansion limits**: the defaults are now `externalLimit` 10000 (was 3000) and `internalLimit`
+  100000 (was 10000), and there's a new `walkLimit` (default 10 x `internalLimit`) for paging.
+  The three are checked at startup: one that isn't a whole number above 0, or
+  external <= internal <= walk not holding, **stops the server**. If you set any of them, check
+  them. Bigger expansions now succeed, so a busy server may use more memory.
+- **Value sets with an exclude or an import are limited** like any other (they used to come
+  back whole, whatever their size): a client that expands a big one unpaged now gets a 422
+  too-costly, and should page it.
+- **`Tools/Java` is no longer special**: the IG Publisher and the tx-ecosystem test runner get
+  the configured limits like any client (they used to be held to 3000/10000).
+- **`x-too-costly-threshold`** can only lower the limit: a value above `internalLimit` is cut
+  down to it, and `0` (or anything that isn't a positive whole number) is ignored - it no
+  longer means "no limit".
+- **Memory caps** with defaults (see the `Limits:` line in the startup log): `cacheMaxConcepts`,
+  `cacheMaxTotalConcepts`, `expansionCacheMaxCodes`, `usageTrackerMaxCodes`,
+  `usageTrackerMaxCodeLength`, `languageTagCacheSize`. A client may now get `cache-id-unknown`
+  (or 422) for a `$cache-control` cache that grew too big.
+- **New, optional**: `snomed` (load SNOMED CT editions memory-mapped, or prewarmed - see
+  tx/README.md), and `ecosystem` (`$validate-code` for code systems held by other servers in
+  the terminology ecosystem; off by default).
+- **`pruneTerminologyCache`** (new, default false): delete the databases, caches and packages
+  in `terminology-cache` that the library no longer uses. Turn it on for a server that has the
+  data directory to itself.
+- **`instanceCode`** is checked at startup, and a cluster master needs one.
+- **VSAC** (`vsacCfg`): the default `baseUrl` is https (an http one is logged as a warning);
+  value sets are read from the database when asked for, with a cache sized by `valueSetCacheMB`
+  (default 64); a value set version VSAC doesn't have is now not found.
+- **Language packs**: a `lang-pack` or `extension-codes` supplement is used without being
+  referenced only when it is marked `codesystem-supplement-global` = `true`. The
+  `global-lang-pack` code is gone. If you load language packs, check they are marked.
+- **Behaviour, with no setting**: `regex` filters match the whole value (LOINC regex value sets
+  may select fewer codes); ICD-11 codes are entity ids; a resource that both THO and a core
+  package provide is available in both versions; for LOINC answer lists, `answers-for` is the
+  filter (`LIST` still works, for backwards compatibility only); `$cache-control` caches are
+  never carried over a restart.
+- **Rebuilds** (optional, for the new features): SNOMED CT caches for alternate identifiers and
+  concrete values, and any built in a time zone ahead of UTC (their effectiveTimes are a day
+  early); the LOINC database for its mappings, its Part translations (`PartName` designations,
+  from every linguistic variant) and without the blank answer code that externally defined
+  answer lists added. RxNorm's new index is added to an existing database at load. Coming from
+  0.16 or earlier, the package value set and concept map caches rebuild themselves once, so
+  the first start is slower.
+
+### Other modules
+
+- **registry**: `maxResponseMB` (default 100) limits what the crawler reads from a server. New,
+  optional: `oauth`, client credentials for servers that need a token to be scanned.
+- **packages**: the crawler refuses packages over its new limits (`maxDownloadMB` 250,
+  `maxUnpackedMB` 4096, `maxFileMB` 50, `maxFiles` 250000); raise them only if a real package
+  is refused.
+- **packages, signing** (on by default, `npmSigning`): the registry signs every version, so
+  `npm audit signatures` works against it. At the first start it makes its key,
+  `npm-signing-key.pem` next to the database (`npmSigning.keyFile`) - **back it up**: clients
+  check signatures against the published key - and signs the versions it already holds in the
+  background (`/packages/-/npm/v1/keys` is a 404 until it's done; progress in `/packages/status`).
+  Set `"enabled": false` to opt out.
+- **packages, publishers' signatures**: `crawler.signatures` defaults to `check` (a signature
+  that fails is logged and the package stored anyway); `require` refuses unsigned packages and
+  doesn't read feeds that list no keys. Feeds' keys are in `package-feeds.json`.
+- **packages, `/packages/feed-check`** (on by default, `feedCheck`): anyone can have the server
+  download and check a feed's packages (one run at a time, at most `maxItems` 50 and
+  `maxTotalMB` 500). Set `"enabled": false` if you don't want that on your server.
+- **xig**: `POST /xig/update` only works when `updateToken` is set.
+- **ext-tracker**: set `token` (the IG Publisher's) so only the publisher can submit.
+- **token**: the JSON API takes the API key in a header (`Authorization: Bearer` or
+  `X-API-Key`), not the URL - clients must change. The session cookie is now `Secure` when the
+  request came over https, which behind nginx needs `X-Forwarded-Proto` (`cookieSecure`
+  overrides).
+- **publisher**: the administrator's password is now `adminPassword` in the config (set at
+  every start). Without it, an administrator that still has the old fixed default password
+  (`admin123`) gets a random one at startup, which is logged - set `adminPassword`, or look in
+  the log.
+- **ips**: to use a validator jar of your own, set `validator.jar`, rather than replacing
+  `bin/validator_cli.jar`. `validator.checkIpsCodes` is gone (validator 7.0.4 refuses it);
+  `validator.autoLoadPackages` (default true) lets the validator load the packages that define
+  extensions it doesn't know.
+
+There are no manual data migrations: the databases that changed migrate themselves at startup.
+

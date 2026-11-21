@@ -9,10 +9,14 @@ const { TxParameters } = require('../params');
 const { OCLSourceCodeSystemFactory, OCLBackgroundJobQueue } = require('./cs-ocl');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS } = require('./shared/constants');
 const { createOclHttpClient } = require('./http/client');
-const { CACHE_VS_DIR, getCacheFilePath } = require('./cache/cache-paths');
-const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes } = require('./cache/cache-utils');
+const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
+const { PublicAccessChecker } = require('./resolve/public-access');
+const { CACHE_VS_DIR, VS_DISCOVERY_SNAPSHOT_PATH, getCacheFilePath } = require('./cache/cache-paths');
+const { ensureCacheDirectories, getColdCacheAgeMs, formatCacheAgeMinutes, atomicWriteFile, getColdCacheMtimeMs, cleanupStaleTmpFiles } = require('./cache/cache-utils');
 const { computeValueSetExpansionFingerprint } = require('./fingerprint/fingerprint');
 const { ensureTxParametersHashIncludesFilter, patchValueSetExpandWholeSystemForOcl } = require('./shared/patches');
+const Logger = require('../../library/logger');
+const oclVsLog = Logger.getInstance().child({ module: 'ocl-vs' });
 
 
 ensureTxParametersHashIncludesFilter(TxParameters);
@@ -38,9 +42,20 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     const options = typeof config === 'string' ? { baseUrl: config } : (config || {});
 
     this.org = options.org || null;
+    this.cluster = options.cluster || null;
     const http = createOclHttpClient(options);
     this.baseUrl = http.baseUrl;
     this.httpClient = http.client;
+
+    // Resolves a canonical to its OCL repo authoritatively. Disabled without a
+    // token, in which case the search paths below run exactly as before.
+    this.publicAccess = new PublicAccessChecker({ httpClient: this.httpClient, logger: oclVsLog });
+    this.referenceResolver = new OclReferenceResolver({
+      httpClient: this.httpClient,
+      token: options.token || null,
+      logger: oclVsLog,
+      publicAccess: this.publicAccess
+    });
 
     this.valueSetMap = new Map();
     this._idMap = new Map();
@@ -62,6 +77,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     this.valueSetFingerprints = new Map();
     this._initialized = false;
     this._initializePromise = null;
+    this._followerCacheMtimes = new Map();
+    this._followerVsSnapshotMtimeMs = null;
+    this._lastVsSnapshotHash = null;
     this.sourcePackageCode = this.org
       ? `ocl:${this.baseUrl}|org=${this.org}`
       : `ocl:${this.baseUrl}`;
@@ -112,6 +130,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
             id: cached.canonicalUrl
           }, 'R5');
           this.#applyCachedCompose(valueSetObj, paramsKey);
+          this.#prefixId(valueSetObj);
           // Indexa o ValueSet restaurado para torná-lo disponível via fetchValueSet
           this.valueSetMap.set(valueSetObj.url, valueSetObj);
           if (valueSetObj.version) {
@@ -120,20 +139,143 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
           this.valueSetMap.set(valueSetObj.id, valueSetObj);
           this._idMap.set(valueSetObj.id, valueSetObj);
           this.valueSetFingerprints.set(cacheKey, cached.fingerprint || null);
+
+          const mtimeMs = getColdCacheMtimeMs(filePath);
+          if (mtimeMs != null) {
+            this._followerCacheMtimes.set(filePath, mtimeMs);
+          }
+
           loadedCount++;
         } catch (error) {
-          console.error(`[OCL-ValueSet] Failed to load cold cache file ${file}:`, error.message);
+          oclVsLog.error(`Failed to load cold cache file ${file}: ${error.message}`);
         }
       }
 
       if (loadedCount > 0) {
-        console.log(`[OCL-ValueSet] Loaded ${loadedCount} ValueSet expansions from cold cache`);
+        oclVsLog.info(`Loaded ${loadedCount} ValueSet expansions from cold cache`);
       }
     } catch (error) {
       if (error.code !== 'ENOENT') {
-        console.error('[OCL-ValueSet] Failed to load cold cache:', error.message);
+        oclVsLog.error(`Failed to load cold cache: ${error.message}`);
       }
     }
+  }
+
+  async #writeVsDiscoverySnapshot(collections) {
+    try {
+      await ensureCacheDirectories(CACHE_VS_DIR);
+      const entries = collections.filter(c => c && (c.canonical_url || c.canonicalUrl || c.url)).map(c => ({
+        id: c.id,
+        canonical_url: c.canonical_url || c.canonicalUrl || c.url,
+        version: c.version || null,
+        name: c.name || c.id,
+        full_name: c.full_name || c.fullName || c.name || c.id,
+        description: c.description || null,
+        publisher: c.publisher || c.owner || null,
+        owner: c.owner || null,
+        owner_type: c.owner_type || c.ownerType || null,
+        default_locale: c.default_locale || c.defaultLocale || null,
+        experimental: c.experimental || false,
+        immutable: c.immutable || false,
+        preferred_source: c.preferred_source || c.preferredSource || null,
+        concepts_url: c.concepts_url || c.conceptsUrl || null,
+        expansion_url: c.expansion_url || c.expansionUrl || null,
+        short_code: c.short_code || c.shortCode || null,
+        updated_on: c.updated_on || c.updatedOn || c.updated_at || c.updatedAt || null
+      }));
+      const payload = JSON.stringify({ version: 1, entries }, null, 2);
+
+      const crypto = require('crypto');
+      const newHash = crypto.createHash('sha256').update(payload).digest('hex');
+      if (newHash === this._lastVsSnapshotHash) {
+        return;
+      }
+
+      await atomicWriteFile(VS_DISCOVERY_SNAPSHOT_PATH, payload);
+      this._lastVsSnapshotHash = newHash;
+      oclVsLog.info(`VS discovery snapshot written (${entries.length} entries)`);
+    } catch (error) {
+      oclVsLog.error(`Failed to write VS discovery snapshot: ${error.message}`);
+    }
+  }
+
+  async #initializeFromVsDiscoverySnapshot() {
+    try {
+      const data = await fs.readFile(VS_DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+      const snapshotData = JSON.parse(data);
+      if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+        oclVsLog.warn('Follower: no VS discovery snapshot available yet');
+        return;
+      }
+
+      for (const collection of snapshotData.entries) {
+        const valueSet = this.#toValueSet(collection);
+        if (!valueSet) {
+          continue;
+        }
+        this.#indexValueSet(valueSet);
+      }
+
+      const mtimeMs = getColdCacheMtimeMs(VS_DISCOVERY_SNAPSHOT_PATH);
+      if (mtimeMs != null) {
+        this._followerVsSnapshotMtimeMs = mtimeMs;
+      }
+
+      oclVsLog.info(`Follower: initialized ${snapshotData.entries.length} value sets from VS discovery snapshot`);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        oclVsLog.error(`Failed to read VS discovery snapshot: ${error.message}`);
+      } else {
+        oclVsLog.warn('Follower: no VS discovery snapshot available yet');
+      }
+    }
+  }
+
+  #scheduleFollowerVsSnapshotCheck() {
+    if (this._vsSnapshotCheckPromise) {
+      return;
+    }
+
+    const mtimeMs = getColdCacheMtimeMs(VS_DISCOVERY_SNAPSHOT_PATH);
+    if (mtimeMs == null) {
+      return;
+    }
+    if (this._followerVsSnapshotMtimeMs != null && mtimeMs <= this._followerVsSnapshotMtimeMs) {
+      return;
+    }
+
+    this._vsSnapshotCheckPromise = (async () => {
+      try {
+        const data = await fs.readFile(VS_DISCOVERY_SNAPSHOT_PATH, 'utf-8');
+        const snapshotData = JSON.parse(data);
+        if (!snapshotData || !Array.isArray(snapshotData.entries)) {
+          return;
+        }
+
+        let newCount = 0;
+        for (const collection of snapshotData.entries) {
+          const canonicalUrl = collection.canonical_url || collection.canonicalUrl || collection.url;
+          if (!canonicalUrl || this.valueSetMap.has(canonicalUrl)) {
+            continue;
+          }
+          const valueSet = this.#toValueSet(collection);
+          if (!valueSet) {
+            continue;
+          }
+          this.#indexValueSet(valueSet);
+          newCount++;
+        }
+
+        this._followerVsSnapshotMtimeMs = mtimeMs;
+        if (newCount > 0) {
+          oclVsLog.info(`Follower: discovered ${newCount} new value sets from VS snapshot`);
+        }
+      } catch (error) {
+        oclVsLog.warn(`Follower: failed to reload VS discovery snapshot: ${error.message}`);
+      } finally {
+        this._vsSnapshotCheckPromise = null;
+      }
+    })();
   }
 
   async #saveColdCacheForValueSet(vs, compose, metadataSignature, dependencyChecksums, paramsKey = 'default') {
@@ -164,12 +306,12 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
         dependencyChecksums
       };
 
-      await fs.writeFile(cacheFilePath, JSON.stringify(cacheData, null, 2), 'utf-8');
-      console.log(`[OCL-ValueSet] Saved ValueSet compose to cold cache: ${canonicalUrl} (${conceptCount} concepts, fingerprint=${fingerprint?.substring(0, 8)})`);
+      await atomicWriteFile(cacheFilePath, JSON.stringify(cacheData, null, 2));
+      oclVsLog.info(`Saved ValueSet compose to cold cache: ${canonicalUrl} (${conceptCount} concepts, fingerprint=${fingerprint?.substring(0, 8)})`);
 
       return fingerprint;
     } catch (error) {
-      console.error(`[OCL-ValueSet] Failed to save cold cache for ValueSet ${canonicalUrl}:`, error.message);
+      oclVsLog.error(`Failed to save cold cache for ValueSet ${canonicalUrl}: ${error.message}`);
       return null;
     }
   }
@@ -190,26 +332,34 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
     this._initializePromise = (async () => {
       try {
-        // Load cold cache first
+        if (this.cluster !== 'follower') {
+          await cleanupStaleTmpFiles(CACHE_VS_DIR);
+        }
         await this.#loadColdCacheForValueSets();
 
-        const collections = await this.#fetchCollectionsForDiscovery();
-        console.log(`[OCL-ValueSet] Fetched ${collections.length} collections`);
+        if (this.cluster === 'follower') {
+          await this.#initializeFromVsDiscoverySnapshot();
+        } else {
+          const collections = await this.#fetchCollectionsForDiscovery();
+          oclVsLog.info(`Fetched ${collections.length} collections`);
 
-        for (const collection of collections) {
-          const valueSet = this.#toValueSet(collection);
-          if (!valueSet) {
-            continue;
+          for (const collection of collections) {
+            const valueSet = this.#toValueSet(collection);
+            if (!valueSet) {
+              continue;
+            }
+            this.#indexValueSet(valueSet);
           }
-          this.#indexValueSet(valueSet);
+
+          await this.#writeVsDiscoverySnapshot(collections);
         }
 
-        console.log(`[OCL-ValueSet] Loaded ${this.valueSetMap.size} value sets`);
+        oclVsLog.info(`Loaded ${this.valueSetMap.size} value sets${this.cluster === 'follower' ? ' (follower, from cold cache)' : ''}`);
         this._initialized = true;
       } catch (error) {
-        console.error(`[OCL-ValueSet] Initialization failed:`, error.message);
+        oclVsLog.error(`Initialization failed: ${error.message}`);
         if (error.response) {
-          console.error(`[OCL-ValueSet] HTTP ${error.response.status}: ${error.response.statusText}`);
+          oclVsLog.error(`HTTP ${error.response.status}: ${error.response.statusText}`);
         }
         throw error;
       }
@@ -222,7 +372,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
-  assignIds(ids) {
+  prefixIds() {
     if (!this.spaceId) {
       return;
     }
@@ -231,18 +381,27 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     this._idMap.clear();
 
     for (const vs of unique) {
-      if (!vs.id.startsWith(`${this.spaceId}-`)) {
-        const nextId = `${this.spaceId}-${vs.id}`;
-        vs.id = nextId;
-        vs.jsonObj.id = nextId;
-      }
+      this.#prefixId(vs);
       this._idMap.set(vs.id, vs);
-      ids.add(`ValueSet/${vs.id}`);
+    }
+  }
+
+  // value sets are served in this provider's id space - including the ones that arrive
+  // after the spaceId is assigned
+  #prefixId(vs) {
+    if (this.spaceId && vs.id && !vs.id.startsWith(`${this.spaceId}-`)) {
+      const nextId = `${this.spaceId}-${vs.id}`;
+      vs.id = nextId;
+      vs.jsonObj.id = nextId;
     }
   }
 
   async fetchValueSet(url, version) {
     this._validateFetchParams(url, version);
+
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
 
     // Fast path: skip URLs already known to not be in OCL
     if (this._negativeUrlCache.has(url)) {
@@ -320,6 +479,10 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
+
     const local = this.#getLocalValueSetById(id);
     if (local) {
       await this.#ensureComposeIncludes(local);
@@ -343,21 +506,17 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   #getLocalValueSetById(id) {
-    if (this._idMap.has(id)) {
-      return this._idMap.get(id);
-    }
-
-    if (this.spaceId && id.startsWith(`${this.spaceId}-`)) {
-      const unprefixed = id.substring(this.spaceId.length + 1);
-      return this._idMap.get(id) || this._idMap.get(unprefixed) || this.valueSetMap.get(unprefixed) || null;
-    }
-
-    return this._idMap.get(id) || this.valueSetMap.get(id) || null;
+    // _idMap is keyed by the ids the value sets are served with - prefixed, once the
+    // spaceId is assigned
+    return this._idMap.get(id) || null;
   }
 
   // eslint-disable-next-line no-unused-vars
   async searchValueSets(searchParams, _elements) {
     await this.initialize();
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+    }
     this._validateSearchParams(searchParams);
 
     const params = Object.fromEntries(searchParams.map(({ name, value }) => [name, String(value).toLowerCase()]));
@@ -389,6 +548,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   #indexValueSet(vs) {
+    this.#prefixId(vs);
     const existing = this.valueSetMap.get(vs.url) || null;
 
     // When fresh discovery metadata replaces a cold-cached entry, carry over
@@ -724,6 +884,11 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
 
     const sourceKeys = await this.#fetchCollectionSourceKeys(meta.conceptsUrl, meta.owner || null);
+    // Resolve every source's canonical in a single $resolveReference batch and seed
+    // the per-source cache, replacing one sequential GET per source. The loop below
+    // then reads from cache; anything the batch could not resolve falls through to
+    // the individual GET in #getSourceCanonicalUrl, so behaviour is unchanged.
+    await this.#primeSourceCanonicalsBatch(sourceKeys);
     for (const { owner, source } of sourceKeys) {
       const systemUrl = normalizeCanonicalSystem(await this.#getSourceCanonicalUrl(owner, source));
       if (systemUrl && !seen.has(systemUrl)) {
@@ -978,8 +1143,72 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     vs.jsonObj.compose = structuredClone(cached.compose);
   }
 
+  #followerCheckColdCache(vs, options = {}) {
+    const canonicalUrl = vs?.url;
+    const version = vs?.version || null;
+    if (!canonicalUrl) {
+      return;
+    }
+
+    const paramsKey = this.#expansionParamsKey(options.params || null);
+
+    (async () => {
+      try {
+        const cacheFilePath = getCacheFilePath(CACHE_VS_DIR, canonicalUrl, version, paramsKey);
+        const mtimeMs = getColdCacheMtimeMs(cacheFilePath);
+        if (mtimeMs == null) {
+          return;
+        }
+
+        const previousMtime = this._followerCacheMtimes.get(cacheFilePath);
+        if (previousMtime != null && mtimeMs <= previousMtime) {
+          return;
+        }
+
+        const data = await fs.readFile(cacheFilePath, 'utf-8');
+        const cached = JSON.parse(data);
+        if (!cached || !cached.canonicalUrl) {
+          return;
+        }
+
+        const compose = cached.compose || this.#composeFromExpansion(cached.expansion);
+        if (!compose || !Array.isArray(compose.include) || compose.include.length === 0) {
+          return;
+        }
+
+        const cacheKey = this.#expansionCacheKey(
+          { url: cached.canonicalUrl, version: cached.version || null },
+          cached.paramsKey || paramsKey
+        );
+        const createdAt = cached.timestamp ? new Date(cached.timestamp).getTime() : null;
+        this.backgroundExpansionCache.set(cacheKey, {
+          compose,
+          metadataSignature: cached.metadataSignature || null,
+          dependencyChecksums: cached.dependencyChecksums || {},
+          createdAt: Number.isFinite(createdAt) ? createdAt : null
+        });
+        this.valueSetFingerprints.set(cacheKey, cached.fingerprint || null);
+        this._followerCacheMtimes.set(cacheFilePath, mtimeMs);
+
+        if (vs.jsonObj) {
+          vs.jsonObj.compose = structuredClone(compose);
+        }
+
+        oclVsLog.info(`Follower: reloaded cold cache for ValueSet ${canonicalUrl} (params=${paramsKey})`);
+      } catch (error) {
+        oclVsLog.warn(`Follower: failed to reload cold cache for ValueSet ${canonicalUrl}: ${error.message}`);
+      }
+    })();
+  }
+
   #scheduleBackgroundExpansion(vs, options = {}) {
     if (!vs || !vs.jsonObj) {
+      return;
+    }
+
+    if (this.cluster === 'follower') {
+      this.#scheduleFollowerVsSnapshotCheck();
+      this.#followerCheckColdCache(vs, options);
       return;
     }
 
@@ -1104,9 +1333,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       // Ensure no stale inline expansion
       delete vs.jsonObj.expansion;
 
-      console.log(`[OCL-ValueSet] compose cached: ${vs.url} (${conceptCount} concepts)`);
+      oclVsLog.info(`compose cached: ${vs.url} (${conceptCount} concepts)`);
     } catch (error) {
-      console.error(`[OCL-ValueSet] ValueSet background expansion failed: ${cacheKey}: ${error.message}`);
+      oclVsLog.error(`ValueSet background expansion failed: ${cacheKey}: ${error.message}`);
     } finally {
       this.backgroundExpansionProgress.delete(cacheKey);
     }
@@ -1183,6 +1412,15 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
 
     const pending = (async () => {
+      // Ask OCL which repo holds this canonical. An authoritative answer skips
+      // the per-org text search below; without one (no token, or the endpoint is
+      // unavailable) we fall through to it.
+      const resolvedCollection = await this.#resolveCollectionViaReference(canonicalUrl, version);
+      if (resolvedCollection) {
+        this.collectionByCanonicalCache.set(lookupKey, resolvedCollection);
+        return resolvedCollection;
+      }
+
       const organizations = await this.#fetchOrganizationIds();
       const endpoints = organizations.length > 0
         ? organizations.map(orgId => `/orgs/${encodeURIComponent(orgId)}/collections/`)
@@ -1249,6 +1487,56 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
+  /**
+   * Resolve a ValueSet canonical to its OCL collection via $resolveReference,
+   * then fetch the collection object so it matches the shape the text-search path
+   * returns. Returns null when the resolver is disabled (no token), the endpoint
+   * is unavailable, OCL cannot resolve it, or the resolved repo is not a
+   * collection -- in every case the caller falls back to the search.
+   */
+  async #resolveCollectionViaReference(canonicalUrl, version) {
+    let resolved;
+    try {
+      resolved = await this.referenceResolver.resolve(
+        version ? { url: canonicalUrl, version } : canonicalUrl
+      );
+    } catch (error) {
+      oclVsLog.warn(`$resolveReference lookup failed for ${canonicalUrl}: ${error.message}`);
+      return null;
+    }
+
+    if (!resolved?.resolved || !resolved.repoUrl) {
+      return null;
+    }
+
+    // $resolveReference resolves any repo type; only collections are ValueSets.
+    if (!/[/]collections[/]/.test(resolved.repoUrl)) {
+      return null;
+    }
+
+    let collection;
+    try {
+      const response = await this.httpClient.get(resolved.repoUrl);
+      collection = response?.data || null;
+    } catch (error) {
+      oclVsLog.warn(`failed to fetch resolved collection ${resolved.repoUrl}: ${error.message}`);
+      return null;
+    }
+
+    if (!collection || typeof collection !== 'object' || !collection.id) {
+      return null;
+    }
+
+    // Honour an explicit version: the resolved repo is HEAD unless OCL matched a
+    // version, so a mismatch means fall back to the version-aware search.
+    if (version && (collection.version || null) !== version) {
+      return null;
+    }
+
+    oclVsLog.info(`$resolveReference resolved ${canonicalUrl} -> ${resolved.repoUrl}`);
+    return collection;
+  }
+
   #valueSetMetadataSignature(vs) {
     const meta = this.#getCollectionMeta(vs);
     const payload = {
@@ -1309,10 +1597,37 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
   }
 
   async #fetchCollectionsForDiscovery() {
+    // Prefer the global listing: one paginated crawl instead of one listing per
+    // org (N+1 requests). Org-only policy: user-owned collections are
+    // experimental by convention and not visible to the terminology service.
+    try {
+      const all = await this.#fetchAllPages('/collections/');
+      if (Array.isArray(all) && all.length > 0) {
+        const seen = new Set();
+        const orgOwned = [];
+        for (const collection of all) {
+          if (!collection || typeof collection !== 'object' || !isOrgOwned(collection)) {
+            continue;
+          }
+          const key = this.#collectionIdentity(collection);
+          if (seen.has(key)) {
+            continue;
+          }
+          seen.add(key);
+          orgOwned.push(collection);
+        }
+        if (orgOwned.length > 0) {
+          // Public-only: a private collection the token can see must not be served.
+          return await this.publicAccess.filterPublic(orgOwned);
+        }
+      }
+    } catch (error) {
+      oclVsLog.warn(`Global /collections/ listing failed (${error.message}); falling back to per-org discovery`);
+    }
+
     const organizations = await this.#fetchOrganizationIds();
     if (organizations.length === 0) {
-      // Fallback for OCL instances that expose global listing but not org listing.
-      return await this.#fetchAllPages('/collections/');
+      return [];
     }
 
     const allCollections = [];
@@ -1322,7 +1637,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       const endpoint = `/orgs/${encodeURIComponent(orgId)}/collections/`;
       const collections = await this.#fetchAllPages(endpoint);
       for (const collection of collections) {
-        if (!collection || typeof collection !== 'object') {
+        // Org-only policy applies to the per-org fallback too, not just the global
+        // listing (an org listing can still surface non-org-owned entries).
+        if (!collection || typeof collection !== 'object' || !isOrgOwned(collection)) {
           continue;
         }
         const key = this.#collectionIdentity(collection);
@@ -1334,7 +1651,8 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       }
     }
 
-    return allCollections;
+    // Public-only: a private collection the token can see must not be served.
+    return await this.publicAccess.filterPublic(allCollections);
   }
 
   async #fetchOrganizationIds() {
@@ -1350,7 +1668,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
 
     this._organizationIdsFetchPromise = (async () => {
       const endpoint = '/orgs/';
-      console.log(`[OCL-ValueSet] Loading organizations from: ${this.baseUrl}${endpoint}`);
+      oclVsLog.info(`Loading organizations from: ${this.baseUrl}${endpoint}`);
       const orgs = await this.#fetchAllPages(endpoint);
 
       const ids = [];
@@ -1468,7 +1786,7 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
         this.pendingCollectionConceptPageRequests.delete(cacheKey);
       }
     } catch (error) {
-      console.error(`[OCL-ValueSet] #fetchConceptPage ERROR: ${error.message}`);
+      oclVsLog.error(`#fetchConceptPage ERROR: ${error.message}`);
       throw error;
     }
   }
@@ -1781,6 +2099,63 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
     }
   }
 
+  /**
+   * Resolve many sources' canonicals in one $resolveReference batch, seeding
+   * sourceCanonicalCache. A no-op when the resolver is disabled (no token) or the
+   * batch fails: #getSourceCanonicalUrl then falls back to its per-source GET, so
+   * this only ever saves round trips, never changes the result.
+   */
+  async #primeSourceCanonicalsBatch(sourceKeys) {
+    if (!this.referenceResolver.isEnabled()) {
+      return;
+    }
+
+    // Only sources not already cached, deduplicated by owner|source.
+    const pending = [];
+    const seen = new Set();
+    for (const { owner, source } of sourceKeys || []) {
+      if (!owner || !source) {
+        continue;
+      }
+      const key = `${owner}|${source}`;
+      if (this.sourceCanonicalCache.has(key) || seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      pending.push({ key, ref: `/orgs/${encodeURIComponent(owner)}/sources/${encodeURIComponent(source)}/` });
+    }
+
+    if (pending.length === 0) {
+      return;
+    }
+
+    let results;
+    try {
+      results = await this.referenceResolver.resolveReferences(pending.map(p => p.ref));
+    } catch (error) {
+      oclVsLog.warn(`$resolveReference batch failed: ${error.message}`);
+      return;
+    }
+
+    // null => resolver disabled or unavailable mid-flight; leave the cache untouched
+    // so the per-source GET fallback runs.
+    if (!Array.isArray(results)) {
+      return;
+    }
+
+    let resolvedCount = 0;
+    for (let i = 0; i < pending.length; i++) {
+      const canonical = results[i]?.resolved ? results[i].canonical : null;
+      if (canonical) {
+        this.sourceCanonicalCache.set(pending[i].key, canonical);
+        resolvedCount++;
+      }
+    }
+    if (resolvedCount > 0) {
+      oclVsLog.info(`$resolveReference batch resolved ${resolvedCount}/${pending.length} source canonical(s) in one request`);
+    }
+  }
+
   #matches(json, params) {
     for (const [name, value] of Object.entries(params)) {
       if (!value) {
@@ -1790,6 +2165,16 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       switch (name) {
         case 'url':
           if ((json.url || '').toLowerCase() !== value) {
+            return false;
+          }
+          break;
+        case 'url:below':
+          if (!(json.url || '').toLowerCase().startsWith(value)) {
+            return false;
+          }
+          break;
+        case 'url:contains':
+          if (!(json.url || '').toLowerCase().includes(value)) {
             return false;
           }
           break;

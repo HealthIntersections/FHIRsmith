@@ -1,0 +1,75 @@
+# XIG - the Cross-IG resource browser
+
+The `xig` module serves the FHIR Cross-IG index: every conformance resource (profiles, value
+sets, code systems, extensions, ...) in every published implementation guide package, with a
+page for each and a searchable list.
+
+The content is a SQLite database built elsewhere, by the IG statistics process, and published
+at `https://fhir.org/guides/stats/xig.db`. This module downloads it and serves it read-only. It
+doesn't build or change it.
+
+This module exists to run fhir.org's own service; it isn't designed for anyone else to run,
+though nothing stops you.
+
+## Configuration
+
+In `config.json`, under `modules`:
+
+```json
+"xig": {
+  "enabled": true,
+  "autoUpdate": true,
+  "updateToken": "a-long-random-string"
+}
+```
+
+| Setting | Default | Description |
+|---|---|---|
+| `enabled` | false | Run the module, at `/xig` |
+| `autoUpdate` | true | Download the database again every night at 02:00 (server time). `false` keeps whatever is there |
+| `updateToken` | none | A shared secret for `POST /xig/update`, which downloads the database now. Send it in the `x-update-token` header (or from the form on `/xig/stats`). Without it, that endpoint is turned off. The nightly update doesn't need it |
+| `connections` | 4 | How many read-only connections to the database are kept open. A connection runs one query at a time, so with one, every XIG request waits behind any slow page (a crawler paging deep into a list). A connection is given one query at a time; the others wait for the first that is free (`library/sqlite-pool.js`) |
+| `baseUrl` | the request's | The public address the sitemap's URLs start with, e.g. `https://npm.fhir.org` (behind a proxy, the request's own address is only right if the proxy passes the host and scheme on) |
+
+The database is kept at `xig/xig.db` in the data directory. If it isn't there at startup, it is
+downloaded a few seconds after the server starts; until then the pages say there's no
+database. A download replaces the database only once it is complete.
+
+The database's HTML fragments are shown as they are, so the download URL is fixed to fhir.org
+(over https) and isn't a setting.
+
+## Endpoints
+
+| Path | What |
+|---|---|
+| `GET /xig` | The resource list, filtered by FHIR version (`ver`), authority (`auth`), realm (`realm`), resource type (`rt`), type (`type`), package (`pkg`), text (`text`) and `onlyUsed`; paged by `offset` |
+| `GET /xig/resource/{package}/{type}/{id}` | One resource |
+| `GET /xig/{package}/{type}/{id}` | The same, by a shorter path |
+| `GET /xig/stats` | Statistics: the database, its updates, and requests |
+| `GET /xig/status` | The database's status, as JSON |
+| `GET /xig/cache` | Cache statistics, as JSON |
+| `GET /xig/sitemap.xml` | A sitemap index for crawlers: files `sitemap-1.xml.gz`, `sitemap-2.xml.gz`... of 50,000 resource pages each, built when first asked for and kept until the database is next updated |
+| `POST /xig/update` | Download the database now (needs `updateToken`) |
+
+The list can be asked for as JSON or CSV as well as HTML (`_fmt=json` or `_fmt=csv`, or an `Accept` header), and a
+resource as JSON - the resource as it is in its package, sent gzipped when the client takes that.
+
+No list has more than 200 rows. The rest are paged by `offset`: in the HTML, with Start / Prev / Next links; in the JSON
+and CSV, with an `X-Total-Count` header (how many rows the filter matches) and a `Link` header (`first`, `prev`, `next`,
+`last`). A resource page's lists are paged the same way, by `usedByOffset`, `usesOffset` and `examplesOffset`. A
+resource bigger than 1 MB (as JSON) has no narrative or source on its page, only a link to it as JSON.
+
+Each request is logged when it finishes, with its status, how long it took and the size of the response.
+
+## Crawlers
+
+The lists can be filtered on every combination of version, authority, realm, type and resource
+type, and crawlers that follow the filter links ask for all of them: tens of thousands of pages,
+each a dozen database queries. The sitemap names every resource page instead, so the lists can be
+kept from crawlers - in robots.txt, served for the whole site (npm.fhir.org's comes from nginx):
+
+```
+User-agent: *
+Disallow: /xig?
+Sitemap: https://npm.fhir.org/xig/sitemap.xml
+```

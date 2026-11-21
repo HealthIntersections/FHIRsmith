@@ -18,8 +18,7 @@ function bundleToR5(jsonObj, sourceVersion) {
   for (let be of jsonObj.entry || []) {
     convertResourceToR5(be.resource, sourceVersion);
   }
-
-  throw new Error(`Unsupported FHIR version: ${sourceVersion}`);
+  return jsonObj;
 }
 
 /**

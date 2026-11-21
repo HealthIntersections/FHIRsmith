@@ -15,16 +15,21 @@ function terminologyCapabilitiesToR5(jsonObj, sourceVersion) {
   }
 
   if (VersionUtilities.isR4Ver(sourceVersion)) {
+    const contentExtUrl = "http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content";
     for (const cs of jsonObj.codeSystem || []) {
-      if (cs.content) {
-        let cnt = Extensions.readString(cs, "http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content");
-        if (cnt) {
-          delete cs.extensions;
-          cs.content = cnt;
+      // In R4 the content is carried only by the content extension (there is no
+      // native codeSystem.content), so read it from the extension directly.
+      const cnt = Extensions.readString(cs, contentExtUrl);
+      if (cnt) {
+        cs.content = cnt;
+        // Remove the now-redundant source extension (the field is `extension`,
+        // singular). Filter so any unrelated extensions are preserved.
+        cs.extension = (cs.extension || []).filter(e => e.url !== contentExtUrl);
+        if (cs.extension.length === 0) {
+          delete cs.extension;
         }
       }
     }
-
 
     return jsonObj;
   }

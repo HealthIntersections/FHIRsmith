@@ -1,0 +1,1920 @@
+{
+  "generatedFrom": "hl7.fhir.r5.core#5.0.0",
+  "schemas": {
+    "AnyResource": {
+      "type": "object",
+      "description": "A FHIR resource of any type. Not described further here.",
+      "properties": {
+        "resourceType": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resourceType"
+      ],
+      "additionalProperties": true
+    },
+    "Bundle": {
+      "type": "object",
+      "description": "A container for a collection of resources.",
+      "properties": {
+        "resourceType": {
+          "const": "Bundle"
+        },
+        "id": {
+          "type": "string",
+          "description": "Logical id of this artifact"
+        },
+        "meta": {
+          "$ref": "#/components/schemas/Meta",
+          "description": "Metadata about the resource"
+        },
+        "implicitRules": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "A set of rules under which this content was created"
+        },
+        "_implicitRules": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "language": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "Language of the resource content"
+        },
+        "_language": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "identifier": {
+          "$ref": "#/components/schemas/Identifier",
+          "description": "Persistent identifier for the bundle"
+        },
+        "type": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "document",
+            "message",
+            "transaction",
+            "transaction-response",
+            "batch",
+            "batch-response",
+            "history",
+            "searchset",
+            "collection",
+            "subscription-notification"
+          ],
+          "description": "document | message | transaction | transaction-response | batch | batch-response | history | searchset | collection | subscription-notification"
+        },
+        "_type": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "timestamp": {
+          "x-fhir-type": "instant",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))$",
+          "description": "When the bundle was assembled"
+        },
+        "_timestamp": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "total": {
+          "x-fhir-type": "unsignedInt",
+          "type": "integer",
+          "minimum": 0,
+          "description": "If search, the total number of matches"
+        },
+        "_total": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "link": {
+          "type": "array",
+          "description": "Links related to this Bundle",
+          "items": {
+            "$ref": "#/components/schemas/Bundle_Link"
+          }
+        },
+        "entry": {
+          "type": "array",
+          "description": "Entry in the bundle - will have a resource or information",
+          "items": {
+            "$ref": "#/components/schemas/Bundle_Entry"
+          }
+        },
+        "signature": {
+          "$ref": "#/components/schemas/Signature",
+          "description": "Digital Signature"
+        },
+        "issues": {
+          "$ref": "#/components/schemas/AnyResource",
+          "description": "Issues with the Bundle"
+        }
+      },
+      "required": [
+        "resourceType",
+        "type"
+      ],
+      "additionalProperties": false
+    },
+    "Bundle_Entry": {
+      "type": "object",
+      "description": "An entry in a bundle resource - will either contain a resource or information about a resource (transactions and history only).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "link": {
+          "type": "array",
+          "description": "Links related to this entry",
+          "items": {
+            "$ref": "#/components/schemas/Bundle_Link"
+          }
+        },
+        "fullUrl": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "URI for resource (e.g. the absolute URL server address, URI for UUID/OID, etc.)"
+        },
+        "_fullUrl": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "resource": {
+          "$ref": "#/components/schemas/AnyResource",
+          "description": "A resource in the bundle"
+        },
+        "search": {
+          "$ref": "#/components/schemas/Bundle_Entry_Search",
+          "description": "Search related information"
+        },
+        "request": {
+          "$ref": "#/components/schemas/Bundle_Entry_Request",
+          "description": "Additional execution information (transaction/batch/history)"
+        },
+        "response": {
+          "$ref": "#/components/schemas/Bundle_Entry_Response",
+          "description": "Results of execution (transaction/batch/history)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Bundle_Entry_Request": {
+      "type": "object",
+      "description": "Additional information about how this entry should be processed as part of a transaction or batch.  For history, it shows how the entry was processed to create the version contained in the entry.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "method": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "GET",
+            "HEAD",
+            "POST",
+            "PUT",
+            "DELETE",
+            "PATCH"
+          ],
+          "description": "GET | HEAD | POST | PUT | DELETE | PATCH"
+        },
+        "_method": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "url": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "URL for HTTP equivalent of this entry"
+        },
+        "_url": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "ifNoneMatch": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "For managing cache validation"
+        },
+        "_ifNoneMatch": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "ifModifiedSince": {
+          "x-fhir-type": "instant",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))$",
+          "description": "For managing cache currency"
+        },
+        "_ifModifiedSince": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "ifMatch": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "For managing update contention"
+        },
+        "_ifMatch": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "ifNoneExist": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "For conditional creates"
+        },
+        "_ifNoneExist": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "required": [
+        "method",
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "Bundle_Entry_Response": {
+      "type": "object",
+      "description": "Indicates the results of processing the corresponding 'request' entry in the batch or transaction being responded to or what the results of an operation where when returning history.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "status": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Status response code (text optional)"
+        },
+        "_status": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "location": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "The location (if the operation returns a location)"
+        },
+        "_location": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "etag": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "The Etag for the resource (if relevant)"
+        },
+        "_etag": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "lastModified": {
+          "x-fhir-type": "instant",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))$",
+          "description": "Server's date time modified"
+        },
+        "_lastModified": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "outcome": {
+          "$ref": "#/components/schemas/AnyResource",
+          "description": "OperationOutcome with hints and warnings (for batch/transaction)"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "additionalProperties": false
+    },
+    "Bundle_Entry_Search": {
+      "type": "object",
+      "description": "Information about the search process that lead to the creation of this entry.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "mode": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "match",
+            "include",
+            "outcome"
+          ],
+          "description": "match | include - why this is in the result set"
+        },
+        "_mode": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "score": {
+          "x-fhir-type": "decimal",
+          "type": "number",
+          "description": "Search ranking (between 0 and 1)"
+        },
+        "_score": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Bundle_Link": {
+      "type": "object",
+      "description": "A series of links that provide context to this bundle.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "relation": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "about",
+            "acl",
+            "alternate",
+            "amphtml",
+            "appendix",
+            "apple-touch-icon",
+            "apple-touch-startup-image",
+            "archives",
+            "author",
+            "blocked-by",
+            "bookmark",
+            "canonical",
+            "chapter",
+            "cite-as",
+            "collection",
+            "contents",
+            "convertedFrom",
+            "copyright",
+            "create-form",
+            "current",
+            "describedby",
+            "describes",
+            "disclosure",
+            "dns-prefetch",
+            "duplicate",
+            "edit",
+            "edit-form",
+            "edit-media",
+            "enclosure",
+            "external",
+            "first",
+            "glossary",
+            "help",
+            "hosts",
+            "hub",
+            "icon",
+            "index",
+            "intervalAfter",
+            "intervalBefore",
+            "intervalContains",
+            "intervalDisjoint",
+            "intervalDuring",
+            "intervalEquals",
+            "intervalFinishedBy",
+            "intervalFinishes",
+            "intervalIn",
+            "intervalMeets",
+            "intervalMetBy",
+            "intervalOverlappedBy",
+            "intervalOverlaps",
+            "intervalStartedBy",
+            "intervalStarts",
+            "item",
+            "last",
+            "latest-version",
+            "license",
+            "linkset",
+            "lrdd",
+            "manifest",
+            "mask-icon",
+            "media-feed",
+            "memento",
+            "micropub",
+            "modulepreload",
+            "monitor",
+            "monitor-group",
+            "next",
+            "next-archive",
+            "nofollow",
+            "noopener",
+            "noreferrer",
+            "opener",
+            "openid2.local_id",
+            "openid2.provider",
+            "original",
+            "P3Pv1",
+            "payment",
+            "pingback",
+            "preconnect",
+            "predecessor-version",
+            "prefetch",
+            "preload",
+            "prerender",
+            "prev",
+            "preview",
+            "previous",
+            "prev-archive",
+            "privacy-policy",
+            "profile",
+            "publication",
+            "related",
+            "restconf",
+            "replies",
+            "ruleinput",
+            "search",
+            "section",
+            "self",
+            "service",
+            "service-desc",
+            "service-doc",
+            "service-meta",
+            "sponsored",
+            "start",
+            "status",
+            "stylesheet",
+            "subsection",
+            "successor-version",
+            "sunset",
+            "tag",
+            "terms-of-service",
+            "timegate",
+            "timemap",
+            "type",
+            "ugc",
+            "up",
+            "version-history",
+            "via",
+            "webmention",
+            "working-copy",
+            "working-copy-of"
+          ],
+          "description": "See http://www.iana.org/assignments/link-relations/link-relations.xhtml#link-relations-1"
+        },
+        "_relation": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "url": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Reference details for the link"
+        },
+        "_url": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "required": [
+        "relation",
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "CodeableConcept": {
+      "type": "object",
+      "description": "CodeableConcept Type: A concept that may be defined by a formal reference to a terminology or ontology or may be provided by text.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "coding": {
+          "type": "array",
+          "description": "Code defined by a terminology system",
+          "items": {
+            "$ref": "#/components/schemas/Coding"
+          }
+        },
+        "text": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Plain text representation of the concept"
+        },
+        "_text": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Coding": {
+      "type": "object",
+      "description": "Coding Type: A reference to a code defined by a terminology system.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "system": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Identity of the terminology system"
+        },
+        "_system": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "version": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Version of the system - if relevant"
+        },
+        "_version": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "code": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "Symbol in syntax defined by the system"
+        },
+        "_code": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "display": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Representation defined by the system"
+        },
+        "_display": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "userSelected": {
+          "x-fhir-type": "boolean",
+          "type": "boolean",
+          "description": "If this coding was chosen directly by the user"
+        },
+        "_userSelected": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Element": {
+      "type": "object",
+      "description": "Element Type: Base definition for all elements in a resource.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Extension": {
+      "type": "object",
+      "description": "An extension. The value (value[x]) can be any FHIR datatype, and is not described further here.",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string",
+          "description": "The extension's definition"
+        },
+        "extension": {
+          "type": "array",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        }
+      },
+      "patternProperties": {
+        "^_?value[A-Z][A-Za-z0-9]*$": {
+          "description": "The value (value[x]), and its _value[x] sibling for a primitive"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false
+    },
+    "Identifier": {
+      "type": "object",
+      "description": "Identifier Type: An identifier - identifies some entity uniquely and unambiguously. Typically this is used for business identifiers.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "use": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "usual",
+            "official",
+            "temp",
+            "secondary",
+            "old"
+          ],
+          "description": "usual | official | temp | secondary | old (If known)"
+        },
+        "_use": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "type": {
+          "$ref": "#/components/schemas/CodeableConcept",
+          "description": "Description of identifier"
+        },
+        "system": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "The namespace for the identifier value"
+        },
+        "_system": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "value": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "The value that is unique"
+        },
+        "_value": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "period": {
+          "$ref": "#/components/schemas/Period",
+          "description": "Time period when id is/was valid for use"
+        },
+        "assigner": {
+          "$ref": "#/components/schemas/Reference",
+          "description": "Organization that issued id (may be just text)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Meta": {
+      "type": "object",
+      "description": "Meta Type: The metadata about a resource. This is content in the resource that is maintained by the infrastructure. Changes to the content might not always be associated with version changes to the resource.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "versionId": {
+          "x-fhir-type": "id",
+          "type": "string",
+          "pattern": "^([A-Za-z0-9\\-\\.]{1,64})$",
+          "description": "Version specific identifier"
+        },
+        "_versionId": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "lastUpdated": {
+          "x-fhir-type": "instant",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))$",
+          "description": "When the resource version last changed"
+        },
+        "_lastUpdated": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "source": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Identifies where the resource comes from"
+        },
+        "_source": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "profile": {
+          "type": "array",
+          "description": "Profiles this resource claims to conform to",
+          "items": {
+            "anyOf": [
+              {
+                "x-fhir-type": "canonical",
+                "type": "string",
+                "pattern": "^(\\S*)$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "_profile": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Element"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "security": {
+          "type": "array",
+          "description": "Security Labels applied to this resource",
+          "items": {
+            "$ref": "#/components/schemas/Coding"
+          }
+        },
+        "tag": {
+          "type": "array",
+          "description": "Tags applied to this resource",
+          "items": {
+            "$ref": "#/components/schemas/Coding"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "Narrative": {
+      "type": "object",
+      "description": "Narrative Type: A human-readable summary of the resource conveying the essential clinical and business information for the resource.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "status": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "generated",
+            "extensions",
+            "additional",
+            "empty"
+          ],
+          "description": "generated | extensions | additional | empty"
+        },
+        "_status": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "div": {
+          "x-fhir-type": "xhtml",
+          "type": "string",
+          "description": "Limited xhtml content"
+        },
+        "_div": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "required": [
+        "status",
+        "div"
+      ],
+      "additionalProperties": false
+    },
+    "OperationOutcome": {
+      "type": "object",
+      "description": "A collection of error, warning, or information messages that result from a system action.",
+      "properties": {
+        "resourceType": {
+          "const": "OperationOutcome"
+        },
+        "id": {
+          "type": "string",
+          "description": "Logical id of this artifact"
+        },
+        "meta": {
+          "$ref": "#/components/schemas/Meta",
+          "description": "Metadata about the resource"
+        },
+        "implicitRules": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "A set of rules under which this content was created"
+        },
+        "_implicitRules": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "language": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "Language of the resource content"
+        },
+        "_language": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "text": {
+          "$ref": "#/components/schemas/Narrative",
+          "description": "Text summary of the resource, for human interpretation"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "issue": {
+          "type": "array",
+          "description": "A single issue associated with the action",
+          "items": {
+            "$ref": "#/components/schemas/OperationOutcome_Issue"
+          }
+        }
+      },
+      "required": [
+        "resourceType",
+        "issue"
+      ],
+      "additionalProperties": false
+    },
+    "OperationOutcome_Issue": {
+      "type": "object",
+      "description": "An error, warning, or information message that results from a system action.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "severity": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "fatal",
+            "error",
+            "warning",
+            "information",
+            "success"
+          ],
+          "description": "fatal | error | warning | information | success"
+        },
+        "_severity": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "code": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "invalid",
+            "structure",
+            "required",
+            "value",
+            "invariant",
+            "security",
+            "login",
+            "unknown",
+            "expired",
+            "forbidden",
+            "suppressed",
+            "processing",
+            "not-supported",
+            "duplicate",
+            "multiple-matches",
+            "not-found",
+            "deleted",
+            "too-long",
+            "code-invalid",
+            "extension",
+            "too-costly",
+            "business-rule",
+            "conflict",
+            "limited-filter",
+            "transient",
+            "lock-error",
+            "no-store",
+            "exception",
+            "timeout",
+            "incomplete",
+            "throttled",
+            "informational",
+            "success"
+          ],
+          "description": "Error or warning code"
+        },
+        "_code": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "details": {
+          "$ref": "#/components/schemas/CodeableConcept",
+          "description": "Additional details about the error"
+        },
+        "diagnostics": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Additional diagnostic information about the issue"
+        },
+        "_diagnostics": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "location": {
+          "type": "array",
+          "description": "Deprecated: Path of element(s) related to issue",
+          "items": {
+            "anyOf": [
+              {
+                "x-fhir-type": "string",
+                "type": "string",
+                "pattern": "^[\\s\\S]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "_location": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Element"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "expression": {
+          "type": "array",
+          "description": "FHIRPath of element(s) related to issue",
+          "items": {
+            "anyOf": [
+              {
+                "x-fhir-type": "string",
+                "type": "string",
+                "pattern": "^[\\s\\S]+$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "_expression": {
+          "type": "array",
+          "items": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Element"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "severity",
+        "code"
+      ],
+      "additionalProperties": false
+    },
+    "Period": {
+      "type": "object",
+      "description": "Period Type: A time period defined by a start and end date and optionally time.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "start": {
+          "x-fhir-type": "dateTime",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?)?)?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)?)?)?)$",
+          "description": "Starting time with inclusive boundary"
+        },
+        "_start": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "end": {
+          "x-fhir-type": "dateTime",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?)?)?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)?)?)?)$",
+          "description": "End time with inclusive boundary, if not ongoing"
+        },
+        "_end": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Reference": {
+      "type": "object",
+      "description": "Reference Type: A reference from one resource to another.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "reference": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Literal reference, Relative, internal or absolute URL"
+        },
+        "_reference": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "type": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Type the reference refers to (e.g. \"Patient\") - must be a resource in resources"
+        },
+        "_type": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "identifier": {
+          "$ref": "#/components/schemas/Identifier",
+          "description": "Logical reference, when literal reference is not known"
+        },
+        "display": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Text alternative for the resource"
+        },
+        "_display": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "Signature": {
+      "type": "object",
+      "description": "Signature Type: A signature along with supporting context. The signature may be a digital signature that is cryptographic in nature, or some other signature acceptable to the domain. This other signature may be as simple as a graphical image representing a hand-written signature, or a signature ceremony Different signature approaches have different utilities.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "type": {
+          "type": "array",
+          "description": "Indication of the reason the entity signed the object(s)",
+          "items": {
+            "$ref": "#/components/schemas/Coding"
+          }
+        },
+        "when": {
+          "x-fhir-type": "instant",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)-(0[1-9]|1[0-2])-(0[1-9]|[1-2][0-9]|3[0-1])T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)))$",
+          "description": "When the signature was created"
+        },
+        "_when": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "who": {
+          "$ref": "#/components/schemas/Reference",
+          "description": "Who signed"
+        },
+        "onBehalfOf": {
+          "$ref": "#/components/schemas/Reference",
+          "description": "The party represented"
+        },
+        "targetFormat": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "The technical format of the signed resources"
+        },
+        "_targetFormat": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "sigFormat": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "The technical format of the signature"
+        },
+        "_sigFormat": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "data": {
+          "x-fhir-type": "base64Binary",
+          "type": "string",
+          "pattern": "^((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$",
+          "description": "The actual signature content (XML DigSig. JWS, picture, etc.)"
+        },
+        "_data": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TestReport": {
+      "type": "object",
+      "description": "A TestReport, as this server accepts it: an R5 TestReport (or an R4 one - see testScript), with name, tester, issued and at least one participant, and no contained resources.",
+      "properties": {
+        "resourceType": {
+          "const": "TestReport"
+        },
+        "id": {
+          "type": "string",
+          "description": "Logical id of this artifact"
+        },
+        "meta": {
+          "$ref": "#/components/schemas/Meta",
+          "description": "Metadata about the resource"
+        },
+        "implicitRules": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "A set of rules under which this content was created"
+        },
+        "_implicitRules": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "language": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "pattern": "^([^\\s]+( [^\\s]+)*)$",
+          "description": "Language of the resource content"
+        },
+        "_language": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "text": {
+          "$ref": "#/components/schemas/Narrative",
+          "description": "Text summary of the resource, for human interpretation"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "identifier": {
+          "$ref": "#/components/schemas/Identifier",
+          "description": "External identifier"
+        },
+        "name": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Informal name of the executed TestReport"
+        },
+        "_name": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "status": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "completed",
+            "in-progress",
+            "waiting",
+            "stopped",
+            "entered-in-error"
+          ],
+          "description": "completed | in-progress | waiting | stopped | entered-in-error"
+        },
+        "_status": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "testScript": {
+          "description": "The TestScript that was run: a canonical (R5), or a Reference (R4)",
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "$ref": "#/components/schemas/Reference"
+            }
+          ]
+        },
+        "_testScript": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "result": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail",
+            "pending"
+          ],
+          "description": "pass | fail | pending"
+        },
+        "_result": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "score": {
+          "x-fhir-type": "decimal",
+          "type": "number",
+          "description": "The final score (percentage of tests passed) resulting from the execution of the TestScript"
+        },
+        "_score": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "tester": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Name of the tester producing this report (Organization or individual)"
+        },
+        "_tester": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "issued": {
+          "x-fhir-type": "dateTime",
+          "type": "string",
+          "pattern": "^(([0-9]([0-9]([0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)(-(0[1-9]|1[0-2])(-(0[1-9]|[1-2][0-9]|3[0-1])(T([01][0-9]|2[0-3]):[0-5][0-9]:([0-5][0-9]|60)(\\.[0-9]{1,9})?)?)?(Z|(\\+|-)((0[0-9]|1[0-3]):[0-5][0-9]|14:00)?)?)?)$",
+          "description": "When the TestScript was executed and this TestReport was generated"
+        },
+        "_issued": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "participant": {
+          "type": "array",
+          "description": "A participant in the test execution, either the execution engine, a client, or a server",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Participant"
+          },
+          "minItems": 1
+        },
+        "setup": {
+          "$ref": "#/components/schemas/TestReport_Setup",
+          "description": "The results of the series of required setup operations before the tests were executed"
+        },
+        "test": {
+          "type": "array",
+          "description": "A test executed from the test script",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Test"
+          }
+        },
+        "teardown": {
+          "$ref": "#/components/schemas/TestReport_Teardown",
+          "description": "The results of running the series of required clean up steps"
+        }
+      },
+      "required": [
+        "resourceType",
+        "status",
+        "testScript",
+        "result",
+        "name",
+        "tester",
+        "issued",
+        "participant"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Participant": {
+      "type": "object",
+      "description": "A participant in the test execution, either the execution engine, a client, or a server.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "type": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "test-engine",
+            "client",
+            "server"
+          ],
+          "description": "test-engine | client | server"
+        },
+        "_type": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "uri": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "The uri of the participant. An absolute URL is preferred"
+        },
+        "_uri": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "display": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "The display name of the participant"
+        },
+        "_display": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "required": [
+        "type",
+        "uri"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Setup": {
+      "type": "object",
+      "description": "The results of the series of required setup operations before the tests were executed.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "action": {
+          "type": "array",
+          "description": "A setup operation or assert that was executed",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Setup_Action"
+          }
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Setup_Action": {
+      "type": "object",
+      "description": "Action would contain either an operation or an assertion.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "operation": {
+          "$ref": "#/components/schemas/TestReport_Setup_Action_Operation",
+          "description": "The operation to perform"
+        },
+        "assert": {
+          "$ref": "#/components/schemas/TestReport_Setup_Action_Assert",
+          "description": "The assertion to perform"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TestReport_Setup_Action_Assert": {
+      "type": "object",
+      "description": "The results of the assertion performed on the previous operations.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "result": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "pass",
+            "skip",
+            "fail",
+            "warning",
+            "error"
+          ],
+          "description": "pass | skip | fail | warning | error"
+        },
+        "_result": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "message": {
+          "x-fhir-type": "markdown",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "A message associated with the result"
+        },
+        "_message": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "detail": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "A link to further details on the result"
+        },
+        "_detail": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "requirement": {
+          "type": "array",
+          "description": "Links or references to the testing requirements",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Setup_Action_Assert_Requirement"
+          }
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Setup_Action_Assert_Requirement": {
+      "type": "object",
+      "description": "Links or references providing traceability to the testing requirements for this assert.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "linkUri": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Link or reference to the testing requirement"
+        },
+        "_linkUri": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "linkCanonical": {
+          "x-fhir-type": "canonical",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "Link or reference to the testing requirement"
+        },
+        "_linkCanonical": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TestReport_Setup_Action_Operation": {
+      "type": "object",
+      "description": "The operation performed.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "result": {
+          "x-fhir-type": "code",
+          "type": "string",
+          "enum": [
+            "pass",
+            "skip",
+            "fail",
+            "warning",
+            "error"
+          ],
+          "description": "pass | skip | fail | warning | error"
+        },
+        "_result": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "message": {
+          "x-fhir-type": "markdown",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "A message associated with the result"
+        },
+        "_message": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "detail": {
+          "x-fhir-type": "uri",
+          "type": "string",
+          "pattern": "^(\\S*)$",
+          "description": "A link to further details on the result"
+        },
+        "_detail": {
+          "$ref": "#/components/schemas/Element"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Teardown": {
+      "type": "object",
+      "description": "The results of the series of operations required to clean up after all the tests were executed (successfully or otherwise).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "action": {
+          "type": "array",
+          "description": "One or more teardown operations performed",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Teardown_Action"
+          }
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Teardown_Action": {
+      "type": "object",
+      "description": "The teardown action will only contain an operation.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "operation": {
+          "$ref": "#/components/schemas/TestReport_Setup_Action_Operation",
+          "description": "The teardown operation performed"
+        }
+      },
+      "required": [
+        "operation"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Test": {
+      "type": "object",
+      "description": "A test executed from the test script.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "name": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Tracking/logging name of this test"
+        },
+        "_name": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "description": {
+          "x-fhir-type": "string",
+          "type": "string",
+          "pattern": "^[\\s\\S]+$",
+          "description": "Tracking/reporting short description of the test"
+        },
+        "_description": {
+          "$ref": "#/components/schemas/Element"
+        },
+        "action": {
+          "type": "array",
+          "description": "A test operation or assert that was performed",
+          "items": {
+            "$ref": "#/components/schemas/TestReport_Test_Action"
+          }
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false
+    },
+    "TestReport_Test_Action": {
+      "type": "object",
+      "description": "Action would contain either an operation or an assertion.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique id for inter-element referencing"
+        },
+        "extension": {
+          "type": "array",
+          "description": "Additional content defined by implementations",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "modifierExtension": {
+          "type": "array",
+          "description": "Extensions that cannot be ignored even if unrecognized",
+          "items": {
+            "$ref": "#/components/schemas/Extension"
+          }
+        },
+        "operation": {
+          "$ref": "#/components/schemas/TestReport_Setup_Action_Operation",
+          "description": "The operation performed"
+        },
+        "assert": {
+          "$ref": "#/components/schemas/TestReport_Setup_Action_Assert",
+          "description": "The assertion performed"
+        }
+      },
+      "additionalProperties": false
+    },
+    "TestReportSearchBundle": {
+      "description": "A searchset Bundle of TestReports",
+      "allOf": [
+        {
+          "$ref": "#/components/schemas/Bundle"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "const": "searchset"
+            },
+            "entry": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "resource": {
+                    "anyOf": [
+                      {
+                        "$ref": "#/components/schemas/TestReport"
+                      },
+                      {
+                        "$ref": "#/components/schemas/OperationOutcome"
+                      }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

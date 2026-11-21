@@ -1,0 +1,884 @@
+<!--
+Copyright (c) 2025+, Health Intersections Pty Ltd (http://www.healthintersections.com.au)
+Licensed under Creative Commons Public Domain (CC0)
+
+The patient IPS editor's form (it was the Patient Document Generator on healthintersections.com.au).
+renderPatientEditor (render.js) puts it on the page, after its scripts.
+-->
+<style>
+/* from the generator's page layout, kept to the editor */
+.patient-editor .tab { overflow: hidden; border: 1px solid #ccc; background-color: #f1f1f1; }
+.patient-editor .ips { font-size: 11px; font-weight: bold; color: maroon; display: none; }
+.patient-editor .tab button { background-color: inherit; float: left; border: none; outline: none; cursor: pointer; padding: 7px 8px; transition: 0.3s; }
+.patient-editor .tab button:hover { background-color: #ddd; }
+.patient-editor .tab button.active { background-color: #ccc; }
+.patient-editor .tabcontent { display: none; padding: 6px 12px; border: 1px solid #ccc; border-top: none; }
+.ui-autocomplete { background: white !important; z-index: 1000; max-height: 20em; overflow-y: auto; list-style: none; padding: 2px; border: 1px solid #ccc; }
+.ui-autocomplete .ui-menu-item-wrapper { cursor: pointer; padding: 2px 4px; }
+.ui-autocomplete .ui-state-active { background: #ddd; }
+.ui-helper-hidden-accessible { display: none; }
+.patient-editor .ui-autocomplete-loading { background: white url("{{assets}}/images/ui-anim_basic_16x16.gif") right center no-repeat; }
+.patient-editor .error { background-color: #ffebee; border-color: red; }
+.patient-editor .button { border: solid 2px black; border-radius: 5px; background-color: #efefef; padding: 4px; }
+</style>
+<script>
+function openTab(evt, tabName) {
+  var i, tabcontent, tablinks;
+  tabcontent = document.getElementsByClassName("tabcontent");
+  for (i = 0; i < tabcontent.length; i++) {
+    tabcontent[i].style.display = "none";
+  }
+  tablinks = document.getElementsByClassName("tablinks");
+  for (i = 0; i < tablinks.length; i++) {
+    tablinks[i].className = tablinks[i].className.replace(" active", "");
+  }
+  document.getElementById(tabName).style.display = "block";
+  document.getElementById(tabName+"Tab").className += " active";
+}
+</script>
+
+<!-- Loading a document: a file, or a test patient (as in the general editor) -->
+<div class="ips-ed-load">
+<p>
+<input type="file" id="ipsUpload" accept=".json,application/json,application/fhir+json" style="display: none;">
+<input type="button" class="btn btn-default btn-sm" value="Load an IPS document..." data-i18n-attr="value:actions.uploadIps" onclick="document.getElementById('ipsUpload').click();"/>
+<span data-i18n="actions.testPatientsLabel">Test patients: </span>
+<input type="button" class="btn btn-default btn-sm" id="pop1" value="Retired man" data-i18n-attr="value:actions.testPatient1"/>
+<input type="button" class="btn btn-default btn-sm" id="pop2" value="New mother" data-i18n-attr="value:actions.testPatient2"/>
+<input type="button" class="btn btn-default btn-sm" id="pop3" value="Grandmother" data-i18n-attr="value:actions.testPatient3"/>
+<input type="button" class="btn btn-default btn-sm" id="pop4" value="Teenage boy" data-i18n-attr="value:actions.testPatient4"/>
+<input type="button" class="btn btn-default btn-sm" id="pop5" value="Young woman" data-i18n-attr="value:actions.testPatient5"/>
+</p>
+<div id="uploadStatus" style="margin: 10px 0;"></div>
+<p class="ips-small">
+<span data-i18n="actions.viewerText">Or, if you have a QR Code or a SMART Health Link for an existing document, open it in the</span> <a href="{{viewer}}">SHL viewer</a>.
+</p>
+</div>
+
+<!-- Tab links -->
+<div class="tab">
+  <button class="tablinks" id="NotesTab" onclick="openTab(event, 'Notes')" data-i18n="tabs.notes">Notes</button>
+  <button class="tablinks" id="AboutMeTab" onclick="openTab(event, 'AboutMe')" data-i18n="tabs.aboutMe">About Me</button>
+  <button class="tablinks" id="MyStoryTab" onclick="openTab(event, 'MyStory')" data-i18n="tabs.myStory">My Story</button>
+  <button class="tablinks" id="HistoryTab" onclick="openTab(event, 'History')" data-i18n="tabs.medical">Medical</button>
+  <button class="tablinks" id="CarePlanTab" onclick="openTab(event, 'CarePlan')" data-i18n="tabs.carePlanning">Care Planning</button>
+  <button class="tablinks" id="NeedsTab" onclick="openTab(event, 'Needs')" data-i18n="tabs.careNeeds">Care Needs</button>
+  <button class="tablinks" id="CensusTab" onclick="openTab(event, 'Census')" data-i18n="tabs.bodyParts">Body Parts</button>
+  <button class="tablinks" id="WomensTab" onclick="openTab(event, 'Womens')" data-i18n="tabs.reproductive">Reproductive</button>
+</div>
+
+<form id="form" method="POST" onsubmit="event.preventDefault(); scheduleGenerate(0);">
+
+<div id="Notes" class="tabcontent">
+
+<p data-i18n-html="notes.welcomeHtml"><b>Welcome to the Patient Document Generator</b>.</p>
+
+<ul>
+ <li data-i18n-html="notes.intro1Html">This website allows a patient to provide a health summary and summary of care needs to the healthcare system 
+   using the <a href="https://international-patient-summary.net">International Patient Summary</a> Standard</li>
+ <li data-i18n="notes.intro2">This is not a medical history and is not intended to be complete enough to enable disability/impairment related care (or any other kind of care) by itself</li>
+ <li data-i18n="notes.intro3">This is not a beautifully crafted user interface; it's a sample interface intended to help people discuss/describe the requirements for these kind of statements.</li>
+ <li data-i18n="notes.intro4">The form is processed locally in your browser; no information is shared with any other system or server, but in general, this form is intended for test data, not real protected health PHI.</li>
+</ul>
+
+<p>
+<input type="checkbox" name="ips-mappings" id="showIPS"><span data-i18n="notes.ipsToggleLabel"> I'm an IPS nerd, show me IPS mappings.</span>
+</p>
+
+</div>
+
+<div id="AboutMe" class="tabcontent">
+
+<table class="grid">
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="aboutMe.patientDetails">Patient Details</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.nameLabel">Consumer Name</b></td> 
+    <td><input type="text" name="name" size="30"/><span data-i18n="aboutMe.nameHint"> (mandatory)</span><br class="ips"/><span class="ips">IPS: Patient.name.text</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.dobLabel">Date of Birth</b></td>
+    <td><input type="text" name="dob" size="10"/><span data-i18n="aboutMe.dobHint"> (mandatory, YYYY-MM-DD)</span><br class="ips"/><span class="ips">IPS: Patient.dateOfBirth</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.nhiLabel">National Health Identifier</b></td>
+    <td><input type="text" name="id" size="20"/><span data-i18n="aboutMe.nhiHint"> (if you know it; in some countries you will)</span><br class="ips"/><span class="ips">IPS: Patient.identifier.value where identifier.type is NIIP</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.countryLabel">Country Code</b></td>
+    <td><input type="text" name="country" size="3"/><span data-i18n="aboutMe.countryHint"> (2 or 3 letter code e.g. US, AU, NZ)</span><br class="ips"/><span class="ips">IPS: Patient.address.country</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.emailLabel">Email</b></td>
+    <td><input type="text" name="email" size="20"/><br class="ips"/><span class="ips">IPS: Patient.telecom</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.mobileLabel">Mobile Phone</b></td>
+    <td><input type="text" name="mobile" size="12"/><br class="ips"/><span class="ips">IPS: Patient.telecom</span></td>
+  </tr>
+<!-- <tr>
+    <td><b>Phone</b></td>
+    <td><input type="text" name="phone" size="12"/></td>
+  </tr> -->
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="aboutMe.nextOfKin">Next of Kin</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.nokName">Name</b></td>
+    <td><input type="text" name="nok" size="30"/><br class="ips"/><span class="ips">IPS: Patient.nok</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.nokEmail">Email</b></td>
+    <td><input type="text" name="nokemail" size="20"/><br class="ips"/><span class="ips">IPS: Patient.nok.telecom</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.nokMobile">Mobile Phone</b></td>
+    <td><input type="text" name="nokmobile" size="12"/><br class="ips"/><span class="ips">IPS: Patient.nok.telecom</span></td>
+  </tr>
+<!-- <tr>
+    <td><b>Phone</b></td>
+    <td><input type="text" name="nokphone" size="12"/></td>
+  </tr> -->
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="aboutMe.culturalIdentity">Cultural Identity</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.cultureLabel">Your Culture</b></td>
+    <td><input type="text" name="culture" size="30"/><span data-i18n="aboutMe.cultureHint"> (if you think this is relevant)</span><br class="ips"/><span class="ips">IPS: Patient.extension('http://healthintersections.com.au/fhir/StructureDefinition/patient-cultural-background')</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.communityLabel">Your place</b></td>
+    <td>
+      <input type="text" name="community" size="30"/><br class="ips"/><span class="ips">IPS: Patient.extension('http://hl7.org.au/fhir/StructureDefinition/community-affiliation')</span>
+      <br/>
+      <span data-i18n="aboutMe.communityHelp">Your country and/or community, if important / relevant</span>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.languageLabel">Preferred Language</b></td>
+    <td>
+      <input type="text" name="language" size="30"/><br class="ips"/><span class="ips">IPS: Patient.communication.language(preferred=true)</span>
+      <br/>
+      <input type="checkbox" name="english"/><span data-i18n="aboutMe.englishCheckbox"> I can get by in English (e.g. or the local official language)</span><br class="ips"/><span class="ips">IPS: Patient.communication.language</span>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.religionLabel">Religion</b></td>
+   <td>
+     <select id="religion" name="religion"><option value="n" data-i18n="aboutMe.religionOpts.notImportant">Not important</option><option value="x" data-i18n="aboutMe.religionOpts.christian">Christian</option><option value="m" data-i18n="aboutMe.religionOpts.muslim">Muslim</option><option value="h" data-i18n="aboutMe.religionOpts.hindu">Hindu</option><option value="b" data-i18n="aboutMe.religionOpts.buddhist">Buddhist</option><option value="o" data-i18n="aboutMe.religionOpts.other">Other</option></select><br class="ips"/><span class="ips">IPS: Patient.extension('http://hl7.org/fhir/StructureDefinition/patient-religion')</span>
+     <span data-i18n="aboutMe.religionDetails">. Details:</span>
+     <input id="religion-code" name="religion-code" size="20"/>
+   </td>
+  </tr>
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="aboutMe.genderSection">Gender</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.genderLabel">Gender</b></td>
+   <td>
+     <select id="gender" name="gender"><option></option><option value="f" data-i18n="aboutMe.genderOpts.female">Female</option><option value="m" selected data-i18n="aboutMe.genderOpts.male">Male</option><option value="n" data-i18n="aboutMe.genderOpts.nonBinary">Non-binary</option><option value="u" data-i18n="aboutMe.genderOpts.decline">Decline to answer</option></select><br class="ips"/><span class="ips">IPS: Patient.extension('http://hl7.org/fhir/StructureDefinition/individual-genderIdentity')</span>
+     <span data-i18n="aboutMe.genderOr"> or </span>
+     <input type="text" name="gender-other" size="10"/>
+   </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.pronounsLabel">Pronouns</b></td>
+    <td>
+      <select name="pronouns"><option></option><option value="f" data-i18n="aboutMe.pronounsOpts.sheHer">she/her</option><option value="m" selected data-i18n="aboutMe.pronounsOpts.heHim">he/him</option><option value="o" data-i18n="aboutMe.pronounsOpts.theyThem">they/them</option></select><br class="ips"/><span class="ips">IPS: Patient.extension('http://hl7.org/fhir/StructureDefinition/individual-pronouns')</span>
+      <span data-i18n="aboutMe.pronounsOr"> or </span>
+      <input type="text" name="pronouns-other" size="10"/>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.sexCharLabel">Sex characteristics </b></td>
+    <td>
+      <select id="sexchar" name="sexchar"><option></option><option value="n" data-i18n="aboutMe.sexCharOpts.typical">I have typical characteristics for my sex</option><option value="y" data-i18n="aboutMe.sexCharOpts.variation">I have variations from typical characteristics</option><option value="u" data-i18n="aboutMe.sexCharOpts.unsure">Not sure</option></select><br class="ips"/><span class="ips">IPS: Patient.extension('http://healthintersections.com.au/fhir/StructureDefinition/sex-characteristic-variation')</span>
+      <br/>
+      <span data-i18n="aboutMe.sexCharDetails">Details: </span><input type="text" name="sex-variance" size="30"/>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="aboutMe.authorSection">Author</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="aboutMe.authorNameLabel">Name</b></td>
+    <td><input type="text" name="author" size="30"/><span data-i18n="aboutMe.authorNameHint"> leave this blank if self-authored</span><br class="ips"/><span class="ips">IPS: Composition.author.display</span></td>
+  </tr>
+</table>
+</div>
+
+<div id="MyStory" class="tabcontent">
+
+<table class="grid">
+  <tr>
+    <td colspan="1" style="background-color: #eeeeee;"><b data-i18n="myStory.header">My Story</b></td>
+  </tr>
+  <tr>
+    <td data-i18n="myStory.prompt">Who are you? How would you describe your health? What matters to you?</td>
+  </tr>
+  <tr>
+    <td><textarea name="story" cols="60" rows="10"></textarea><br/><span data-i18n-html="myStory.markdownHintHtml">(note for techies: this can be <a href="https://commonmark.org">markdown</a>)</span><br class="ips"/><span class="ips">IPS: Composition.section[patient-story].text</span></td>
+  </tr>
+  <tr>
+    <td colspan="1" style="background-color: #eeeeee;"><b data-i18n="myStory.goalsHeader">My Goals</b></td>
+  </tr>
+  <tr>
+    <td data-i18n="myStory.goalsPrompt">What specific outcomes are important to you from your care?</td>
+  </tr>
+  <tr id="tr-goal-1">
+    <td><input type="text" name="care-goal-1" size="50"/>
+    <input type="checkbox" name="care-goal-state-1"><span data-i18n="myStory.goalProgress"> Making Progress</span><br class="ips"/><span class="ips">IPS: Composition.section[patient-story].entry->Goal.description + Goal.achievementStatus</span></td>
+  </tr>
+  <tr>
+    <td colspan="1"><button type="button" onClick="addGoal()" data-i18n="myStory.addGoal">Add another Goal</button></td>
+  </tr>
+</table>
+</div>
+
+<div id="CarePlan" class="tabcontent">
+
+<h2 data-i18n="carePlan.heading">Care Planning / Advance Directives</h2>
+
+<table class="grid">
+  <tr><td colspan="2" style="background-color: #eeeeee;"><b data-i18n="carePlan.advocateSection">Care Advocate</b></td></tr>
+  <tr><td><b data-i18n="carePlan.advocateName">Name</b></td><td><input type="text" name="caname" size="30"/><br class="ips"/><span class="ips">IPS: Composition.section[care-directives].entry->RelatedPerson.name.text</span></td><td data-i18n="carePlan.advocateNameHint">(optional - leave all blank if no care advocate)</td></tr>
+  <tr><td><b data-i18n="carePlan.advocateEmail">Email</b></td><td><input type="text" name="caemail" size="20"/><br class="ips"/><span class="ips">IPS: RelatedPerson.telecom</span></td></tr>
+  <tr><td><b data-i18n="carePlan.advocateMobile">Mobile Phone</b></td><td><input type="text" name="camobile" size="12"/><br class="ips"/><span class="ips">IPS: RelatedPerson.telecom</span></td></tr>
+<!--  <tr><td><b>Phone</b></td><td><input type="text" name="caphone" size="12"/><br class="ips"/><span class="ips">IPS: RelatedPerson.telecom</span></td></tr> -->
+  <tr><td><b data-i18n="carePlan.advocateStatus">Status</b></td><td><input type="checkbox" name="calegal" value="true"/><span data-i18n="carePlan.advocateLegal"> Legal Power of Attorney</span><br class="ips"/><span class="ips">IPS: RelatedPerson.relationship</span></td><td data-i18n="carePlan.advocateLegalHint">(check if care advocate has legal rights)</td></tr>
+</table>
+<p data-i18n="carePlan.avoidancePrompt">
+  Is there anyone we should avoid contacting, or speaking to, on your behalf - for example, due to an avoidance relationship / family issues?
+</p>
+<p>
+  <textarea name="avoidance" cols="50" rows="5"></textarea><br class="ips"/><span class="ips">IPS: todo</span>
+<br/>
+    <span data-i18n="carePlan.avoidanceHint">Note: Providing Names + Relationship works best (one per line)</span>
+</p>
+<p data-i18n="carePlan.checkPrompt">
+  Check any appropriate:
+</p>
+<ul>
+  <li><input type="radio" name="dnr" value="false"/><span data-i18n="carePlan.dnrConsent"> I consent to all treatments aimed at sustaining or prolonging my life OR</span><br/> <input type="radio" name="dnr" value="true"/><span data-i18n="carePlan.dnrRefuse"> I refuse any treatments aimed at sustaining or prolonging my life (DNR) </span><br class="ips"/><span class="ips">Composition.section[care-directives].entry->Consent.provision.deny, .provision.code = SCT 439569004</span></li>
+  <li><input type="radio" name="donor" value="true"/><span data-i18n="carePlan.donorYes"> I am willing to be an organ donor OR</span><br/> <input type="radio" name="donor" value="false"/><span data-i18n="carePlan.donorNo"> I am NOT willing to be an organ donor</span><br class="ips"/><span class="ips">Composition.section[care-directives].entry->Consent.provision.deny, .provision.code = SCT 1148553005</span> </li>
+  <li><input type="radio" name="bld" value="true"/><span data-i18n="carePlan.bloodYes"> I consent to receive a blood transfusion OR</span><br/> <input type="radio" name="bld" value="false"/><span data-i18n="carePlan.bloodNo"> I do not consent to a blood transfusion </span><br class="ips"/><span class="ips">Composition.section[care-directives].entry->Consent.provision.deny, .provision.code = SCT 116859006</span></li>
+</ul>
+<p>
+  <span data-i18n-html="carePlan.acdPromptHtml">If you have a full Advance Care Directive, attach it here (as a .pdf): </span><input type="file" id="myfile" name="acfile"><br class="ips"/><span class="ips">Composition.section[care-directives].entry->DocumentReference</span>
+</p>
+</div>
+
+<div id="History" class="tabcontent">
+
+<table class="grid">
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="history.allergiesSection">Allergies</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="history.allergyCol">Allergy</b></td>
+    <td><b data-i18n="history.manifestationCol">Manifestation</b></td>
+  </tr>
+  <tr id="ai-issue-1">
+    <td><input type="text" id="ai1" name="ai1" size="50"/><br class="ips"/><span class="ips">IPS: Composition.section[allergies].entry->AllergyIntolerance.code</span></td>
+    <td><select id="aiRxn1" name="aiRxn1"><option value=""></option><option value="s" data-i18n="history.allergyOpts.skin">Skin Problems</option><option value="g" data-i18n="history.allergyOpts.gastro">Gastro (vomiting, diarrhea etc)</option><option value="e" data-i18n="history.allergyOpts.eye">Eye problems</option><option value="w" data-i18n="history.allergyOpts.wheeze">Wheezing/breathing difficulties </option><option value="a" data-i18n="history.allergyOpts.anaphylaxis">Anaphylaxis</option><option value="c" data-i18n="history.allergyOpts.cardiac">Cardiac Arrest</option></select><span class="ips">IPS: AllergyIntolerance.reaction.manifestation</span></td>
+  </tr>
+  <tr>
+    <td colspan="2"><button type="button" onClick="addAllergy()" data-i18n="history.addAllergy">Add another Allergy</button></td>
+  </tr>
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="history.issuesSection">Ongoing Health Issues</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="history.issueCol">Health Issue</b></td>
+    <td><b data-i18n="history.levelCol">Level</b></td>
+  </tr>
+  <tr id="tr-issue-1">
+    <td><input type="text" id="issue1" name="issue1" size="50"/><br class="ips"/><span class="ips">IPS: Composition.section[problem-list].entry->Condition.code</span></td>
+    <td><select id="issueLevel1" name="issueLevel1"><option value="m" data-i18n="history.issueOpts.major">Major Life Challenge</option><option value="c" data-i18n="history.issueOpts.troublesome">Troublesome</option><option value="b" data-i18n="history.issueOpts.managed">Background but managed</option></select><span class="ips">IPS: Condition.severity</span></td>
+  </tr>
+  <tr>
+    <td colspan="2"><button type="button" onClick="addIssue()" data-i18n="history.addIssue">Add another Issue</button></td>
+  </tr>
+  <tr>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="history.medsSection">Medications</b></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b data-i18n="history.medsCol">Medication</b> + <b data-i18n="history.dosageCol">Dosage</b></td>
+  </tr>
+  <tr id="tr-medication-1">
+    <td colspan="2"><input type="text" id="medication1" name="medication1"/> + <input type="text" name="dosage1" size="50"><span class="ips">IPS: Composition.section[medications].entry->MedicationStatement.medicationCodeableConcept + MedicationStatement.dosage.text</span></td>
+  </tr>
+  <tr>
+    <td colspan="2"><button type="button" onClick="addMedication()" data-i18n="history.addMedication">Add another Medication</button></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="history.eventsSection">Past Events/Illnesses</b></td>
+  </tr>
+  <tr>
+    <td colspan="1"><b data-i18n="history.eventCol">Event</b></td>
+    <td><b data-i18n="history.whenCol">When</b></td>
+  </tr>
+  <tr id="tr-event-1">
+    <td colspan="1"><input type="text" id="event1" name="event1" size="50"/><span class="ips">IPS: Composition.section[pasthistory].entry->Condition.code</span></td>
+    <td><input type="text" name="event-when1"><span class="ips">IPS: Condition.onsetDateTime</span></td>
+  </tr>
+  <tr>
+    <td colspan="2"><button type="button" onClick="addEvent()" data-i18n="history.addEvent">Add another Event</button></td>
+  </tr>
+  <tr>
+    <td colspan="2" data-i18n="history.eventsHelp">Common events include serious illnesses, operations, pregnancy/births, marriages and deaths. For when,
+  a year is generally enough, but you can provide month/day using yyyy-mm-dd if desired</td>
+  </tr>
+</table>
+
+</div>
+
+<div id="Needs" class="tabcontent">
+<h2 data-i18n="needs.heading">My functional and identity needs</h2>
+
+<p data-i18n="needs.uncheckedNote">
+  Note: You don't tick the boxes if they're not appropriate for you.
+</p>
+<p data-i18n-html="needs.flagsPromptHtml">
+<b>Functional / Identity Flags</b> I would like my carers to be aware of my concerns around:
+</p>
+<ul>
+  <li><input type="checkbox" name="concern-visual" value="true"/><span data-i18n="needs.flag.vision"> Vision </span><br class="ips"/><span class="ips">IPS: Composition.section[functional-status].entry->Condition.code = SCT 397540003 </span> </li>
+  <li><input type="checkbox" name="concern-audio" value="true"/><span data-i18n="needs.flag.hearing"> Hearing / Listening </span><span class="ips">IPS: Condition.code = SCT 15188001 </span> </li>
+  <li><input type="checkbox" name="concern-cognition" value="true"/><span data-i18n="needs.flag.cognition"> Cognition  / thinking / understanding / information processing </span><span class="ips">IPS: Condition.code = SCT 386806002 </span></li>
+  <li><input type="checkbox" name="concern-speaking" value="true"/><span data-i18n="needs.flag.speaking"> Speaking / communicating / Conversation / Verbal interactions </span><span class="ips">IPS: Condition.code = SCT 29164008 </span></li>
+  <li><input type="checkbox" name="concern-mobility" value="true"/><span data-i18n="needs.flag.mobility"> Mobility / moving myself around </span><span class="ips">IPS: Condition.code = SCT 82971005 </span></li>
+  <li><input type="checkbox" name="concern-gender" value="true"/><span data-i18n="needs.flag.genderAreas"> Use of gender specific areas </span><span class="ips">IPS: Condition.code = SCT 93461009 </span></li>
+  <li><input type="checkbox" name="concern-memory" value="true"/><span data-i18n="needs.flag.memory"> Memory </span><span class="ips">IPS: Condition.code = SCT 386807006 </span></li>
+  <li><input type="checkbox" name="concern-trauma" value="true"/><span data-i18n="needs.flag.trauma"> Past Trauma  </span><span class="ips">IPS: Condition.code = SCT 161472001 </span></li>
+  <li><input type="checkbox" name="concern-focus" value="true"/><span data-i18n="needs.flag.focus"> Staying focused / Concentration </span><span class="ips">IPS: Condition.code = SCT 1144748009 </span></li>
+  <li><input type="checkbox" name="concern-addiction" value="true"/><span data-i18n="needs.flag.addiction"> Managing my addiction(s) </span><span class="ips">IPS: Condition.code = SCT 32709003 </span></li>
+</ul>
+<p>
+  <input type="checkbox" name="concern-city" value="true"/><span data-i18n="needs.flag.smallCommunity"> I am from a small and/or remote community and cities and/or lots of people are an unfamiliar environment for me. </span><span class="ips">IPS: Condition.code = SCT 5794003 </span><span style="color: lightgrey"> SCT </span>
+</p>
+
+<p data-i18n-html="needs.helpPromptHtml">
+  <b>I may need help with</b>
+</p>
+<ul>
+  <li><input type="checkbox" name="eating" value="true"/><span data-i18n="needs.help.eating"> Eating / Drinking </span><span class="ips">IPS: Condition.code = SCT 110292000 </span></li>
+  <li><input type="checkbox" name="toileting" value="true"/><span data-i18n="needs.help.toileting"> Toileting </span><span class="ips">IPS: Condition.code = SCT 284911003 </span></li>
+  <li><input type="checkbox" name="bed-exit" value="true"/><span data-i18n="needs.help.bedExit"> Getting out of bed </span><span class="ips">IPS: Condition.code = SCT 301666002 </span></li>
+  <li><input type="checkbox" name="bed-in" value="true"/><span data-i18n="needs.help.bedIn"> Moving in bed </span><span class="ips">IPS: Condition.code = SCT 301685004 </span></li>
+  <li><input type="checkbox" name="orientation" value="true"/><span data-i18n="needs.help.orientation"> Getting orientated in a new environment </span><span class="ips">IPS: Condition.code = SCT 72440003 </span></li>
+  <li><input type="checkbox" name="dressing" value="true"/><span data-i18n="needs.help.dressing"> Dressing </span><span class="ips">IPS: Condition.code = SCT 284977008 </span></li>
+  <li><input type="checkbox" name="bathing" value="true"/><span data-i18n="needs.help.bathing"> Bathing / Cleaning </span><span class="ips">IPS: Condition.code = SCT 284807005 </span></li>
+  <li><input type="checkbox" name="meds" value="true"/><span data-i18n="needs.help.meds"> Taking my medications </span><span class="ips">IPS: Condition.code = SCT 715037005 </span></li>
+  <li><input type="checkbox" name="reading" value="true"/><span data-i18n="needs.help.reading"> Reading Documentation </span><span class="ips">IPS: Condition.code = SCT 309253009 </span></li>
+</ul>
+<p data-i18n="needs.havePrompt">
+  I have:
+</p>
+<ul>
+  <li><input type="checkbox" name="dog" value="true"/><span data-i18n="needs.have.guideDog"> A Guide Dog / Service Animal </span><span class="ips">IPS: Condition.code = SCT 105506000 </span></li>
+  <li><input type="checkbox" name="wheelchair" value="true"/><span data-i18n="needs.have.wheelchair"> A Wheelchair </span><span class="ips">IPS: Condition.code = SCT 105503008 </span></li>
+  <li><input type="checkbox" name="comm-device" value="true"/><span data-i18n="needs.have.commDevice"> A Communication Device </span><span class="ips">IPS: Condition.code = SCT 719369003 </span></li>
+</ul>
+<p data-i18n="needs.haveNotes">Notes: other <i>possible</i> candidates = Hearing aid or cochlear implant, Walking stick, Prosthetic leg (….this list goes on and on)?</p>
+
+<p>
+<span data-i18n="needs.freeTextPromptHtml">Anything else you want to say about your general care needs or anxieties, or to explain any of the boxes you ticked above:</span>
+<br/>
+<textarea name="text" placeholder="Anything else you want to say about your general care needs or anxieties" data-i18n-attr="placeholder:needs.freeTextPlaceholder" rows="5"  cols="60"></textarea><br class="ips"/><span class="ips">IPS: Composition.section[functional-status].entry->Condition.code.text </span>
+</p>
+
+</div>
+
+<div id="Census" class="tabcontent">
+
+<p data-i18n="census.intro">
+Due to congenital birth variations, accidents or medical treatment, you might be missing organs or limbs that might impact your treatment or care, or have replacements.
+</p>
+
+
+<table>
+<tr><th data-i18n="census.organCol">Organ</th><th><span data-i18n="census.statusCol">Status </span><input type="button" onClick="allPresent()" value="Default Values for Gender" data-i18n-attr="value:census.defaultsBtn"/>  </th></tr>
+<tr>
+  <td data-i18n="census.organ.arm">Arm</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Arm-l" name="Arm-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Arm-r" name="Arm-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">IPS: Composition.section[functional-status].entry->Observation.bodySite + Observation.valueCodeableConcept for status, SCT 368208006 / 368209003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.hand">Hand</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Hand-l" name="Hand-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Hand-r" name="Hand-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 85151006 / 78791008 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.fingers">Fingers</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Fingers-l" name="Fingers-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Fingers-r" name="Fingers-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 786841006 / 786842004 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.leg">Leg</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Leg-l" name="Leg-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Leg-r" name="Leg-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 48979004 / 32696007 </span></td></tr>
+<tr>
+  <td data-i18n="census.organ.calf">Calf</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Calf-l" name="Calf-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Calf-r" name="Calf-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 48979004 / 32696007 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.foot">Foot</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Foot-l" name="Foot-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Foot-r" name="Foot-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 22335008 / 7769000 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.toe">Toe</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Toe-l" name="Toe-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Toe-r" name="Toe-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 785708006 / 785709003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.hip">Hip</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Hip-l" name="Hip-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Hip-r" name="Hip-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 32709003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.eye">Eye</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Eye-l" name="Eye-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Eye-r" name="Eye-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 67923007 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.hypothalamus">Hypothalamus</td>
+  <td>
+    <select id="Hypothalamus" name="Hypothalamus"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 67923007 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.pituitary">Pituitary</td>
+  <td>
+    <select id="Pituitary" name="Pituitary"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 181125003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.tongue">Tongue</td>
+  <td>
+    <select id="Tongue" name="Tongue"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 32709003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.jaw">Jaw</td>
+  <td>
+    <select id="Jaw" name="Jaw"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 661005 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.salivary">Salivary Glands</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="salgland-l" name="salgland-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="salgland-r" name="s   algland-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 725037009 / SCTID: 725038004 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.oesophagus">Oesophagus</td>
+  <td>
+    <select id="Oesophagus" name="Oesophagus"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 32849002 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.largeColon">Large Colon</td>
+  <td>
+    <select id="LargeColon" name="LargeColon"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 71854001 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.stomach">Stomach</td>
+  <td>
+    <select id="Stomach" name="Stomach"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 69695003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.gallBladder">Gall Bladder</td>
+  <td>
+    <select id="GallBladder" name="GallBladder"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 28231008 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.kidney">Kidney</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Kidney-l" name="Kidney-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Kidney-r" name="Kidney-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 18639004 / 9846003 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.liver">Liver</td>
+  <td>
+    <select id="Liver" name="Liver"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 10200004 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.bladder">Bladder</td>
+  <td>
+    <select id="Bladder" name="Bladder"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 89837001 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.lung">Lung</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Lung-l" name="Lung-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Lung-r" name="Lung-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 44029006 / 3341006 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.breasts">Breasts</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Breasts-l" name="Breasts-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Breasts-r" name="Breasts-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 80248007 / 73056007 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.ovary">Ovary</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Ovary-l" name="Ovary-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Ovary-r" name="Ovary-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 43981004 / 20837000 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.uterus">Uterus</td>
+  <td>
+    <select id="Uterus" name="Uterus"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 35039007 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.cervix">Cervix</td>
+  <td>
+    <select id="Cervix" name="Cervix"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 71252005 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.vagina">Vagina</td>
+  <td>
+    <select id="Vagina" name="Vagina"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 76784001 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.penis">Penis</td>
+  <td>
+    <select id="Penis" name="Penis"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 18911002 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.prostate">Prostate</td>
+  <td>
+    <select id="Prostate" name="Prostate"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 41216001 </span></td>
+</tr>
+<tr>
+  <td data-i18n="census.organ.testis">Testis</td>
+  <td><span data-i18n="census.left">L:</span>
+    <select id="Testis-l" name="Testis-l"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select>  <br/><span data-i18n="census.right">R:</span>
+    <select id="Testis-r" name="Testis-r"><option value="ns" selected="true" data-i18n="census.status.notStated">Not Stated</option><option value="nr" data-i18n="census.status.notRelevant">Not Relevant</option><option value="p" data-i18n="census.status.present">Present</option><option value="a" data-i18n="census.status.transplanted">Transplanted In /(re)constructed</option><option value="i" data-i18n="census.status.implant">Implant / Prosthesis</option><option value="g" data-i18n="census.status.missing">Missing</option><option value="np" data-i18n="census.status.notAtBirth">Not Present at Birth</option><option value="pr" data-i18n="census.status.partialRemoved">Partially Surgically Removed</option><option value="r" data-i18n="census.status.surgicalRemoved">Surgically Removed</option><option value="w" data-i18n="census.status.lostAccident">Lost in accident/attack</option></select><br class="ips"/><span class="ips">SCT 40689003 </span></td>
+</tr>
+</table>
+</div>
+
+<div id="Womens" class="tabcontent">
+
+<!-- 6 things from FIGO https://en.wikipedia.org/wiki/FIGO_classification_of_uterine_bleeding#/media/File:System_1_Nomenclature_and_Definitions_2016.jpg -->
+
+<table class="grid">
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="womens.pregnancySection">Pregnancy</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.pregnancyStatus">Status</b></td> 
+    <td>
+     <select id="pregnancy-status" name="pregnancy-status">
+       <option value="no-answer" selected="true" data-i18n="womens.pregnancyOpts.noAnswer">--</option>
+       <option value="77386006" data-i18n="womens.pregnancyOpts.pregnant">Pregnant</option>
+       <option value="60001007" data-i18n="womens.pregnancyOpts.notPregnant">Not pregnant</option>
+       <option value="146799005" data-i18n="womens.pregnancyOpts.possible">Possible pregnancy</option>
+     </select><br class="ips"/><span class="ips">IPS: Composition.section[pregnancy].entry->Observation[pregnancyStatus].valueCodeableConcept</span>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.lmpLabel">LMP</b></td> 
+    <td><input type="text" name="lmp" size="10"/><span data-i18n="womens.lmpHint"> (YYYY-MM(-DD))</span><br class="ips"/><span class="ips">IPS: Composition.section[pregnancy].entry->Observation[LOINC:8665-2].value</span></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.eddLabel">Estimated Del. Date</b></td> 
+    <td><input type="text" name="edd" size="10"/><span data-i18n="womens.eddHint"> (YYY-MM(-DD))</span><br class="ips"/><span class="ips">IPS: Composition.section[pregnancy].entry->Observation[LOINC:11778-8].value</span></td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="womens.menstruationSection">Menstruation</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.menstruationStatus">Status</b></td> 
+    <td>
+     <select id="menstruation-status" name="menstruation-status">
+       <option value="no-answer" selected="true" data-i18n="womens.menstruationOpts.noAnswer">--</option>
+       <option value="future" data-i18n="womens.menstruationOpts.future">Not (yet) a thing</option>
+       <option value="current" data-i18n="womens.menstruationOpts.current">A current thing</option>
+       <option value="past" data-i18n="womens.menstruationOpts.past">In my past</option>
+     </select>
+     <br class="ips"/><span class="ips">IPS: Composition.section[reproductiveHealth].entry->Observation[LOINC:8678-5].valueCodeableConcept : 22636003 | 289904000 | 289903006</span>
+     <!-- 22636003 | Premenopausal state | 289904000 | Menopause absent | 289903006 | Menopause present -->
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.frequencyLabel">Frequency</b></td> 
+    <td>
+     <select id="period-frequency" name="period-frequency">
+       <option value="no-answer" selected="true" data-i18n="womens.frequencyOpts.noAnswer">--</option>
+       <option value="absent" data-i18n="womens.frequencyOpts.absent">Absent</option>
+       <option value="frequent" data-i18n="womens.frequencyOpts.frequent">Frequent (&lt;24 days)</option>
+       <option value="normal" data-i18n="womens.frequencyOpts.normal">Normal (24-38 days)</option>
+       <option value="infrequent" data-i18n="womens.frequencyOpts.infrequent">Infrequent (&gt;38 days)</option>
+     </select><br class="ips"/><span class="ips">IPS: Composition.section[reproductiveHealth].entry->Observation[SCT:289887006].valueCodeableConcept : SCT:14302001|289892008|282027006|52073004</span>
+    <!-- 14302001 "Amenorrhea" | 289892008 "Short menstrual cycle" | 282027006 "Normal period" |  52073004 "Oligomenorrhea" -->
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.durationLabel">Duration</b></td> 
+    <td>
+     <select id="period-duration" name="period-duration">
+     <option value="no-answer" selected="true" data-i18n="womens.durationOpts.noAnswer">--</option>
+     <option value="normal" data-i18n="womens.durationOpts.normal">Normal (up to 8 days)</option>
+     <option value="prolonged" data-i18n="womens.durationOpts.prolonged">Prolonged (&gt; 8 days)</option>
+    </select><br class="ips"/><span class="ips">IPS: : Composition.section[reproductiveHealth].entry->Observation[SCT:161720007].valueCodeableConcept : 17621005 | 255224006</span>
+     <!-- 17621005 | Normal | 255224006 | Prolonged -->
+   </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.regularityLabel">Regularity</b></td> 
+    <td>
+     <select id="period-regularity" name="period-regularity">
+      <option value="no-answer" selected="true" data-i18n="womens.regularityOpts.noAnswer">--</option>
+      <option value="regular" data-i18n="womens.regularityOpts.regular">Regular Variation (shortest to longest &lt; 9 days)</option>
+      <option value="irregular" data-i18n="womens.regularityOpts.irregular">Irregular  (shortest to longest &gt; 9 days)</option>
+     </select><br class="ips"/><span class="ips">IPS: : Composition.section[reproductiveHealth].entry->Observation[SCT:364307006].valueCodeableConcept : 302757007 | 80182007</span>
+     <!-- 302757007 "Regular periods" | 80182007 " Irregular periods" -->
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.volumeLabel">Flow Volume</b></td> 
+    <td>
+     <select id="period-volume" name="period-volume">
+      <option value="no-answer" selected="true" data-i18n="womens.volumeOpts.noAnswer">--</option>
+      <option value="heavy" data-i18n="womens.volumeOpts.heavy">Heavy</option>
+      <option value="normal" data-i18n="womens.volumeOpts.normal">Normal</option>
+      <option value="light" data-i18n="womens.volumeOpts.light">Light</option>
+     </select><br class="ips"/><span class="ips">IPS: : Composition.section[reproductiveHealth].entry->Observation[Custom:menstrual-flow].valueCodeableConcept : 386692008 | 282027006 | 64206003</span>
+     <!-- 386692008 "Menorrhagia" | 282027006 "Normal period" | 64206003 "Hypomenorrhea" -->
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.bleedingLabel">Intermenstrual Bleeding</b></td> 
+    <td>
+     <select id="period-bleeding" name="period-bleeding">
+      <option value="no-answer" selected="true" data-i18n="womens.bleedingOpts.noAnswer">--</option>
+      <option value="none" data-i18n="womens.bleedingOpts.none">None</option>
+      <option value="random" data-i18n="womens.bleedingOpts.random">Random</option>
+      <option value="predictable" data-i18n="womens.bleedingOpts.predictable">Predictable</option>
+     </select><br class="ips"/><span class="ips">IPS: : Composition.section[reproductiveHealth].entry->Observation[SCT:248965005].valueCodeableConcept : SCT 78456001 | 64996003 | 237132003</span>
+     <!-- 78456001 | Normal menstrual cycle | 64996003 | Irregular intermenstrual bleeding | 237132003 | Intermenstrual bleeding - regular -->
+    </td>
+  </tr>
+  <!--
+  <tr>
+    <td><b>Unscheduled Bleeding on Hormone</b></td> 
+    <td>
+     <select id="period-hormone" name="period-hormone">
+      <option value="no-answer" selected="true">--</option>
+      <option value="na">Not Applicable (not on hormone medication)</option>
+      <option value="none">None (on hormone regulation)</option>
+      <option value="present">Present</option>
+     </select><br class="ips"/><span class="ips">IPS: ?</span>
+    </td>
+  </tr>
+  -->
+  <tr>
+    <td><b data-i18n="womens.ironLabel">Iron Status</b></td> 
+    <td>
+     <select id="period-iron" name="period-iron">
+      <option value="no-answer" selected="true" data-i18n="womens.ironOpts.noAnswer">--</option>
+      <option value="checked" data-i18n="womens.ironOpts.checked">Checked - OK</option>
+      <option value="unsure" data-i18n="womens.ironOpts.unsure">Not Sure</option>
+      <option value="low" data-i18n="womens.ironOpts.low">Low</option>
+     </select><br class="ips"/><span class="ips">IPS: ?</span>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" style="background-color: #eeeeee;"><b data-i18n="womens.mensSection">Men's Health</b></td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.edLabel">Erectile Function</b></td> 
+    <td>
+     <select id="ed" name="ed"> 
+       <option value="no-answer" selected="true" data-i18n="womens.edOpts.noAnswer">--</option>
+       <option value="fine" data-i18n="womens.edOpts.fine">Working Fine</option>
+       <option value="mild" data-i18n="womens.edOpts.mild">Not working as desired</option>
+       <option value="problem" data-i18n="womens.edOpts.problem">A real problem</option>
+     </select><br class="ips"/><span class="ips">IPS: ?</span>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.urinationLabel">Urination</b></td> 
+    <td>
+     <select id="urination" name="urination"> 
+       <option value="no-answer" selected="true" data-i18n="womens.urinationOpts.noAnswer">--</option>
+       <option value="fine" data-i18n="womens.urinationOpts.fine">No Problem</option> // 102834005 | Normal micturition
+       <option value="medium" data-i18n="womens.urinationOpts.medium">A little difficult</option>249279003 | Must strain to pass urine
+       <option value="serious" data-i18n="womens.urinationOpts.serious">Quite the problem</option>102835006 | Difficulty passing urine
+     </select><br class="ips"/><span class="ips">IPS: ?</span>
+    </td>
+  </tr>
+  <tr>
+    <td><b data-i18n="womens.prostateLabel">Prostate Cancer</b></td> 
+    <td>
+     <select id="prostate-screen" name="prostate-screen"> 
+       <option value="no-answer" selected="true" data-i18n="womens.prostateOpts.noAnswer">--</option>
+       <option value="never" data-i18n="womens.prostateOpts.never">Not Done in the past</option> 
+       <option value="recent" data-i18n="womens.prostateOpts.recent">Done in the last two years</option> 
+       <option value="older" data-i18n="womens.prostateOpts.older">Done more than two years ago</option>
+       <option value="unsure" data-i18n="womens.prostateOpts.unsure">Not sure</option>
+     </select><br class="ips"/><span class="ips">IPS: ?</span>
+    </td>
+  </tr>
+</table>
+</div>
+
+
+</form>
+
+
+<!-- <input type="file" id="jsonUpload" accept="application/json" onchange="handleFile(this.files[0])"> -->
+
+<div id="doc" style="display: none">
+ <p>
+  <span data-i18n="actions.generatedSee">Generated. See the document as </span>
+  <button class="button" id="showJSON" data-i18n="actions.showJson">JSON</button>
+  <button class="button" id="showHTML" data-i18n="actions.showHtml">User View</button>
+ </p>
+</div>
+<div id="docActions"></div>
+<pre style="display: none; background-color: #ffebee; border-color: red;" id="errorPanel" data-i18n="actions.errorPanel">
+The document isn't generated yet...
+</pre>
+<div id="previewDiv" style="display: none">
+<p><span data-i18n-html="actions.jsonSourceHtml"><b>JSON Document Source</b> </span><a class="button" id="hideJSON" data-i18n="actions.hideJson">Hide this Source</a></p>
+<pre id="preview">
+</pre>
+</div>
+<div id="htmlviewDiv" style="display: none">
+<p><span data-i18n-html="actions.htmlPreviewHtml"><b>HTML Preview</b> </span><a class="button" id="hideHTML" data-i18n="actions.hideHtml">Hide this preview</a></p>
+<div id="htmlview">
+</div>
+</div>
+<script type="text/javascript">
+  setupMedicationAutocomplete('#medication1');
+  setupAllergyAutocomplete('#ai1');
+  setupClinicalAutocomplete('#issue1');
+  setupClinicalAutocomplete('#event1');
+  openTab(event, 'Notes');
+</script>
+
+
+<!--
+Both
+ADHD
+Adenomyosis
+Anaemia/Iron Deficiency
+Anxiety
+Arthritis
+Asthma
+COPD
+Blood & Clotting Disorders
+Chronic Fatigue
+Crohn's / Colitis
+Depression
+Diabetes
+Eating Disorder
+Endometriosis
+Epilepsy
+Fibromyalgia
+High Blood Pressure
+High Cholesterol
+Insomnia
+Interstitial Cystitis
+Kidney Disease
+Low Blood Pressure
+Malnutrition
+Migraines
+Osteoporosis
+Stroke
+Varicose Veins
+
+Female
+PCOS
+Pelvic Organ Prolapse
+Uterine Fibroids
+Uterine/Cervical Polyps
+
+Male
+Enlarged Prostate
+Erectile Dysfunction 
+
+Cancers
+ Lung
+ Skin
+ Colon
+ Blood (Lymphone / Leukemia / )
+ Breast
+ Ovarian
+ Testicular 
+
+---------
+
+271397001 Menstrual Data
+
+---------
+
+MENSTRUAL HISTORY: 
+Age of first menstrual period: (364314008 "Age of onset of menstruation")
+Date your last period began: (161713000 "Last menstrual period - First day")
+Duration of menstrual period:  (days) (161715007 "Usual duration of menstrual flow")
+
+
+Please assess the intensity of your menstrual bleeding, generally (indicate on the scale below): (364313002 "Measure of menstruation{})
+*   1 - 10 (No bleeding at all -> The heaviest possible menstrual bleeding I have ever had)
+
+
+To what extent does your period impact your daily activities (please indicate on the scale below):  (no SCT Code)
+  1 - 10 (It does not interfere with my daily activities at all -> It completely interferes with my daily activities)
+
+During heavier bleeding days do you:
+  Have to use double protection or get up to change your sanitary protection during the night? • Yes D No   (no SCT Code)
+  Worry about staining the seat of your chair, sofa, etc? • Yes O No    (no SCT Code)
+  Avoid certain activities, travel, or leisure plans, because you need to change your tampon or pad frequently? • Yes • No    (no SCT Code)
+
+Do you have period pain? (No SCT Code)
+ • Yes (289900009 "Period pain present")
+ • No (289901008 "Period pain absent")
+ • Occasionally  (No SCT Code)
+
+Pain Score (0-10)  (225908003 "Pain score" / 72514-3 "Pain scale")
+If so, how old were you when your periods became painful? (No SCT/LOINC Code)
+How many days each month do you have period pain for? (No SCT/LOINC Code
+Where do you feel your period pain? (No SCT/LOINC Code
+  • Low abdomen at the front
+  • Lower back
+  • Left side lower abdomen
+  • Right side lower abdomen
+  • Front at the legs
+  • Back of the legs
+  • Foot
+  • Anal area
+  • Other
+
+Do period pain medications (ibuprofen, Ponstan, Naprogesic etc.) help your period pain? (No SCT/LOINC Code
+• Yes • a little • not at all • I have ever tried these medications
+-->

@@ -1,6 +1,7 @@
 const { CodeSystemProvider, FilterExecutionContext, CodeSystemFactoryProvider} = require('./cs-api');
 const assert = require('assert');
 const { CodeSystem } = require("../library/codesystem");
+const { Issue } = require('../library/operation-outcome');
 
 class AreaCodeConcept {
   constructor(code, display, abbrev, class_) {
@@ -186,7 +187,8 @@ class AreaCodeServices extends CodeSystemProvider {
       }
       filterContext.filters.push(result);
     } else {
-      throw new Error(`The filter ${prop} ${op} = ${value} is not supported for ${this.system()}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
   }
 
@@ -238,7 +240,21 @@ class AreaCodeServices extends CodeSystemProvider {
         return concept;
       }
     }
-    return `Code '${code}' not found in filter set`;
+    return null;
+  }
+
+  // Text filter ($expand filter): the codes, displays (CodeSystemProvider._searchConceptList)
+  async searchFilter(filterContext, filter, sort) {
+    assert(filterContext && filterContext instanceof FilterExecutionContext, 'filterContext must be a FilterExecutionContext');
+    const result = new AreaCodeConceptFilter();
+    result.list = await this._searchConceptList(filterContext, filter, sort, this.codes);
+    filterContext.filters.push(result);
+    return filterContext;
+  }
+
+  async _rootDisplay(code) {
+    const concept = this.codeMap.get(code);
+    return concept ? concept.display || null : null;
   }
 
   async filterCheck(filterContext, set, concept) {

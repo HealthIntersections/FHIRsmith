@@ -1,9 +1,16 @@
 const path = require('path');
+const { assertNoActiveContent } = require('../../library/narrative-check');
+const fs = require('fs').promises;
 const { AbstractValueSetProvider } = require('./vs-api');
 const { PackageContentLoader } = require('../../library/package-manager');
 const { ValueSetDatabase } = require('./vs-database');
+const { checkContained } = require('../library/canonical-resource');
 const { VersionUtilities } = require('../../library/version-utilities');
 const {validateParameter} = require("../../library/utilities");
+const { applyIdPrefix, stripIdPrefix } = require('../library/resource-ids');
+const { keepForPinnedReference } = require('../library/tho-precedence');
+const { waitForCache } = require('../library/wait-for-cache');
+const { markFilters, libraryFilterMemos } = require('../library/filter-memo');
 
 /**
  * Package-based ValueSet provider using shared database layer
@@ -13,19 +20,28 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
 
   /**
    * @param {PackageContentLoader} packageLoader - Path to the extracted package folder
+   * @param {Object} [options]
+   * @param {boolean} [options.readOnly] - a tx-worker (cluster.md): the cache is the master's; it
+   *   is opened read-only, waited for until the master has finished it, and never built or changed
    */
-  constructor(packageLoader) {
+  constructor(packageLoader, options = {}) {
     super();
     validateParameter(packageLoader, "packageLoader", PackageContentLoader);
     this.packageLoader = packageLoader;
-    this.dbPath = path.join(packageLoader.packageFolder, '.valuesets.db');
-    this.database = new ValueSetDatabase(this.dbPath);
+    // -2: caches from before value sets were checked for active content in their narrative
+    // are rebuilt (see initialize)
+    this.dbPath = path.join(packageLoader.packageFolder, '.valuesets-2.db');
+    this.readOnly = !!options.readOnly;
+    this.database = new ValueSetDatabase(this.dbPath, { readOnly: this.readOnly });
     this.valueSetMap = new Map();
     this.initialized = false;
     this.count = 0;
     this.sourcePackageCode = packageLoader.id();
   }
 
+  code() {
+    return this.sourcePackageCode;
+  }
   sourcePackage() {
     return this.sourcePackageCode;
   }
@@ -39,16 +55,108 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
       return;
     }
     await this.packageLoader.initialize();
+    if (this.readOnly) {
+      await waitForCache(async () => (await this.database.exists()) && (await this.database.isComplete()),
+        `Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: value set cache ${this.dbPath}`);
+      this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
+      this.#finishLoad();
+      return;
+    }
+    await fs.rm(path.join(this.packageLoader.packageFolder, '.valuesets.db'), { force: true }); // the old cache
 
-    const dbExists = await this.database.exists();
+    // A cache is only used once its population finished. One that was cut short
+    // (the process killed part way through) would otherwise be trusted forever,
+    // silently missing whatever hadn't been written yet
+    let dbExists = await this.database.exists();
+    if (dbExists && !(await this.database.isComplete())) {
+      require('../../library/logger').getInstance().child({ module: 'tx' })
+        .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: value set cache ${this.dbPath} is incomplete - rebuilding it`);
+      await this.#discardDatabase();
+      dbExists = false;
+    }
 
     if (!dbExists) {
-      await this.database.create();
-      await this._populateDatabase();
+      await this.#buildDatabase();
     }
 
     this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
+
+    // Self-heal caches built before pipe-versioned canonical urls were normalized at
+    // load time (the R4 v2 tables 0006/0360/0391 - see normalizeVersionedCanonicals in
+    // package-manager.js): if any cached value set still carries a "system|version"
+    // include or a pipe in its url, rebuild this cache from the package.
+    if (dbExists && this.#hasPipeVersionedCanonicals()) {
+      await this.#discardDatabase();
+      await this.#buildDatabase();
+      this.valueSetMap = await this.database.loadAllValueSets(this.sourcePackage());
+    }
+    this.#finishLoad();
+  }
+
+  #finishLoad() {
+    // Mark each value set as cached as it enters the store: it is retained in
+    // memory for the process lifetime, so its compose.include.filter elements
+    // persist and a provider may memoise resolved filter analysis on them
+    // (see CodeSystemProvider.filter()'s `fc` parameter).
+    for (const vs of this.valueSetMap.values()) {
+      if (vs) {
+        // non-enumerable: internal marker only, must never serialise into a
+        // response or be copied by structuredClone/spread when a VS is cloned.
+        Object.defineProperty(vs, 'isCached', { value: true, enumerable: false, configurable: true, writable: true });
+        // what providers remember on its filters is kept within a budget (library/filter-memo.js)
+        markFilters(vs, libraryFilterMemos);
+      }
+    }
+    // nothing, unless the spaceId was assigned before the provider was initialized
+    this.#applyIdPrefix();
     this.initialized = true;
+  }
+
+  /**
+   * Create the cache and fill it from the package. The complete marker is written
+   * last, so a build that doesn't finish is detected (and redone) next time
+   * @private
+   */
+  async #buildDatabase() {
+    await this.database.create();
+    await this._populateDatabase();
+    await this.database.markComplete();
+  }
+
+  /**
+   * Close and delete the cache file, leaving a fresh (not yet created) database
+   * @private
+   */
+  async #discardDatabase() {
+    await this.database.close();
+    await fs.rm(this.dbPath, { force: true });
+    this.database = new ValueSetDatabase(this.dbPath);
+  }
+
+  /**
+   * True if any loaded value set still has a pipe-versioned canonical (url or
+   * compose include/exclude system) - the signature of a cache written before
+   * load-time normalization existed.
+   */
+  #hasPipeVersionedCanonicals() {
+    for (const vs of this.valueSetMap.values()) {
+      if (!vs) {
+        continue;
+      }
+      if (typeof vs.url === 'string' && vs.url.includes('|')) {
+        return true;
+      }
+      if (vs.compose) {
+        for (const list of [vs.compose.include, vs.compose.exclude]) {
+          for (const inc of list || []) {
+            if (typeof inc.system === 'string' && inc.system.includes('|')) {
+              return true;
+            }
+          }
+        }
+      }
+    }
+    return false;
   }
 
   async close() {
@@ -71,6 +179,17 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     for (const entry of valueSetEntries) {
       const valueSet = await this.packageLoader.loadFile(entry);
       if (valueSet.url) {
+        try {
+          // don't store a value set the server can't use (e.g. one that contains a
+          // CodeSystem): it would be listed by search, and fail when read
+          checkContained(valueSet);
+          // its narrative is shown as-is in a page, so it must not carry script
+          assertNoActiveContent(valueSet);
+        } catch (e) {
+          require('../../library/logger').getInstance().child({ module: 'tx' })
+            .warn(`Package ${this.packageLoader.pid ? this.packageLoader.pid() : ''}: skipping ValueSet ${valueSet.url}: ${e.message}`);
+          continue;
+        }
         valueSets.push(valueSet);
       }
     }
@@ -147,7 +266,9 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
     this._validateSearchParams(searchParams);
 
     if (this.USE_DATABASE_SEARCH) {
-      return await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+      const results = await this.database.search(this.spaceId, this.valueSetMap, searchParams, elements);
+      return this.#excludedIds.size === 0 ? results
+        : results.filter(r => !this.#excludedIds.has(stripIdPrefix((r.jsonObj || r).id, this.spaceId)));
     } else {
       const matches = [];
       const seen = new Set(); // Track by URL to avoid duplicates from versioned keys
@@ -165,7 +286,7 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
 
         // Only process each ValueSet once (use URL to deduplicate)
         const vsUrl = json.url;
-        if (seen.has(vsUrl)) {
+        if (seen.has(vsUrl) || this.#excludedUrls.has(vsUrl)) {
           continue;
         }
 
@@ -189,6 +310,13 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               isMatch = false;
               break;
             }
+          } else if (param === 'version') {
+            // version-aware matching, on the version as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'version').value;
+            if (!VersionUtilities.versionSearchMatches(asked, json.version, VersionUtilities.versionAlgorithmOf(json))) {
+              isMatch = false;
+              break;
+            }
           } else if (param === 'jurisdiction') {
             // Special handling for jurisdiction - array of CodeableConcept
             if (!this._matchJurisdiction(json.jurisdiction, searchValue)) {
@@ -202,8 +330,22 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
               break;
             }
           } else if (param === 'url') {
-            const propValue = json[param];
-            if (!this._matchValueFull(propValue, searchValue)) {
+            // an exact match, on the url as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'url').value;
+            if (json.url !== asked) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:below') {
+            // a left match, on the url as asked for (not lower cased)
+            const asked = searchParams.find(sp => sp.name === 'url:below').value;
+            if (!(json.url || '').startsWith(asked)) {
+              isMatch = false;
+              break;
+            }
+          } else if (param === 'url:contains') {
+            // the url contains the value, without regard to case (the value is lower cased above)
+            if (!(json.url || '').toLowerCase().includes(searchValue)) {
               isMatch = false;
               break;
             }
@@ -333,38 +475,19 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
   }
 
   async fetchValueSetById(id) {
-    return this.valueSetMap.get(id);
+    // the map is keyed by the value set's own id (and its url); the value set itself
+    // carries the prefixed id, which is how a url key that happens to match is excluded
+    const vs = this.valueSetMap.get(stripIdPrefix(id, this.spaceId));
+    return vs && vs.id === id ? vs : null;
   }
 
-  // eslint-disable-next-line no-unused-vars
-  assignIds(ids) {
-    if (!this.spaceId) {
-      return;
-    }
+  prefixIds() {
+    this.#applyIdPrefix();
+  }
 
-    const prefix = this.spaceId + '-';
-    const alreadyPrefixed = new Set();
-
-    // Get all current entries - we'll iterate and modify
-    const entries = Array.from(this.valueSetMap.entries());
-
-    // eslint-disable-next-line no-unused-vars
-    for (const [key, vs] of entries) {
-      // Skip if we've already processed this ValueSet instance
-      if (alreadyPrefixed.has(vs)) {
-        continue;
-      }
-
-      // Update the id on the ValueSet itself
-      if (vs.id && !vs.id.startsWith(prefix)) {
-        const oldId = vs.id;
-        vs.id = prefix + oldId;
-
-        // Add to map under the new id as well
-        this.valueSetMap.set(vs.id, vs);
-      }
-
-      alreadyPrefixed.add(vs);
+  #applyIdPrefix() {
+    for (const vs of new Set(this.valueSetMap.values())) {
+      applyIdPrefix(vs, this.spaceId);
     }
   }
 
@@ -373,8 +496,42 @@ class PackageValueSetProvider extends AbstractValueSetProvider {
   }
 
   async listAllValueSets() {
-    return await this.database.listAllValueSets();
+    const urls = await this.database.listAllValueSets();
+    return this.#excludedUrls.size === 0 ? urls : urls.filter(url => !this.#excludedUrls.has(url));
   }
+
+  // the value sets left out by keepPinnedOnly - by url, and by their own (unprefixed) id
+  #excludedUrls = new Set();
+  #excludedIds = new Set();
+
+  /**
+   * The value sets with these urls are hl7.terminology's to provide (see
+   * Provider.applyTHOPrecedence): from this (core) package they are only available to a
+   * reference that names their version, where THO doesn't provide that version itself. They
+   * aren't the default for their url, can't be read by id, aren't found by search or listed.
+   * Must be called once the provider is initialized - the database is shared, so it isn't
+   * changed.
+   *
+   * @param {Map<string, Set<string>>} thoVersions - url -> the versions hl7.terminology provides
+   */
+  keepPinnedOnly(thoVersions) {
+    const affected = new Set();
+    for (const vs of this.valueSetMap.values()) {
+      if (vs && thoVersions.has(vs.url)) {
+        affected.add(vs);
+      }
+    }
+    for (const [key, vs] of [...this.valueSetMap]) {
+      if (affected.has(vs) && !keepForPinnedReference(key, vs, thoVersions.get(vs.url))) {
+        this.valueSetMap.delete(key);
+      }
+    }
+    for (const vs of affected) {
+      this.#excludedUrls.add(vs.url);
+      this.#excludedIds.add(stripIdPrefix(vs.id, this.spaceId) ?? vs.id);
+    }
+  }
+
 }
 
 module.exports = {

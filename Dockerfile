@@ -22,10 +22,29 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY package*.json ./
 COPY . .
 
-# Define build argument for version
+# Define build arguments for provenance. VERSION is also handed to the running
+# server as APP_VERSION; the three of them become OCI labels so that the image
+# itself says which release it is, which is what links the package to this repo
+# on GHCR and what `docker inspect` reports.
 ARG VERSION=development
+ARG REVISION=unknown
+ARG CREATED=unknown
 ENV APP_VERSION=$VERSION
+# Express (and the libraries that check it) run in production mode
+ENV NODE_ENV=production
+
+LABEL org.opencontainers.image.title="FHIRsmith" \
+      org.opencontainers.image.description="A Node.js server that provides a collection of tools to serve the FHIR ecosystem" \
+      org.opencontainers.image.vendor="Health Intersections Pty Ltd" \
+      org.opencontainers.image.licenses="BSD-3-Clause" \
+      org.opencontainers.image.url="https://github.com/HealthIntersections/fhirsmith" \
+      org.opencontainers.image.source="https://github.com/HealthIntersections/fhirsmith" \
+      org.opencontainers.image.documentation="https://github.com/HealthIntersections/fhirsmith#readme" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}"
 
 # Expose port and define command
 EXPOSE 3000
-CMD ["node", "server.js"]
+# --expose-gc: the memory guard forces a GC while it refuses requests (library/memory-guard.js)
+CMD ["node", "--expose-gc", "server.js"]

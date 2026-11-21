@@ -134,6 +134,11 @@ class ParametersXML extends FhirXmlBase {
    * @private
    */
   static _renderResource(resource, level, fhirVersion) {
+    // re-indented line by line below, so it has to be rendered whole (see toXmlAsync)
+    return this.withoutDeferral(() => this._renderResourceInner(resource, level, fhirVersion));
+  }
+
+  static _renderResourceInner(resource, level, fhirVersion) {
     const resourceType = resource.resourceType;
     if (!resourceType) {
       return '';
@@ -184,6 +189,7 @@ class ParametersXML extends FhirXmlBase {
     let xml = '';
     const resourceType = resource.resourceType;
     if (resourceType) {
+      this.checkElementName(resourceType);
       xml += `${this.indent(level)}<${resourceType} xmlns="${this.getNamespace()}">\n`;
       for (const [key, value] of Object.entries(resource)) {
         if (key !== 'resourceType') {

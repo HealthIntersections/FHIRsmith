@@ -36,14 +36,35 @@ class MetadataHandler {
 
     if (mode === 'terminology') {
       this.logInfo = 'termcaps';
-      const tc = new TerminologyCapabilities(await this.buildTerminologyCapabilities(endpoint, provider));
+      const tc = new TerminologyCapabilities(await this.buildTerminologyCapabilities(endpoint, provider, req));
       return res.json(tc.jsonObj);
     }
     this.logInfo = 'metadata';
 
     // Default: return CapabilityStatement
-    const cs = new CapabilityStatement(this.buildCapabilityStatement(endpoint, provider));
+    const cs = new CapabilityStatement(this.buildCapabilityStatement(endpoint, provider, req));
     return res.json(cs.jsonObj);
+  }
+
+  /**
+   * Resolve the public base URL for this request.
+   * Derived from what the client actually asked for (scheme + host) plus the
+   * endpoint path, so the server echoes the host the client used rather than a
+   * fixed, hardcoded value. Falls back to config/host only when no request is
+   * available (e.g. unit tests calling the build methods directly).
+   * @param {express.Request} [req] - Express request
+   * @param {Object} endpoint - Endpoint info {path, ...}
+   * @returns {string} Base URL, e.g. https://tx.fhir.org/r4
+   */
+  resolveBaseUrl(req, endpoint) {
+    if (!req) {
+      return this.config.baseUrl || `https://${this.host}${endpoint.path}`;
+    }
+    // Requires app.set('trust proxy', ...) and nginx forwarding X-Forwarded-Proto
+    // for the scheme to be correct behind the reverse proxy.
+    const proto = req.protocol || 'https';
+    const host = req.get('host') || this.host;
+    return `${proto}://${host}${endpoint.path}`;
   }
 
   /**
@@ -106,11 +127,11 @@ class MetadataHandler {
    * @param {Object} provider - Provider for code systems and resources
    * @returns {Object} CapabilityStatement resource
    */
-  buildCapabilityStatement(endpoint) {
+  buildCapabilityStatement(endpoint, provider, req) {
 
     const now = new Date().toISOString();
     const fhirVersion = this.mapFhirVersion(endpoint.fhirVersion);
-    const baseUrl = this.config.baseUrl || `https://${this.host}${endpoint.path}`;
+    const baseUrl = this.resolveBaseUrl(req, endpoint);
     const serverVersion = this.config.serverVersion;
 
     return {
@@ -181,7 +202,8 @@ class MetadataHandler {
       software: {
         name: this.config.softwareName || 'FHIR Terminology Server',
         version: serverVersion,
-        releaseDate: this.config.releaseDate || now
+        // only when it's known - this used to fall back to the time of the request
+        ...(this.config.releaseDate ? { releaseDate: this.config.releaseDate } : {})
       },
       implementation: {
         description: `FHIR Server running at ${baseUrl}`,
@@ -233,7 +255,7 @@ class MetadataHandler {
               operation: [
                 { name: 'expand', definition: 'http://hl7.org/fhir/OperationDefinition/ValueSet-expand' },
                 { name: 'validate-code', definition: 'http://hl7.org/fhir/OperationDefinition/ValueSet-validate-code' },
-                { name: 'related', definition: 'https://raw.githubusercontent.com/HealthIntersections/FHIRsmith/refs/heads/main/tx/data/OperationDefinition-ValueSet-related.json' }
+                { name: 'compare', definition: 'http://hl7.org/fhir/tools/OperationDefinition/ValueSet-compare' }
               ]
             },
             {
@@ -251,8 +273,8 @@ class MetadataHandler {
                 { name: '_id', type: 'token' }
               ],
               operation: [
-                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-                { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }
+                { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' }
+                // closure is system level, not ConceptMap level - see rest.operation below
               ]
             }
           ],
@@ -265,8 +287,10 @@ class MetadataHandler {
             { name: 'subsumes', definition: 'http://hl7.org/fhir/OperationDefinition/CodeSystem-subsumes' },
             { name: 'validate-code', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-validate-code' },
             { name: 'translate', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-translate' },
-            { name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' },
-            { name: 'related', definition: 'https://raw.githubusercontent.com/HealthIntersections/FHIRsmith/refs/heads/main/tx/data/OperationDefinition-ValueSet-related.json' },
+            // only when the administrator has turned it on (modules.tx.closure)
+            ...(this.config.closure ? [{ name: 'closure', definition: 'http://hl7.org/fhir/OperationDefinition/ConceptMap-closure' }] : []),
+            { name: 'compare', definition: 'http://hl7.org/fhir/tools/OperationDefinition/ValueSet-compare' },
+            { name: 'cache-control', definition: 'http://hl7.org/fhir/tools/OperationDefinition/cache-control' },
             { name: 'versions', definition: 'http://hl7.org/fhir/OperationDefinition/fhir-versions' }
           ]
         }
@@ -280,9 +304,9 @@ class MetadataHandler {
    * @param {Object} provider - Provider for code systems and resources
    * @returns {Object} TerminologyCapabilities resource
    */
-  async buildTerminologyCapabilities(endpoint, provider) {
+  async buildTerminologyCapabilities(endpoint, provider, req) {
     const now = new Date().toISOString();
-    const baseUrl = this.config.baseUrl || `https://${this.host}${endpoint.path}`;
+    const baseUrl = this.resolveBaseUrl(req, endpoint);
     const serverVersion = this.config.serverVersion || '1.0.0';
 
     const tc = {
@@ -311,6 +335,10 @@ class MetadataHandler {
       validateCode: this.buildValidateCodeCapabilities(),
       translation: this.buildTranslationCapabilities()
     };
+    if (this.config.closure) {
+      // closure tables relate concepts within one code system, never across them
+      tc.closure = { translation: false };
+    }
 
     return tc;
   }
@@ -348,11 +376,46 @@ class MetadataHandler {
       }
     }
 
+    this.markDefaultVersions(provider, seenSystems);
+
     // Convert map to array and sort by URI
     const entries = Array.from(seenSystems.values());
     entries.sort((a, b) => (a.uri || '').localeCompare(b.uri || ''));
 
     return entries.length > 0 ? entries : undefined;
+  }
+
+  /**
+   * Mark the version a request that names no version gets - the default - as isDefault. That's
+   * what getCodeSystemProvider() finds under the url alone: a native code system (factory) first,
+   * else the CodeSystem resource the provider keeps there (the most recent of the versions loaded,
+   * see Provider.addCodeSystem). A code system with only one version has that as its default,
+   * however it's held
+   */
+  markDefaultVersions(provider, seenSystems) {
+    for (const [url, entry] of seenSystems) {
+      if (!entry.version || entry.version.length === 0) {
+        continue;
+      }
+      let def = null;
+      const factory = provider && provider.codeSystemFactories ? provider.codeSystemFactories.get(url) : null;
+      if (factory) {
+        def = factory.version();
+      } else {
+        const cs = provider && provider.codeSystems ? provider.codeSystems.get(url) : null;
+        if (cs) {
+          def = cs.version || (cs.jsonObj && cs.jsonObj.version) || null;
+        }
+      }
+      if (!def && entry.version.length === 1) {
+        def = entry.version[0].code;
+      }
+      for (const v of entry.version) {
+        if (v.code === def) {
+          v.isDefault = true;
+        }
+      }
+    }
   }
 
   /**
@@ -395,45 +458,61 @@ class MetadataHandler {
   buildExpansionCapabilities() {
     return {
       parameter: [
-        {
-          name: 'cache-id',
-          documentation: 'This server supports caching terminology resources between calls. Clients only need to send value sets and codesystems once; thereafter they are automatically in scope for calls with the same cache-id. The cache is retained for 30 min from last call'
-        },
+        // NOTE: `cache-id` is deliberately not advertised as an expansion parameter.
+        // Caching is now discovered via the $cache-control operation in the
+        // CapabilityStatement, not by advertising a cache-id parameter here. The old
+        // advertisement implied the implicit "auto-create on first sight" protocol,
+        // which has been replaced: a cache must be created explicitly with
+        // $cache-control?mode=start before its cache-id can be used. Clients that
+        // only know the old mechanism will see no cache-id parameter and simply not
+        // cache (inlining each request), which is correct, just not optimised.
         {
           name: 'tx-resource',
           documentation: 'Additional valuesets needed for evaluation e.g. value sets referred to from the import statement of the value set being expanded'
         },
-        { name: '_incomplete' },
+        // Parameters the $expand handler reads - see handleTypeLevelExpand in
+        // tx/workers/expand.js and TxParameters.seeParameter in tx/params.js.
+        // Keep this list in step with those when adding a parameter.
         { name: 'abstract' },
         { name: 'activeOnly' },
         { name: 'check-system-version' },
+        { name: 'check-valueset-version' },
         { name: 'count' },
         { name: 'default-to-latest-version' },
+        { name: 'default-valueset-version' },
+        { name: 'designation' },
         { name: 'displayLanguage' },
         { name: 'excludeNested' },
         { name: 'excludeNotForUI' },
         { name: 'excludePostCoordinated' },
+        { name: 'filter' },
         { name: 'force-system-version' },
-        { name: 'inactive' },
-        { name: 'includeAlternateCodes' },
+        { name: 'force-valueset-version' },
         { name: 'includeDefinition' },
         { name: 'includeDesignations' },
-        { name: 'incomplete-ok' },
-        { name: 'limitedExpansion' },
         {
-          name: 'mode',
-          documentation: '=lenient-display-validation'
+          name: 'limit',
+          documentation: 'Upper bound on the size of the expansion; the operation fails as too-costly beyond it'
         },
         { name: 'no-cache' },
         { name: 'offset' },
         { name: 'profile' },
         { name: 'property' },
-        { name: 'system-version' },
         {
-          name: 'valueSetMode',
-          documentation: '= CHECK_MEMBERSHIP_ONLY | NO_MEMBERSHIP_CHECK'
-        }
-      ]
+          name: 'sort',
+          documentation: 'code | display | design | prop:{name}; prefix with - to reverse. Ignored for hierarchical expansions'
+        },
+        { name: 'system-version' },
+        { name: 'url' },
+        { name: 'useSupplement' },
+        { name: 'valueSet' },
+        { name: 'valueSetVersion' }
+      ],
+      textFilter: 'On code systems loaded from files and packages, a text filter ignores case, and accents on Latin, Greek and Cyrillic letters. ' +
+        'It matches concepts whose code, display, definition or a designation contains the text. ' +
+        'A filter of several words also matches a display or designation in which each word starts a word, ' +
+        'in any order; for this, punctuation and spaces only separate words. The closest matches come first. ' +
+        'Other code systems, such as SNOMED CT, LOINC and RxNorm, match text in their own way.'
     };
   }
 

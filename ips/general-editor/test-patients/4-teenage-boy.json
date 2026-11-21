@@ -1,0 +1,1357 @@
+{
+  "resourceType": "Bundle",
+  "identifier": {
+    "system": "urn:ietf:rfc:3986",
+    "value": "urn:uuid:bca22250-376c-47aa-8d66-4a012646dea2"
+  },
+  "type": "document",
+  "timestamp": "2024-12-18T00:00:00.000Z",
+  "entry": [
+    {
+      "fullUrl": "urn:uuid:a4473fcf-3a4a-4e66-9d64-a43a56744c12",
+      "resource": {
+        "resourceType": "Composition",
+        "id": "0cfc221c-1bd4-48a7-9795-c00166fcd31c",
+        "status": "final",
+        "type": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "60591-5",
+              "display": "Patient summary Document"
+            }
+          ]
+        },
+        "date": "2024-12-18",
+        "title": "Patient Summary - Jaiden Ngalarra",
+        "section": [
+          {
+            "title": "Problem List",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11450-4",
+                  "display": "Problem list - Reported"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:deed3f60-2406-4db7-b526-305c0140b44d"
+              },
+              {
+                "reference": "urn:uuid:4db5e1d8-54e2-4e27-9c76-dd90e2a74e1e"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Category</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Fracture of rib</td><td>Problem List Item</td><td>Active / Confirmed</td><td>14-Nov 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Body sites</b><ul><li>Thoracic structure</li></ul></td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>Left 5th to 8th rib fractures (bicycle crash, 14 Nov 2024), no flail segment; healing. Pain controlled with paracetamol.</li></ul></td></tr><tr><td>Liver contusion (grade II), managed non-operatively</td><td>Problem List Item</td><td>Active / Confirmed</td><td>14-Nov 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>CT 15 Nov 2024. LFTs normalised Dec 2024. No contact sport for 3 months from injury (until mid-Feb 2025).</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Allergies and Intolerances",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "48765-2",
+                  "display": "Allergies and adverse reactions Document"
+                }
+              ]
+            },
+            "emptyReason": {
+              "coding": [
+                {
+                  "system": "http://terminology.hl7.org/CodeSystem/list-empty-reason",
+                  "code": "nilknown",
+                  "display": "Nil known"
+                }
+              ]
+            },
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p><i>Nil known</i></p></div>"
+            }
+          },
+          {
+            "title": "Medication Summary",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "10160-0",
+                  "display": "History of Medication use Narrative"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:0a16dfe8-ef45-4d97-86e5-cea0dd33468e"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Medication</th><th>Status</th><th>Reason</th><th>Effective</th><th>Dosage</th></tr></thead><tbody><tr><td>Paracetamol</td><td>active</td><td>Fracture of rib</td><td>20-Nov 24 - 15-Jan 25</td><td>500 mg every 6 hours when needed, up to 4 doses a day</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Immunizations",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11369-6",
+                  "display": "History of Immunization note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:ce399914-f9fa-4196-90f9-e43abcd44c2b"
+              },
+              {
+                "reference": "urn:uuid:53a5d2b7-161a-4e52-81b3-894458766a0a"
+              },
+              {
+                "reference": "urn:uuid:0aa9f348-7f80-46c5-8ef0-c81b4fa1fcd1"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Vaccine</th><th>Status</th><th>Date</th><th>Target disease</th></tr></thead><tbody><tr><td>Human papillomavirus 9-valent vaccine (Gardasil 9)</td><td>completed</td><td>08-Mar 23</td><td>Human papillomavirus infection</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>School program, year 7.</li></ul></td></tr><tr><td>Diphtheria, tetanus and pertussis vaccine (dTpa)</td><td>completed</td><td>08-Mar 23</td><td>Tetanus</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>School program, year 7.</li></ul></td></tr><tr><td>Influenza virus antigen-containing vaccine product</td><td>completed</td><td>02-May 24</td><td>Influenza</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Procedures",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47519-4",
+                  "display": "History of Procedures Document"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:7fa890e4-17d9-4e76-8f09-91b1482054c8"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Procedure</th><th>Status</th><th>Performed</th><th>Reason</th></tr></thead><tbody><tr><td>Insertion of intercostal catheter (left)</td><td>completed</td><td>15-Nov 24</td><td>Pneumothorax</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>Removed on day 4.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Results",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "30954-2",
+                  "display": "Relevant diagnostic tests/laboratory data note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:e6418966-01ed-4c89-876e-1ecbf8fb03a4"
+              },
+              {
+                "reference": "urn:uuid:ddd2fe41-a04a-4ef3-8f08-acc5d1b05c72"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Interpretation</th><th>Reference range</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Hemoglobin [Mass/volume] in Blood</td><td>128 g/L</td><td>Normal</td><td>120-160</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr><td>Alanine aminotransferase [Enzymatic activity/volume] in Serum or Plasma</td><td>28 U/L</td><td>Normal</td><td>&lt;40</td><td>10-Dec 24</td><td>final</td><td>Laboratory</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"6\"><b>Notes</b><ul><li>ALT was 210 U/L on admission.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Vital Signs",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8716-3",
+                  "display": "Vital Signs"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:a2bb6e6c-a1d0-43da-9f11-653991960eed"
+              },
+              {
+                "reference": "urn:uuid:11c9cc37-1397-4913-9a13-20411f9caf88"
+              },
+              {
+                "reference": "urn:uuid:4cc07bf7-04cf-42b4-bf8b-75951f783164"
+              },
+              {
+                "reference": "urn:uuid:ab363112-a089-4fb4-bf44-4fcd4b8ee276"
+              },
+              {
+                "reference": "urn:uuid:7b24d333-119a-4715-b264-f190aff4b9d3"
+              },
+              {
+                "reference": "urn:uuid:cf68507b-375b-4bf8-a112-00d518b66fed"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Blood pressure</td><td>112/68 mm[Hg]</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Heart rate</td><td>76 /min</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Respiratory rate</td><td>16 /min</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Oxygen saturation</td><td>98 %</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body weight</td><td>52 kg</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr><tr><td>Body height</td><td>165 cm</td><td>18-Dec 24</td><td>final</td><td>Vital Signs</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "History of Past Problems",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "11348-0",
+                  "display": "History of Past illness note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:bc883d04-1b92-40db-9732-865c1f011a11"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th><th>Abatement</th></tr></thead><tbody><tr><td>Pneumothorax</td><td>Resolved / Confirmed</td><td>14-Nov 24</td><td>19-Nov 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"3\"><b>Notes</b><ul><li>Left traumatic pneumothorax; intercostal catheter; chest X-ray 10 Dec 2024 shows full re-expansion.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Social History",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "29762-2",
+                  "display": "Social history note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:e67a7caf-c9d9-46e7-ad64-0c47a1a4c8fd"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Observation</th><th>Value</th><th>Date</th><th>Status</th><th>Category</th></tr></thead><tbody><tr><td>Tobacco smoking status</td><td>Never smoked tobacco</td><td>18-Dec 24</td><td>final</td><td>Social History</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Functional Status",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "47420-5",
+                  "display": "Functional Status Assessment Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:6e136726-aece-4983-acd6-132a9f41a1c8"
+              },
+              {
+                "reference": "urn:uuid:a4b15574-9302-4a06-9801-2156248c1498"
+              },
+              {
+                "reference": "urn:uuid:90ec57c8-2677-476b-a573-20f8110b1cc9"
+              },
+              {
+                "reference": "urn:uuid:f2e05ed6-9611-4aea-8284-6b4f0e0070df"
+              },
+              {
+                "reference": "urn:uuid:914f884c-5e89-4b4c-b403-ebbf1fc34c91"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Problem</th><th>Status</th><th>Onset</th></tr></thead><tbody><tr><td>Sensation of pain: MILD impairment</td><td>Active</td><td>14-Nov 24</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Chest wall pain on deep breathing and twisting.</li></ul></td></tr><tr><td>Exercise tolerance functions: MILD impairment</td><td>Active</td><td>14-Nov 24</td></tr><tr><td>Sports: performance COMPLETE problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>No football or other contact sport until cleared (liver injury) - mid-February 2025 at the earliest.</li></ul></td></tr><tr><td>School education: performance MILD problem</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Missed 3 weeks of term 4; back at school with modified PE.</li></ul></td></tr><tr><td>Immediate family: SUBSTANTIAL facilitator</td><td>Active</td><td>--</td></tr><tr class=\"ips-follow\"><td></td><td colspan=\"2\"><b>Notes</b><ul><li>Mother Michelle and grandmother closely involved.</li></ul></td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Plan of Care",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "18776-5",
+                  "display": "Plan of Care Note"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:061a3cdf-d487-4f92-a171-fcdef15f7a9f"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Title</th><th>Status</th><th>Intent</th><th>Period</th><th>Description</th></tr></thead><tbody><tr><td>Recovery after chest and abdominal trauma</td><td>active</td><td>plan</td><td>18-Dec 24 - 31-Mar 25</td><td>14-year-old from One Arm Point, five weeks after a bicycle crash with left rib fractures, a traumatic pneumothorax (drained, resolved) and a grade II liver contusion (non-operative). Recovering well; pain mild.\n\nPlan: graded return to activity - walking and swimming now; bike riding from January; no contact sport until cleared at the review in mid-February 2025 (liver). Breathing exercises. Seek care at once with abdominal pain, shoulder-tip pain, dizziness or breathlessness. Review by the visiting doctor in 4 weeks, with the Aboriginal Health Worker; family to be present. Telehealth follow-up with the Perth Children&#39;s Hospital trauma team if needed. He wants to get back to football and fishing, and is interested in marine biology.</td></tr></tbody></table></div>"
+            }
+          },
+          {
+            "title": "Alerts",
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "104605-1",
+                  "display": "Alert"
+                }
+              ]
+            },
+            "entry": [
+              {
+                "reference": "urn:uuid:579613f4-72bf-4050-b81b-004a089c5a90"
+              }
+            ],
+            "text": {
+              "status": "generated",
+              "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><table class=\"ips-section\"><thead><tr><th>Flag</th><th>Status</th><th>Period</th></tr></thead><tbody><tr><td>Prefers a family member present; involve the Aboriginal Health Worker</td><td>active</td><td>from 15-Nov 24</td></tr></tbody></table></div>"
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96",
+          "display": "Jaiden William Ngalarra"
+        },
+        "author": [
+          {
+            "reference": "urn:uuid:07cbe4e6-94a6-4593-89ca-118495201459",
+            "display": "Dr Kate Morrison"
+          }
+        ],
+        "custodian": {
+          "reference": "urn:uuid:6c178271-d077-42a0-91f1-5c402bd3d0e2",
+          "display": "Dampier Peninsula Remote Health Clinic"
+        },
+        "text": {
+          "status": "generated",
+          "div": "<div xmlns=\"http://www.w3.org/1999/xhtml\"><p class=\"ips-patient\"><b>Jaiden William Ngalarra</b>, male, DoB: 23-Sep 10</p><table class=\"ips-facts\"><tr><td><b>Contact details</b></td><td>phone: 0487654321; email: ngalarra.family@gmail.com</td></tr><tr><td><b>Address</b></td><td>One Arm Point, 6725, AU</td></tr></table><table class=\"ips-facts\"><tr><td><b>Date</b></td><td>18-Dec 24</td></tr><tr><td><b>Status</b></td><td>final</td></tr><tr><td><b>Type</b></td><td>Patient summary Document</td></tr><tr><td><b>Author</b></td><td>Dr Kate Morrison</td></tr><tr><td><b>Custodian</b></td><td>Dampier Peninsula Remote Health Clinic</td></tr></table></div>"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96",
+      "resource": {
+        "resourceType": "Patient",
+        "id": "ef3074b4-f926-463e-b93e-8de26386823f",
+        "name": [
+          {
+            "family": "Ngalarra",
+            "given": [
+              "Jaiden",
+              "William"
+            ]
+          }
+        ],
+        "gender": "male",
+        "birthDate": "2010-09-23",
+        "telecom": [
+          {
+            "system": "phone",
+            "value": "0487654321"
+          },
+          {
+            "system": "email",
+            "value": "ngalarra.family@gmail.com"
+          }
+        ],
+        "address": [
+          {
+            "text": "One Arm Point, 6725, AU"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:07cbe4e6-94a6-4593-89ca-118495201459",
+      "resource": {
+        "resourceType": "Practitioner",
+        "id": "f7b742a3-eb84-4700-ac22-7cc3d82084d7",
+        "name": [
+          {
+            "text": "Dr Kate Morrison"
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6c178271-d077-42a0-91f1-5c402bd3d0e2",
+      "resource": {
+        "resourceType": "Organization",
+        "id": "7fe9a164-5078-4414-8393-0a9d411178ad",
+        "name": "Dampier Peninsula Remote Health Clinic"
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:deed3f60-2406-4db7-b526-305c0140b44d",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "664bde98-24dc-4f50-bf34-f5c6d4cf48c1",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "33737001",
+              "display": "Fracture of rib"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11-14",
+        "bodySite": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "51185008",
+                "display": "Thoracic structure"
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Left 5th to 8th rib fractures (bicycle crash, 14 Nov 2024), no flail segment; healing. Pain controlled with paracetamol."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4db5e1d8-54e2-4e27-9c76-dd90e2a74e1e",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "8579965b-ee10-4316-814b-5dbce6582a57",
+        "code": {
+          "text": "Liver contusion (grade II), managed non-operatively"
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11-14",
+        "note": [
+          {
+            "text": "CT 15 Nov 2024. LFTs normalised Dec 2024. No contact sport for 3 months from injury (until mid-Feb 2025)."
+          }
+        ],
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/condition-category",
+                "code": "problem-list-item",
+                "display": "Problem List Item"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0a16dfe8-ef45-4d97-86e5-cea0dd33468e",
+      "resource": {
+        "resourceType": "MedicationStatement",
+        "id": "5cb42b67-8176-4c3c-b398-298a14772f97",
+        "medicationCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "387517004",
+              "display": "Paracetamol"
+            }
+          ]
+        },
+        "status": "active",
+        "effectivePeriod": {
+          "start": "2024-11-20",
+          "end": "2025-01-15"
+        },
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "33737001",
+                "display": "Fracture of rib"
+              }
+            ]
+          }
+        ],
+        "dosage": [
+          {
+            "text": "500 mg every 6 hours when needed, up to 4 doses a day",
+            "route": {
+              "coding": [
+                {
+                  "system": "http://snomed.info/sct",
+                  "code": "26643006",
+                  "display": "Oral route"
+                }
+              ]
+            }
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ce399914-f9fa-4196-90f9-e43abcd44c2b",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "97bef5b5-92ae-42cd-af91-f2b1235269f1",
+        "vaccineCode": {
+          "text": "Human papillomavirus 9-valent vaccine (Gardasil 9)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2023-03-08",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "240532009",
+                    "display": "Human papillomavirus infection"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "School program, year 7."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:53a5d2b7-161a-4e52-81b3-894458766a0a",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "3e91990e-f8a8-4edd-9ed6-f2e28f3ed9a1",
+        "vaccineCode": {
+          "text": "Diphtheria, tetanus and pertussis vaccine (dTpa)"
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2023-03-08",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "76902006",
+                    "display": "Tetanus"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "School program, year 7."
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:0aa9f348-7f80-46c5-8ef0-c81b4fa1fcd1",
+      "resource": {
+        "resourceType": "Immunization",
+        "id": "f51dd7e2-06c9-4a05-aaf3-b9cd2eb071ec",
+        "vaccineCode": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "836377006",
+              "display": "Influenza virus antigen-containing vaccine product"
+            }
+          ]
+        },
+        "status": "completed",
+        "occurrenceDateTime": "2024-05-02",
+        "protocolApplied": [
+          {
+            "targetDisease": [
+              {
+                "coding": [
+                  {
+                    "system": "http://snomed.info/sct",
+                    "code": "6142004",
+                    "display": "Influenza"
+                  }
+                ]
+              }
+            ]
+          }
+        ],
+        "patient": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7fa890e4-17d9-4e76-8f09-91b1482054c8",
+      "resource": {
+        "resourceType": "Procedure",
+        "id": "5bd54409-e0a0-4a2a-92c9-157a543c0336",
+        "code": {
+          "text": "Insertion of intercostal catheter (left)"
+        },
+        "status": "completed",
+        "performedDateTime": "2024-11-15",
+        "reasonCode": [
+          {
+            "coding": [
+              {
+                "system": "http://snomed.info/sct",
+                "code": "36118008",
+                "display": "Pneumothorax"
+              }
+            ]
+          }
+        ],
+        "note": [
+          {
+            "text": "Removed on day 4."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e6418966-01ed-4c89-876e-1ecbf8fb03a4",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "5f91aca7-5360-4290-a59d-8d5bcadc9037",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "718-7",
+              "display": "Hemoglobin [Mass/volume] in Blood"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 128,
+          "unit": "g/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "g/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "120-160"
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ddd2fe41-a04a-4ef3-8f08-acc5d1b05c72",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "67f48473-fd1d-4b97-a1d6-fc9ae7789c09",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "1742-6",
+              "display": "Alanine aminotransferase [Enzymatic activity/volume] in Serum or Plasma"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 28,
+          "unit": "U/L",
+          "system": "http://unitsofmeasure.org",
+          "code": "U/L"
+        },
+        "interpretation": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/v3-ObservationInterpretation",
+                "code": "N",
+                "display": "Normal"
+              }
+            ]
+          }
+        ],
+        "effectiveDateTime": "2024-12-10",
+        "referenceRange": [
+          {
+            "text": "<40"
+          }
+        ],
+        "note": [
+          {
+            "text": "ALT was 210 U/L on admission."
+          }
+        ],
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "laboratory",
+                "display": "Laboratory"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a2bb6e6c-a1d0-43da-9f11-653991960eed",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "4236b0f3-3a2a-48e6-bcd5-3aaa3aae0df2",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "85354-9",
+              "display": "Blood pressure panel with all children optional"
+            }
+          ],
+          "text": "Blood pressure"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        },
+        "component": [
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8480-6",
+                  "display": "Systolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 112,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          },
+          {
+            "code": {
+              "coding": [
+                {
+                  "system": "http://loinc.org",
+                  "code": "8462-4",
+                  "display": "Diastolic blood pressure"
+                }
+              ]
+            },
+            "valueQuantity": {
+              "value": 68,
+              "unit": "mm[Hg]",
+              "system": "http://unitsofmeasure.org",
+              "code": "mm[Hg]"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:11c9cc37-1397-4913-9a13-20411f9caf88",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "3871dc97-c7ea-4a3f-a8cf-eff57caa0708",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8867-4",
+              "display": "Heart rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 76,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:4cc07bf7-04cf-42b4-bf8b-75951f783164",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "b569fc4e-2d55-40d2-ae45-7ea2f4b48684",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "9279-1",
+              "display": "Respiratory rate"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 16,
+          "unit": "/min",
+          "system": "http://unitsofmeasure.org",
+          "code": "/min"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:ab363112-a089-4fb4-bf44-4fcd4b8ee276",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "768393a8-04a8-4881-a6fe-5c21cf28f3e8",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "2708-6",
+              "display": "Oxygen saturation in Arterial blood"
+            }
+          ],
+          "text": "Oxygen saturation"
+        },
+        "valueQuantity": {
+          "value": 98,
+          "unit": "%",
+          "system": "http://unitsofmeasure.org",
+          "code": "%"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:7b24d333-119a-4715-b264-f190aff4b9d3",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "aeb892ea-85fc-4464-aede-a99b846955c9",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "29463-7",
+              "display": "Body weight"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 52,
+          "unit": "kg",
+          "system": "http://unitsofmeasure.org",
+          "code": "kg"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:cf68507b-375b-4bf8-a112-00d518b66fed",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "15e4df2a-f6fa-4485-a522-d2affeaf0c8b",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "8302-2",
+              "display": "Body height"
+            }
+          ]
+        },
+        "valueQuantity": {
+          "value": 165,
+          "unit": "cm",
+          "system": "http://unitsofmeasure.org",
+          "code": "cm"
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "vital-signs",
+                "display": "Vital Signs"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:bc883d04-1b92-40db-9732-865c1f011a11",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "2cbad6e0-f246-4391-b0ce-850a9cd49065",
+        "code": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "36118008",
+              "display": "Pneumothorax"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "resolved",
+              "display": "Resolved"
+            }
+          ]
+        },
+        "verificationStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-ver-status",
+              "code": "confirmed",
+              "display": "Confirmed"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11-14",
+        "abatementDateTime": "2024-11-19",
+        "note": [
+          {
+            "text": "Left traumatic pneumothorax; intercostal catheter; chest X-ray 10 Dec 2024 shows full re-expansion."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:e67a7caf-c9d9-46e7-ad64-0c47a1a4c8fd",
+      "resource": {
+        "resourceType": "Observation",
+        "id": "8ede6b20-fb90-4894-bf65-825797bcd020",
+        "code": {
+          "coding": [
+            {
+              "system": "http://loinc.org",
+              "code": "72166-2",
+              "display": "Tobacco smoking status"
+            }
+          ]
+        },
+        "valueCodeableConcept": {
+          "coding": [
+            {
+              "system": "http://snomed.info/sct",
+              "code": "266919005",
+              "display": "Never smoked tobacco"
+            }
+          ]
+        },
+        "effectiveDateTime": "2024-12-18",
+        "status": "final",
+        "category": [
+          {
+            "coding": [
+              {
+                "system": "http://terminology.hl7.org/CodeSystem/observation-category",
+                "code": "social-history",
+                "display": "Social History"
+              }
+            ]
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:6e136726-aece-4983-acd6-132a9f41a1c8",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "8a1f178c-d273-4658-9399-8a41335f346e",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b280.1",
+              "version": "2017a",
+              "display": "Sensation of pain: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11-14",
+        "note": [
+          {
+            "text": "Chest wall pain on deep breathing and twisting."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:a4b15574-9302-4a06-9801-2156248c1498",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "8f051118-820c-47a8-b6ae-587de2fdd114",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "b455.1",
+              "version": "2017a",
+              "display": "Exercise tolerance functions: MILD impairment"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "onsetDateTime": "2024-11-14",
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:90ec57c8-2677-476b-a573-20f8110b1cc9",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "322c4c08-5d30-460f-828b-bf45612bed07",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d9201.4",
+              "version": "2017a",
+              "display": "Sports: performance COMPLETE problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "No football or other contact sport until cleared (liver injury) - mid-February 2025 at the earliest."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:f2e05ed6-9611-4aea-8284-6b4f0e0070df",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "682f2d79-5721-4874-b319-9ca916c29882",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "d820.1",
+              "version": "2017a",
+              "display": "School education: performance MILD problem"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Missed 3 weeks of term 4; back at school with modified PE."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:914f884c-5e89-4b4c-b403-ebbf1fc34c91",
+      "resource": {
+        "resourceType": "Condition",
+        "id": "0b12c846-3746-4ba8-b722-23f48fb9a90f",
+        "code": {
+          "coding": [
+            {
+              "system": "http://hl7.org/fhir/sid/icf",
+              "code": "e310+3",
+              "version": "2017a",
+              "display": "Immediate family: SUBSTANTIAL facilitator"
+            }
+          ]
+        },
+        "clinicalStatus": {
+          "coding": [
+            {
+              "system": "http://terminology.hl7.org/CodeSystem/condition-clinical",
+              "code": "active",
+              "display": "Active"
+            }
+          ]
+        },
+        "note": [
+          {
+            "text": "Mother Michelle and grandmother closely involved."
+          }
+        ],
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:061a3cdf-d487-4f92-a171-fcdef15f7a9f",
+      "resource": {
+        "resourceType": "CarePlan",
+        "id": "adc488b0-b5ee-41bf-a68b-df124d67d5ce",
+        "title": "Recovery after chest and abdominal trauma",
+        "description": "14-year-old from One Arm Point, five weeks after a bicycle crash with left rib fractures, a traumatic pneumothorax (drained, resolved) and a grade II liver contusion (non-operative). Recovering well; pain mild.\n\nPlan: graded return to activity - walking and swimming now; bike riding from January; no contact sport until cleared at the review in mid-February 2025 (liver). Breathing exercises. Seek care at once with abdominal pain, shoulder-tip pain, dizziness or breathlessness. Review by the visiting doctor in 4 weeks, with the Aboriginal Health Worker; family to be present. Telehealth follow-up with the Perth Children's Hospital trauma team if needed. He wants to get back to football and fishing, and is interested in marine biology.",
+        "status": "active",
+        "period": {
+          "start": "2024-12-18",
+          "end": "2025-03-31"
+        },
+        "intent": "plan",
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    },
+    {
+      "fullUrl": "urn:uuid:579613f4-72bf-4050-b81b-004a089c5a90",
+      "resource": {
+        "resourceType": "Flag",
+        "id": "4e36b0cf-887f-4a11-9e1e-37f57c20e706",
+        "code": {
+          "text": "Prefers a family member present; involve the Aboriginal Health Worker"
+        },
+        "status": "active",
+        "period": {
+          "start": "2024-11-15"
+        },
+        "subject": {
+          "reference": "urn:uuid:15fa019d-a9e7-4748-912f-8f65e0a53f96"
+        }
+      }
+    }
+  ]
+}

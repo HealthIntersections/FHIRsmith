@@ -12,7 +12,14 @@ class FolderSetup {
       return this;
     }
 
-    this._dataDir = dataDir || process.env.FHIRSMITH_DATA_DIR || path.join(__dirname, '..', 'data');
+    const configured = dataDir || process.env.FHIRSMITH_DATA_DIR || path.join(__dirname, '..', 'data');
+    if (typeof configured !== 'string') {
+      throw new Error('Invalid data directory: expected a path, got ' + typeof configured);
+    }
+    // Absolute from here on: these paths are handed to child processes that run with a different
+    // working directory (the IG Publisher, git, sushi), and the IG Publisher refuses relative paths.
+    // A relative FHIRSMITH_DATA_DIR is taken relative to the directory the server was started in.
+    this._dataDir = path.resolve(configured);
     fs.mkdirSync(this._dataDir, { recursive: true });
     this._initialized = true;
 

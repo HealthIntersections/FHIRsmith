@@ -165,6 +165,7 @@ describe('Designations', () => {
 
     test('should respect quality values', () => {
       const langList = Languages.fromAcceptLanguage('fr;q=0.1,en;q=0.9');
+      designations.designations[0].status = 'active';
       const preferred = designations.preferredDesignation(langList);
 
       // Should prefer English due to higher quality
@@ -289,6 +290,8 @@ describe('Designations', () => {
 
     test('should prefer base over display for exact match', () => {
       const langList = Languages.fromAcceptLanguage('en-US');
+      designations.designations[0].status = 'active';
+      designations.designations[2].status = 'active';
       const preferred = designations.preferredDesignation(langList);
 
       expect(preferred.display).toBe('Base US English');
@@ -297,6 +300,7 @@ describe('Designations', () => {
 
     test('should fall back to language-region match', () => {
       const langList = Languages.fromAcceptLanguage('en-AU'); // Australian English not in designations
+      designations.designations[0].status = 'active';
       const preferred = designations.preferredDesignation(langList);
 
       // Should fall back to base English
@@ -349,6 +353,13 @@ describe('Designations', () => {
 
       const passes = emptyFilter.passesDesignations(designations);
       expect(passes).toBe(true);
+    });
+
+    test('empty filter passes() matches every value (was broken by this.null typo)', () => {
+      const emptyFilter = new SearchFilterText('');
+      expect(emptyFilter.passes('anything at all')).toBe(true);
+      expect(emptyFilter.passes('')).toBe(true);
+      expect(emptyFilter.passes('Blood pressure measurement', true)).toEqual({ passes: true, rating: 0 });
     });
 
     test('should return rating for matches', () => {
@@ -602,6 +613,27 @@ describe('Designations', () => {
 
       expect(filter.passes('heart rate monitoring device')).toBe(true);
       expect(filter.passes('cardiac rhythm')).toBe(false);
+    });
+
+    test('passes needs every word of the filter (passesAll is the same)', () => {
+      const filter = new SearchFilterText('serum glucose');
+
+      expect(filter.passes('Cholesterol in Serum')).toBe(false);
+      expect(filter.passesAll('Cholesterol in Serum')).toBe(false);
+      expect(filter.passes('Glucose [Mass/volume] in Serum or Plasma')).toBe(true);
+      expect(filter.passesAll('Glucoses, serum')).toBe(true); // stemmed, in any order
+      expect(new SearchFilterText('').passesAll('anything')).toBe(true);
+    });
+
+    test('passesCode: the code starts with the filter', () => {
+      expect(new SearchFilterText('2345').passesCode('2345-7')).toBe(true);
+      expect(new SearchFilterText('2345').passesCode('12345-7')).toBe(false);
+      expect(new SearchFilterText('').passesCode('x')).toBe(true);
+    });
+
+    test('stemmed in the language of the text', () => {
+      const filter = new SearchFilterText('Untersuchungen');
+      expect(filter.passes('Untersuchung des Blutes', false, 'de')).toBe(true);
     });
 
     test('should calculate match scores', () => {

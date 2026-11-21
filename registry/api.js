@@ -3,6 +3,49 @@
 const { ServerRegistryUtilities } = require('./model');
 const escape = require('escape-html');
 
+// a link to what a registry or server says is its address: only http(s), never javascript: and the like
+function safeHref(url) {
+  return typeof url === 'string' && /^https?:\/\//i.test(url.trim()) ? escape(url) : '#';
+}
+const { Utilities } = require('../library/utilities');
+
+const RELEASE_VERSIONS = {
+  R2: '1.0',
+  R2B: '1.4',
+  R3: '3.0',
+  R4: '4.0',
+  R4B: '4.3',
+  R5: '5.0',
+  R6: '6.0'
+};
+
+// The ecosystem IG reports a server's security as boolean flags (open, password, token,
+// oauth, smart, cert). The crawler records a single string; this maps it. 'api-key' is a
+// token. The string itself is still reported as 'security' for existing clients.
+function securityFlags(security) {
+  switch (security) {
+    case 'open': return { open: true };
+    case 'api-key': return { token: true };
+    case 'password': case 'token': case 'oauth': case 'smart': case 'cert':
+      return { [security]: true };
+    default: return {};
+  }
+}
+
+// Code systems that tx.fhir.org handles specially. When the registry doesn't settle where
+// a request involving one of these goes, it goes to the primary server (see chooseServer)
+const SNOMED_CT = 'http://snomed.info/sct';
+const PRIMARY_SERVER_SYSTEMS = ['http://unitsofmeasure.org', 'http://loinc.org', SNOMED_CT,
+  'http://www.nlm.nih.gov/research/umls/rxnorm', 'http://hl7.org/fhir/sid/cvx', 'urn:ietf:bcp:13', 'urn:ietf:bcp:47',
+  'urn:ietf:rfc:3986', 'http://www.ama-assn.org/go/cpt', 'urn:oid:1.2.36.1.2001.1005.17', 'urn:iso:std:iso:3166',
+  'http://varnomen.hgvs.org', 'http://unstats.un.org/unsd/methods/m49/m49.htm', 'urn:iso:std:iso:4217',
+  'http://hl7.org/fhir/sid/ndc', 'http://fhir.ohdsi.org/CodeSystem/concepts', 'http://fdasis.nlm.nih.gov', 'https://www.usps.com/'];
+
+function isTxFhirOrg(server) {
+  const s = server.replace('http://', 'https://');
+  return s.startsWith('https://tx.fhir.org/') || s.startsWith('https://tx-dev.fhir.org/');
+}
+
 class RegistryAPI {
   constructor(crawler) {
     this.crawler = crawler;
@@ -10,18 +53,20 @@ class RegistryAPI {
 
   /**
    * Build rows for code system queries
-   * Matches the Pascal buildRowsCS functionality
+   * Build the discovery rows for a code system query
    */
   buildRowsForCodeSystem(params = {}) {
     const {
       registryCode = '',
       serverCode = '',
       version = '',
-      codeSystem = ''
+      codeSystem = '',
+      language = ''
     } = params;
 
     const rows = [];
     const data = this.crawler.getData();
+    const requestLangs = ServerRegistryUtilities.parseAcceptLanguage(language);
 
     data.registries.forEach(registry => {
       if (registryCode && registry.code !== registryCode) return;
@@ -29,13 +74,15 @@ class RegistryAPI {
       registry.servers.forEach(server => {
         if (serverCode && server.code !== serverCode) return;
 
-        // Check if server is authoritative for this code system
-        const isAuth = codeSystem ? ServerRegistryUtilities.hasMatchingCodeSystem(
-          codeSystem,
-          server.authCSList,
-          true, // support wildcards,
-            false // allow version matching
-        ) : false;
+        // Excluded content is hidden from the ecosystem entirely for this server
+        if (codeSystem && server.isExcludedTarget(codeSystem)) return;
+
+        // Check if server is authoritative for this code system, taking language
+        // specific claims into account (maskBase matches hasMatchingCodeSystem semantics)
+        const authMatch = codeSystem
+          ? server.matchAuthCS(codeSystem, requestLangs, true)
+          : { isAuth: false, scoped: false };
+        const isAuth = authMatch.isAuth;
 
         server.versions.forEach(versionInfo => {
           if (version && !ServerRegistryUtilities.versionMatches(version, versionInfo.version)) {
@@ -64,6 +111,9 @@ class RegistryAPI {
               versionInfo,
               isAuth
             );
+            if (authMatch.scoped) {
+              row.languages = [authMatch.tag];
+            }
             rows.push(row);
           }
         });
@@ -75,7 +125,7 @@ class RegistryAPI {
 
   /**
    * Build rows for value set queries
-   * Matches the Pascal buildRowsVS functionality
+   * Build the discovery rows for a value set query
    */
   buildRowsForValueSet(params = {}) {
     const {
@@ -94,7 +144,11 @@ class RegistryAPI {
       registry.servers.forEach(server => {
         if (serverCode && server.code !== serverCode) return;
 
+        // Excluded content is hidden from the ecosystem entirely for this server
+        if (valueSet && server.isExcludedTarget(valueSet)) return;
+
         // Check if server is authoritative for this value set
+        // (value set claims have no language dimension at this time)
         const isAuth = valueSet ? ServerRegistryUtilities.hasMatchingValueSet(
           valueSet,
           server.authVSList,
@@ -129,7 +183,7 @@ class RegistryAPI {
             );
 
             // Include if authoritative OR has the value set
-            // This matches the Pascal logic: if auth or hasMatchingValueSet
+            // if the server is authoritative, all its versions are included
             if (isAuth || hasValueSet) {
               includeRow = true;
             }
@@ -252,6 +306,10 @@ class RegistryAPI {
 
     return {
       lastRun: data.lastRun,
+      // the page footer: nothing to report until the first crawl has finished
+      crawlerStatus: data.lastRun ?
+        `last updated ${Utilities.describeAgo(data.lastRun)}, ${totalServers} server${totalServers === 1 ? '' : 's'}` :
+        'not yet updated',
       outcome: data.outcome,
       registryCount: data.registries.length,
       serverCount: totalServers,
@@ -306,16 +364,11 @@ class RegistryAPI {
     });
   }
 
+  // Release codes (R4, r4b ...) to the version prefix they select; anything else (4.0.1,
+  // 4.0) is used as given. R4B and R2B can't be derived from the number alone.
   _normalizeFhirVersion(version) {
     if (!version) return version;
-
-    // Convert R4 or r4 to 4.0, R5 or r5 to 5.0, etc.
-    const rMatch = /^[rR](\d+)$/.exec(version);
-    if (rMatch) {
-      return `${rMatch[1]}.0`;
-    }
-
-    return version;
+    return RELEASE_VERSIONS[version.toUpperCase()] || version;
   }
 
   /**
@@ -339,13 +392,13 @@ class RegistryAPI {
   /**
    * Find best server for a given code system/value set
    */
-  findBestServer(type, url, version) {
+  findBestServer(type, url, version, language = '') {
     let rows;
 
     if (type === 'codesystem') {
-      rows = this.buildRowsForCodeSystem({ codeSystem: url, version });
+      rows = this.buildRowsForCodeSystem({ codeSystem: url, version, language });
     } else if (type === 'valueset') {
-      rows = this.buildRowsForValueSet({ valueSet: url, version });
+      rows = this.buildRowsForValueSet({ valueSet: url, version, language });
     } else {
       throw new Error(`Unknown type: ${type}`);
     }
@@ -378,9 +431,9 @@ class RegistryAPI {
 
   /**
    * NEW FUNCTION: Resolve the best server for a code system
-   * Based on Pascal resolveCS function
+   * Implements the ecosystem Resolution API for code systems
    */
-  resolveCodeSystem(fhirVersion, codeSystem, authoritativeOnly, usage = '') {
+  resolveCodeSystem(fhirVersion, codeSystem, authoritativeOnly, usage = '', language = '') {
     if (!fhirVersion) {
       throw new Error('A FHIR version is required');
     }
@@ -388,6 +441,7 @@ class RegistryAPI {
       throw new Error('A code system URL is required');
     }
     const normalizedVersion = this._normalizeFhirVersion(fhirVersion);
+    const requestLangs = ServerRegistryUtilities.parseAcceptLanguage(language);
 
     const result = {
       formatVersion: '1',
@@ -397,18 +451,28 @@ class RegistryAPI {
     };
 
     const matchedServers = [];
+    const authMatches = []; // {entry, score} - sorted by language match before returning
     const data = this.crawler.getData();
 
     data.registries.forEach(registry => {
       registry.servers.forEach(server => {
         let added = false;
 
+        // Excluded content is hidden from the ecosystem entirely for this server -
+        // not authoritative, not a candidate
+        if (server.isExcludedTarget(codeSystem)) return;
+
         // Check if server supports the requested usage tag
         if (server.usageList.length === 0 ||
           (usage && server.usageList.includes(usage))) {
 
-          // Check if server is authoritative for this code system
-          const isAuth = server.isAuthCS(codeSystem);
+          // Check if server is authoritative for this code system, taking language
+          // specific claims into account (a language specific claim is invisible to
+          // requests without a matching language)
+          // a claim on a code system covers every version of it (maskBase: the same semantics as
+          // hasMatchingCodeSystem, and as listing)
+          const authMatch = server.matchAuthCS(codeSystem, requestLangs, true);
+          const isAuth = authMatch.isAuth;
 
           server.versions.forEach(version => {
             if (ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {
@@ -425,9 +489,19 @@ class RegistryAPI {
 
               if (hasMatchingCS) {
                 if (isAuth) {
-                  result.authoritative.push(this.createServerEntry(server, version));
+                  authMatches.push({
+                    entry: this.createServerEntry(server, version, null, authMatch),
+                    score: authMatch.score
+                  });
                 } else if (!authoritativeOnly) {
-                  result.candidates.push(this.createServerEntry(server, version, content.content));
+                  const candidate = this.createServerEntry(server, version, content.content);
+                  if (requestLangs) {
+                    // the ecosystem has no knowledge of a candidate's language abilities -
+                    // mark it so clients can apply their wildcard strictness policy
+                    // (see 'Language Specific Claims' in the tx ecosystem IG)
+                    candidate['language-support'] = 'unknown';
+                  }
+                  result.candidates.push(candidate);
                 }
                 added = true;
               }
@@ -441,30 +515,23 @@ class RegistryAPI {
       });
     });
 
-    // NEW: Fallback - if no matches found, check for authoritative pattern matches
+    // No fallback to servers that claim authority but don't host the code system: per the
+    // ecosystem IG, 'Servers are not listed as authoritative unless they actually host the
+    // CodeSystem(+version) in the request'.
+
+    // Language specific matches rank before authoritative-list matches, most specific
+    // match first. Array.prototype.sort is stable, so entries with equal scores (e.g.
+    // all matched on the authoritative list) keep their existing (registration) order
+    authMatches.sort((a, b) => a.score - b.score);
+    result.authoritative = authMatches.map(m => m.entry);
+
+    // Nothing found: say if no server hosts any code system on the url's host at all, so
+    // the client needn't ask about the others (see 'Unknown Hosts' in the tx ecosystem IG)
     if (result.authoritative.length === 0 && result.candidates.length === 0) {
-      data.registries.forEach(registry => {
-        registry.servers.forEach(server => {
-          // Check if server supports the requested usage tag
-          if (server.usageList.length === 0 ||
-            (usage && server.usageList.includes(usage))) {
-
-            // Check if server is authoritative for this code system
-            const isAuth = server.isAuthCS(codeSystem);
-
-            if (isAuth) {
-              server.versions.forEach(version => {
-                if (ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {
-                  result.authoritative.push(this.createServerEntry(server, version));
-                  if (!matchedServers.includes(server.code)) {
-                    matchedServers.push(server.code);
-                  }
-                }
-              });
-            }
-          }
-        });
-      });
+      const host = ServerRegistryUtilities.urlHost(codeSystem);
+      if (host && !this._hostsCodeSystemOnHost(normalizedVersion, host, usage)) {
+        result['unknown-host'] = host;
+      }
     }
 
     return {
@@ -475,9 +542,13 @@ class RegistryAPI {
 
   /**
    * NEW FUNCTION: Resolve the best server for a value set
-   * Based on Pascal resolveVS function
+   * Implements the ecosystem Resolution API for value sets
    */
-  resolveValueSet(fhirVersion, valueSet, authoritativeOnly, usage = '') {
+  // eslint-disable-next-line no-unused-vars -- language is accepted for API symmetry (see note below)
+  resolveValueSet(fhirVersion, valueSet, authoritativeOnly, usage = '', language = '') {
+    // Note: the language parameter is accepted for API symmetry with resolveCodeSystem,
+    // but value set claims have no language dimension at this time (language specific
+    // claims - the languages property - apply to code systems only), so it has no effect
     if (!fhirVersion) {
       throw new Error('A FHIR version is required');
     }
@@ -507,6 +578,10 @@ class RegistryAPI {
     data.registries.forEach(registry => {
       registry.servers.forEach(server => {
         let added = false;
+
+        // Excluded content is hidden from the ecosystem entirely for this server -
+        // not authoritative, not a candidate
+        if (server.isExcludedTarget(valueSet)) return;
 
         // Check if server supports the requested usage tag
         if (server.usageList.length === 0 ||
@@ -547,6 +622,275 @@ class RegistryAPI {
     };
   }
 
+  /**
+   * Choose one server for a request that involves a set of code systems.
+   *
+   * This is a server side copy of the routing logic in the HL7 Java tooling
+   * (TerminologyClientManager.chooseServer in org.hl7.fhir.core), for clients that aren't
+   * Java. It doesn't replace that code. The Java client does the work that needs its own
+   * context before routing, and so must the caller here:
+   *
+   * - systems: the code systems involved, as url or url|version, from the codings and the
+   *   value set's includes and excludes, following imported value sets. Versions fixed by
+   *   expansion parameters (system-version, force-system-version) should already be applied.
+   *   If the caller couldn't follow an import, it should just use its default server.
+   * - language: only for language sensitive requests (see resolveCodeSystem).
+   *
+   * Differences from the Java code:
+   * - 'Does a candidate really have the code system' is answered from the content mode the
+   *   server reported in its TerminologyCapabilities, not by searching the server. If it
+   *   didn't report one, the candidate is assumed to be usable.
+   * - The 'primary server' for the systems tx.fhir.org handles specially is the default.
+   * - The value set's source server is found by resolving the value set here.
+   * - Ties are broken by order (the first system, then registration order), not hash order.
+   *
+   * @returns {{server: string, log: string[]}} the server to use, and why
+   */
+  chooseServer(fhirVersion, systems, defaultServer, valueSet = '', usage = '', language = '') {
+    if (!fhirVersion) {
+      throw new Error('A FHIR version is required');
+    }
+    if (!defaultServer) {
+      throw new Error('A default server is required');
+    }
+    const log = [];
+    const list = [...new Set((systems || []).filter(s => s))];
+    if (valueSet) {
+      log.push(`Value set: ${valueSet}`);
+    }
+    if (list.length === 0) {
+      log.push('No code systems: using the default server');
+      return { server: defaultServer, log };
+    }
+    const server = this._chooseServer(fhirVersion, list, defaultServer, valueSet, usage, language, log);
+    return { server, log };
+  }
+
+  _chooseServer(fhirVersion, systems, defaultServer, valueSet, usage, language, log) {
+    // what the registry says about each system on its own
+    const choices = systems.map(system => {
+      const r = this.resolveCodeSystem(fhirVersion, system, false, usage, language).result;
+      const choice = { system, authoritative: [], candidates: [], content: {} };
+      for (const e of r.authoritative || []) {
+        if (!choice.authoritative.includes(e.url)) choice.authoritative.push(e.url);
+      }
+      for (const e of r.candidates || []) {
+        if (!choice.candidates.includes(e.url)) {
+          choice.candidates.push(e.url);
+          choice.content[e.url] = e.content;
+        }
+      }
+      log.push(`${system}: authoritative [${choice.authoritative.join(', ')}], candidates [${choice.candidates.join(', ')}]`);
+      return choice;
+    });
+    // the registry knows no server at all for the system
+    const unresolved = c => c.authoritative.length === 0 && c.candidates.length === 0;
+
+    // 1. a server that's authoritative for all of them
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        if (choices.every(t => t.authoritative.includes(s))) {
+          log.push(`Found authoritative server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 2. a server that's authoritative for one of them, and a candidate for the others. A
+    // system that no server is known for doesn't constrain the choice
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        if (choices.every(t => unresolved(t) || t.authoritative.includes(s) || t.candidates.includes(s))) {
+          log.push(`Found partially authoritative server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 3. code systems with special handling on tx.fhir.org, that might not be resolved above.
+    // We don't want them going to secondary servers by accident
+    const bases = systems.map(s => s.includes('|') ? s.substring(0, s.indexOf('|')) : s);
+    if (systems.length > 1 && bases.includes(SNOMED_CT)) {
+      log.push(`Several code systems including SNOMED CT: choosing for SNOMED CT alone`);
+      return this._chooseServer(fhirVersion, [SNOMED_CT], defaultServer, valueSet, usage, language, log);
+    }
+    const special = bases.find(b => PRIMARY_SERVER_SYSTEMS.includes(b));
+    if (special) {
+      log.push(`Use primary server (the default) for ${special}`);
+      return defaultServer;
+    }
+
+    // 4. a server that's a candidate for all of them (again, systems no server is known for
+    // don't constrain the choice), and that has a usable copy of the code systems
+    for (const c of choices) {
+      for (const s of c.candidates) {
+        if (choices.every(t => unresolved(t) || t.candidates.includes(s)) &&
+          this._supportsAll(s, choices, unresolved, log)) {
+          log.push(`Found candidate server ${s}`);
+          return s;
+        }
+      }
+    }
+
+    // 5. no agreement - take the one that is most authoritative
+    const counts = new Map();
+    for (const c of choices) {
+      for (const s of c.authoritative) {
+        counts.set(s, (counts.get(s) || 0) + 1);
+      }
+    }
+    let max = null;
+    for (const [s, n] of counts) {
+      if (max === null || n > counts.get(max)) max = s;
+    }
+    if (max !== null) {
+      log.push(`Found most authoritative server ${max}`);
+      return max;
+    }
+
+    // 6. nothing. Use the server the value set comes from, if it comes from one, else the default
+    const why = systems.length === 1 ? 'Not handled by any servers' : 'Handled by multiple servers';
+    if (valueSet) {
+      const r = this.resolveValueSet(fhirVersion, valueSet, false, usage).result;
+      let source = (r.authoritative || []).concat(r.candidates || []).map(e => e.url)[0];
+      if (source === 'https://vsac.nlm.nih.gov') {
+        source = defaultServer;
+      }
+      if (source) {
+        log.push(`${why}. Using source @ '${source}'`);
+        return source;
+      }
+    }
+    log.push(`${why}. Using the default server`);
+    return defaultServer;
+  }
+
+  /**
+   * Whether a candidate server has a usable copy (complete or fragment) of each code system
+   * it's a candidate for. Systems for which tx.fhir.org is a candidate aren't checked
+   */
+  _supportsAll(server, choices, unresolved, log) {
+    if (isTxFhirOrg(server)) {
+      return true;
+    }
+    for (const t of choices) {
+      if (unresolved(t) || !t.candidates.includes(server) || t.candidates.some(isTxFhirOrg)) {
+        continue;
+      }
+      const content = t.content[server];
+      if (content && content !== 'complete' && content !== 'fragment') {
+        log.push(`Candidate server ${server} dropped for ${t.system}: its copy of the code system is '${content}'`);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * The ecosystem Discovery API (GET {root} as JSON): one row per server endpoint.
+   *
+   * Filters, all optional: registry and server (codes), fhirVersion (RX or M.n.p), url (a
+   * code system, url or url|version), authoritativeOnly, language (only with url).
+   *
+   * With url, only endpoints that host that code system are listed (an excluded code
+   * system hides the server), and the row's 'candidate' list says whether it's hosted but
+   * not claimed; authoritativeOnly then keeps only the endpoints authoritative for it.
+   * Without url, authoritative/authoritative-valuesets are the server's claim masks and the
+   * candidate lists are omitted - listing everything a server hosts would be huge.
+   */
+  discover(params = {}) {
+    const { registry = '', server = '', fhirVersion = '', url = '', language = '' } = params;
+    const authoritativeOnly = params.authoritativeOnly === true || params.authoritativeOnly === 'true';
+    const normalizedVersion = this._normalizeFhirVersion(fhirVersion);
+    const requestLangs = url ? ServerRegistryUtilities.parseAcceptLanguage(language) : null;
+    const data = this.crawler.getData();
+
+    const authRows = [];
+    const otherRows = [];
+    data.registries.forEach(reg => {
+      if (registry && reg.code !== registry) return;
+      reg.servers.forEach(srv => {
+        if (server && srv.code !== server) return;
+        if (url && srv.isExcludedTarget(url)) return;
+
+        const authMatch = url ? srv.matchAuthCS(url, requestLangs, true) : { isAuth: false, scoped: false };
+
+        srv.versions.forEach(version => {
+          if (normalizedVersion && !ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) {
+            return;
+          }
+          let hosted = false;
+          if (url) {
+            hosted = ServerRegistryUtilities.hasMatchingCodeSystem(url, version.codeSystems, false, {});
+            if (!hosted || (authoritativeOnly && !authMatch.isAuth)) {
+              return;
+            }
+          }
+
+          const row = {
+            'server-name': srv.name,
+            'server-code': srv.code,
+            'registry-name': reg.name,
+            'registry-code': reg.code,
+            'registry-url': reg.address,
+            url: version.address,
+            fhirVersion: version.version,
+            error: version.error || null,
+            'last-success': version.lastSuccess ? Math.floor(Date.now() - new Date(version.lastSuccess).getTime()) : null,
+            systems: version.codeSystems.length,
+            authoritative: [...srv.authCSList],
+            'authoritative-valuesets': [...srv.authVSList]
+          };
+          if (url && !authMatch.isAuth) {
+            row.candidate = [url];
+          }
+          if (authMatch.isAuth && authMatch.scoped) {
+            row.languages = [authMatch.tag];
+          }
+          if (version.security) {
+            row.security = version.security;
+            Object.assign(row, securityFlags(version.security));
+          }
+          (authMatch.isAuth ? authRows : otherRows).push({ row, score: authMatch.score || 0 });
+        });
+      });
+    });
+
+    // Endpoints authoritative for url first (language specific matches before the rest;
+    // sort is stable, so registration order is kept otherwise)
+    authRows.sort((a, b) => a.score - b.score);
+    return {
+      'last-update': data.lastRun ? new Date(data.lastRun).toISOString() : null,
+      'master-url': data.address,
+      results: [...authRows, ...otherRows].map(r => r.row)
+    };
+  }
+
+  /**
+   * True if any server that a resolve request at this FHIR version and usage would consider
+   * hosts a code system (any version, http or https, not excluded) whose url is on the host.
+   * Independent of authoritativeOnly and language: a host where a server is only a candidate
+   * is still known
+   */
+  _hostsCodeSystemOnHost(normalizedVersion, host, usage = '') {
+    const data = this.crawler.getData();
+    for (const registry of data.registries) {
+      for (const server of registry.servers) {
+        if (!(server.usageList.length === 0 || (usage && server.usageList.includes(usage)))) continue;
+        for (const version of server.versions) {
+          if (!ServerRegistryUtilities.versionMatches(normalizedVersion, version.version)) continue;
+          for (const item of version.codeSystems || []) {
+            const uri = typeof item === 'string' ? item : item.uri;
+            if (!uri || ServerRegistryUtilities.urlHost(uri) !== host) continue;
+            const vurl = typeof item === 'string' ? item : (item.version ? item.uri + '|' + item.version : item.uri);
+            if (!server.isExcludedTarget(vurl)) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
   _cleanEmptyArrays(result) {
     const cleanedResult = { ...result };
 
@@ -562,21 +906,33 @@ class RegistryAPI {
 
   /**
    * Helper function to create a server entry for resolve results
+   * @param {Object} authMatch - optional result of server.matchAuthCS(); when the entry
+   *   was matched on a language specific claim, the claim's language tag is reported so
+   *   the client can tell language routing applied (vs falling through to the default server)
    */
-  createServerEntry(server, version) {
+  createServerEntry(server, version, content = null, authMatch = null) {
     const entry = {
       'server-name': server.name,
-      url: version.address
+      url: version.address,
+      fhirVersion: version.version
     };
 
     if (version.security) {
       entry.security = version.security;
+      Object.assign(entry, securityFlags(version.security));
     }
     if (server.accessInfo) {
       entry.access_info = server.accessInfo;
     }
-    if (version.content) {
-      entry.content = version.content;
+    // Report the content mode of the matched code system, if the server provided one
+    // (per the resolve API in the tx ecosystem IG, candidates report content when known).
+    // This was previously read from version.content, which doesn't exist - the value
+    // passed by resolveCodeSystem was silently dropped.
+    if (content) {
+      entry.content = content;
+    }
+    if (authMatch && authMatch.scoped && authMatch.isAuth) {
+      entry.languages = [authMatch.tag];
     }
 
     return entry;
@@ -584,7 +940,7 @@ class RegistryAPI {
 
   /**
    * NEW FUNCTION: Render a JSON result as an HTML table
-   * Based on Pascal renderJson function
+   * Renders a discovery result as an HTML table
    */
   renderJsonToHtml(json, path, regCode = '', serverCode = '', versionCode = '') {
     let html = '<table class="grid">\n';
@@ -612,16 +968,16 @@ class RegistryAPI {
       html += '<tr>\n';
       
       if (!regCode) {
-        html += `<td><a href="${path}&registry=${row['registry-code']}">${escape(row['registry-name'])}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&registry=${encodeURIComponent(row['registry-code'] || '')}`)}">${escape(row['registry-name'])}</a></td>\n`;
       }
       if (!serverCode) {
-        html += `<td><a href="${path}&server=${row['server-code']}">${escape(row['server-name'])}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&server=${encodeURIComponent(row['server-code'] || '')}`)}">${escape(row['server-name'])}</a></td>\n`;
       }
       if (!versionCode) {
-        html += `<td><a href="${path}&fhirVersion=${row.fhirVersion}">${row.fhirVersion}</a></td>\n`;
+        html += `<td><a href="${escape(`${path}&fhirVersion=${encodeURIComponent(row.fhirVersion || '')}`)}">${escape(row.fhirVersion)}</a></td>\n`;
       }
       
-      html += `<td><a href="${escape(row.url)}">${escape(row.url)}</a></td>\n`;
+      html += `<td><a href="${safeHref(row.url)}">${escape(row.url)}</a></td>\n`;
       
       if (row.error) {
         html += `<td><span style="color: maroon">Error: ${escape(row.error)}</span> Last OK ${this._formatDuration(row['last-success'])} ago</td>\n`;
@@ -629,7 +985,7 @@ class RegistryAPI {
         html += `<td>Last OK ${this._formatDuration(row['last-success'])} ago</td>\n`;
       }
       
-      html += `<td>${row.systems} systems</td>\n`;
+      html += `<td>${escape(String(row.systems))} systems</td>\n`;
       
       html += '<td>';
       if (row['is-authoritative']) {
@@ -637,7 +993,7 @@ class RegistryAPI {
       }
       html += '</td>\n';
 
-      html += `<td>${row.security}/td>\n`;
+      html += `<td>${escape(row.security)}</td>\n`;
 
       html += '</tr>\n';
     }
@@ -648,26 +1004,26 @@ class RegistryAPI {
 
   /**
    * NEW FUNCTION: Render registry info as HTML
-   * Based on Pascal renderInfo function
+   * Renders the registry tree as HTML
    */
   renderInfoToHtml() {
     const data = this.crawler.getData();
     let html = '<table class="grid">';
     
-    html += `<tr><td width="130px"><img src="/assets/images/tx-registry-root.gif">&nbsp;Registries</td><td>${data.address} (${escape(data.outcome)})</td></tr>`;
+    html += `<tr><td width="130px"><img src="/assets/images/tx-registry-root.gif">&nbsp;Registries</td><td>${escape(data.address)} (${escape(data.outcome)})</td></tr>`;
     
     data.registries.forEach(registry => {
       if (registry.error) {
-        html += `<tr><td title="${escape(registry.name)}">&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${registry.code}</td><td><a href="${escape(registry.address)}">${escape(registry.address)}</a>. Error: ${escape(registry.error)}</td></tr>`;
+        html += `<tr><td title="${escape(registry.name)}">&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${escape(registry.code)}</td><td><a href="${safeHref(registry.address)}">${escape(registry.address)}</a>. Error: ${escape(registry.error)}</td></tr>`;
       } else {
-        html += `<tr><td title="${escape(registry.name)}">&nbsp;&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${registry.code}</td><td><a href="${escape(registry.address)}">${escape(registry.address)}</a></td></tr>`;
+        html += `<tr><td title="${escape(registry.name)}">&nbsp;&nbsp;<img src="/assets/images/tx-registry.png">&nbsp;${escape(registry.code)}</td><td><a href="${safeHref(registry.address)}">${escape(registry.address)}</a></td></tr>`;
       }
       
       registry.servers.forEach(server => {
         if (server.authCSList.length > 0 || server.authVSList.length > 0 || server.usageList.length > 0) {
-          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${server.code}</td><td><a href="${escape(server.address)}">${escape(server.address)}</a>. ${server.description}</td></tr>`;
+          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${escape(server.code)}</td><td><a href="${safeHref(server.address)}">${escape(server.address)}</a>. ${escape(server.description || '')}</td></tr>`;
         } else {
-          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${server.code}</td><td><a href="${escape(server.address)}">${escape(server.address)}</a></td></tr>`;
+          html += `<tr><td title="${escape(server.name)}">&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-server.png">&nbsp;${escape(server.code)}</td><td><a href="${safeHref(server.address)}">${escape(server.address)}</a></td></tr>`;
         }
         
         server.versions.forEach(version => {
@@ -675,7 +1031,7 @@ class RegistryAPI {
           const versionParts = version.version.split('.');
           const majorMinor = versionParts.slice(0, 2).join('.');
           
-          html += `<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-version.png">&nbsp;v${majorMinor}</td><td><a href="${escape(version.address)}">${escape(version.address)}</a>. Status: ${escape(version.details)}. ${version.codeSystems.length} CodeSystems, ${version.valueSets.length} ValueSets</td></tr>`;
+          html += `<tr><td>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<img src="/assets/images/tx-version.png">&nbsp;v${escape(majorMinor)}</td><td><a href="${safeHref(version.address)}">${escape(version.address)}</a>. Status: ${escape(version.details)}. ${version.codeSystems.length} CodeSystems, ${version.valueSets.length} ValueSets</td></tr>`;
         });
       });
     });

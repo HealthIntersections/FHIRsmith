@@ -6,6 +6,7 @@
  */
 
 const express = require('express');
+const cors = require('cors');
 const path = require('path');
 const TXModule = require('../../tx/tx');
 
@@ -23,6 +24,8 @@ async function getTestApp() {
   }
 
   app = express();
+  // Mirror production: CORS is applied once at the app level.
+  app.use(cors());
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
 
@@ -31,6 +34,8 @@ async function getTestApp() {
   // Configure TX module - empty library, cloneWithFhirVersion will load R5 core
   const config = {
     librarySource: path.join(__dirname, 'fixtures', 'test-library.yaml'),
+    // on for testing; off by default (see config-template.json)
+    conceptMapValueSetMatching: true,
     endpoints: [
       {
         path: '/tx/r5',

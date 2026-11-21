@@ -1,0 +1,799 @@
+const axios = require('axios');
+const Logger = require('../library/logger');
+const { ServerCredentials } = require('../library/server-credentials');
+const { createGuardedAgents } = require('../library/ssrf-guard');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
+
+/**
+ * Finds another server in the terminology ecosystem for a code system (and version) that this
+ * server doesn't hold, by asking the ecosystem registry, and talks to it (modules.tx.ecosystem,
+ * see README.md). Provider.getCodeSystemProvider() uses it when it can't resolve a code system
+ * itself, and hands the result to a VirtualCodeSystemProvider (cs/cs-virtual.js), which sends its
+ * requests through here.
+ *
+ * A server is used if it's open, or if there are credentials for it (an API key or OAuth client
+ * credentials, under its code in the registry, as the registry module has them)
+ *
+ * The operation context passed in (opContext) has every request this sends for it counted
+ * (opContext.externalRequests), so the operation is counted as an external request: what is
+ * already known (cached) costs nothing, and isn't counted.
+ *
+ * What the registry and the servers say about themselves is kept for an hour, and then refreshed
+ * in the background: the request that finds it due uses what's known, and doesn't wait (only the
+ * first request for something waits for it). The servers' answers to $lookup and $validate-code
+ * are kept for an hour too (sendCached), and the same request asked twice at once is only sent
+ * once.
+ *
+ * When the registry finds no server for a code system and says that no server hosts any code
+ * system on its host (unknown-host: see 'Unknown Hosts' in the tx ecosystem IG), that's kept
+ * for an hour too, for the FHIR version it was asked about, and the registry isn't asked about
+ * that host's other code systems at that FHIR version in that time
+ *
+ * Every request (to the registry, to the servers it names, and for OAuth tokens) goes through the
+ * SSRF guard (library/ssrf-guard.js): only public addresses, unless allowPrivateAddresses is set
+ */
+
+/**
+ * The header on every request made to another server on behalf of an operation here. A
+ * request that arrives with it is never resolved through the ecosystem again, so two
+ * servers can't hand a request back and forth
+ */
+const FORWARDED_HEADER = 'X-FHIRsmith-Ecosystem-Forwarded';
+
+const DEFAULT_REGISTRY = 'https://ecosystem.hl7.org/tx-reg';
+// how an R4 (or R3) TerminologyCapabilities says what content it has for a code system
+const CAPS_CONTENT_EXT = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-TerminologyCapabilities.codeSystem.content';
+// for the whole request, not just until the answer starts (modules.tx.ecosystem.timeout, in seconds)
+const DEFAULT_TIMEOUT_MS = 30000;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024; // a TerminologyCapabilities is under 1 MB
+const CACHE_MS = 60 * 60 * 1000; // what the registry and the servers say is kept for an hour
+const RETRY_MS = 5 * 60 * 1000; // a refresh that failed is tried again after this (the old answer is kept)
+const MAX_ANSWERS = 10000; // the most answers (to $lookup and $validate-code) kept
+const MAX_KNOWN = 1000; // the most entries kept in each of the caches of what the registry and the servers say (#known)
+const MAX_REDIRECTS = 5;
+// how long an https:// try may wait for the answer to start, for a server given as http://
+// whose https:// hasn't been tried yet: one that doesn't answer on https at all isn't waited on
+// for the whole timeout before http:// is tried (never more than the timeout itself)
+const HTTPS_PROBE_MS = 10000;
+// a system is only looked for in the ecosystem if it's a URI: a scheme, then the characters a
+// URI may have, and no white space. Not "1", "PRESCRIPTION_TYPE", "a uri with spaces", or a
+// system with its version glued on ("123|http://snomed.info/sct/...")
+const URI = /^[A-Za-z][A-Za-z0-9+.-]*:[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+$/;
+
+class EcosystemResolver {
+  /**
+   * @param {Object} config - modules.tx.ecosystem, as checked by EcosystemResolver.checkConfig
+   */
+  constructor(config) {
+    const registry = config.registry || DEFAULT_REGISTRY;
+    this.registry = registry.endsWith('/') ? registry.substring(0, registry.length - 1) : registry;
+    this.excludedServers = (config.excludedServers || []).map(e => EcosystemResolver.normalise(e));
+    this.excludedPatterns = (config.excludedPatterns || []).map(p => EcosystemResolver.patternToRegex(p));
+    this.agents = createGuardedAgents({ allowPrivate: config.allowPrivateAddresses === true });
+    this.timeoutMs = config.timeout !== undefined ? config.timeout * 1000 : DEFAULT_TIMEOUT_MS;
+    this.httpsProbeMs = Math.min(HTTPS_PROBE_MS, this.timeoutMs);
+    this.credentials = new ServerCredentials({
+      apiKeys: config.apiKeys,
+      oauth: config.oauth,
+      timeout: this.timeoutMs,
+      signal: () => AbortSignal.timeout(this.timeoutMs),
+      userAgent: 'FHIRsmith (ecosystem resolution)',
+      agents: () => this.agents
+    });
+    this.log = Logger.getInstance().child({module: 'tx-ecosystem'});
+    // see #known: system|version -> server address (or null); server -> its code systems; and
+    // the registry's list of servers (normalised address -> server code)
+    this.servers = new Map();
+    this.versions = new Map();
+    // server|system -> the versions a search of the server's CodeSystems found (see searchVersions)
+    this.searched = new Map();
+    this.codes = new Map();
+    // see sendCached: request -> {at, value} or {pending}, oldest first
+    this.answers = new Map();
+    // see #request: host:port of a server given as http:// -> {scheme: 'https' or 'http', at}
+    this.schemes = new Map();
+    // see findServers: host#fhirVersion (as asked of the registry) -> {at, unknownHost: true},
+    // for hosts the registry said no server hosts any code system on
+    this.hosts = new Map();
+  }
+
+  /**
+   * How many entries the caches of what the registry and the servers said hold (the caches page)
+   * @returns {number}
+   */
+  cacheCount() {
+    return this.servers.size + this.versions.size + this.searched.size + this.codes.size + this.answers.size + this.schemes.size + this.hosts.size;
+  }
+
+  /**
+   * How many entries each of the caches holds (the caches page)
+   * @returns {Object} cache name -> entries
+   */
+  cacheSizes() {
+    return { servers: this.servers.size, capabilities: this.versions.size, searches: this.searched.size,
+      'server codes': this.codes.size, answers: this.answers.size, schemes: this.schemes.size, 'unknown hosts': this.hosts.size };
+  }
+
+  /**
+   * What the caches hold, an entry a row (the caches page): [cache, key, age in seconds, what it
+   * says], most recently used last in each cache
+   * @returns {Array[]}
+   */
+  cacheEntries() {
+    const now = Date.now();
+    const rows = [];
+    const urls = (list) => list.map(s => (s && s.url ? s.url + (s.authoritative ? ' (authoritative)' : '') : String(s))).join(', ');
+    const say = (entry) => {
+      if (entry.pending) {
+        return 'being asked now';
+      }
+      if (entry.failure) {
+        return 'not known: ' + entry.failure.reason;
+      }
+      if (entry.unknownHost) {
+        return 'no server hosts any code system on this host';
+      }
+      const v = entry.value !== undefined ? entry.value : entry;
+      if (v === null) {
+        return 'none';
+      }
+      if (Array.isArray(v)) {
+        return v.length === 0 ? 'none' : (typeof v[0] === 'object' && v[0] && v[0].url ? urls(v) : v.length + ': ' + v.slice(0, 10).map(x => (x && x.code) || (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ') + (v.length > 10 ? ', ...' : ''));
+      }
+      if (v instanceof Map || v instanceof Set) {
+        return v.size + ' entries';
+      }
+      if (typeof v === 'object' && v.status !== undefined) {
+        return 'HTTP ' + v.status;
+      }
+      if (typeof v === 'object' && v.scheme) {
+        return v.scheme;
+      }
+      const text = JSON.stringify(v);
+      return text && text.length > 200 ? text.substring(0, 200) + '...' : String(text);
+    };
+    const caches = [['servers', this.servers], ['capabilities', this.versions], ['searches', this.searched],
+      ['server codes', this.codes], ['answers', this.answers], ['schemes', this.schemes], ['unknown hosts', this.hosts]];
+    for (const [name, cache] of caches) {
+      for (const [key, entry] of cache) {
+        rows.push([name, key, entry && entry.at ? Math.round((now - entry.at) / 1000) : null, say(entry || {})]);
+      }
+    }
+    return rows;
+  }
+
+  /**
+   * Forget what the registry and the servers said: it is asked again when next needed. A
+   * request under way still answers whoever is waiting for it
+   * @returns {number} the entries let go
+   */
+  clearCaches() {
+    const count = this.cacheCount();
+    for (const cache of [this.servers, this.versions, this.searched, this.codes, this.answers, this.schemes, this.hosts]) {
+      cache.clear();
+    }
+    return count;
+  }
+
+  /**
+   * Whether a system can be looked for in the ecosystem: it's a URI (see URI)
+   */
+  static isUri(system) {
+    return typeof system === 'string' && URI.test(system);
+  }
+
+  /**
+   * Check modules.tx.ecosystem, and say what's wrong with it, if anything
+   *
+   * @returns {Object|null} the configuration, if it's in use
+   */
+  static checkConfig(cfg) {
+    if (cfg === undefined || cfg === null) {
+      return null;
+    }
+    const fail = (why) => { throw new Error(`modules.tx.ecosystem: ${why}`); };
+    if (typeof cfg !== 'object' || Array.isArray(cfg)) {
+      fail(`must be an object, not ${JSON.stringify(cfg)}`);
+    }
+    for (const name of ['use', 'allowPrivateAddresses']) {
+      if (cfg[name] !== undefined && typeof cfg[name] !== 'boolean') {
+        fail(`${name} must be true or false, not ${JSON.stringify(cfg[name])}`);
+      }
+    }
+    if (cfg.registry !== undefined && (typeof cfg.registry !== 'string' || !/^https?:\/\/\S+$/.test(cfg.registry))) {
+      fail(`registry must be the address of an ecosystem registry (e.g. ${DEFAULT_REGISTRY}), not ${JSON.stringify(cfg.registry)}`);
+    }
+    for (const name of ['excludedServers', 'excludedPatterns']) {
+      const v = cfg[name];
+      if (v !== undefined && (!Array.isArray(v) || v.some(e => typeof e !== 'string' || !e.trim()))) {
+        fail(`${name} must be a list of strings, not ${JSON.stringify(v)}`);
+      }
+    }
+    if (cfg.timeout !== undefined && (typeof cfg.timeout !== 'number' || !(cfg.timeout > 0) || cfg.timeout > 300)) {
+      fail(`timeout must be a number of seconds, above 0 and no more than 300, not ${JSON.stringify(cfg.timeout)}`);
+    }
+    if (cfg.apiKeys !== undefined && (typeof cfg.apiKeys !== 'object' || Array.isArray(cfg.apiKeys) || Object.values(cfg.apiKeys).some(v => typeof v !== 'string'))) {
+      fail('apiKeys must be an object: server code -> API key');
+    }
+    if (cfg.oauth !== undefined) {
+      if (typeof cfg.oauth !== 'object' || Array.isArray(cfg.oauth)) {
+        fail('oauth must be an object: server code -> { tokenEndpoint, clientId, clientSecret, scope }');
+      }
+      for (const [code, o] of Object.entries(cfg.oauth)) {
+        if (!o || typeof o !== 'object' || !o.tokenEndpoint || !o.clientId || !o.clientSecret) {
+          fail(`oauth.${code} needs a tokenEndpoint, clientId and clientSecret`);
+        }
+        if (!/^https:\/\//i.test(o.tokenEndpoint)) {
+          fail(`oauth.${code}.tokenEndpoint must be an https: URL`);
+        }
+      }
+    }
+    return cfg.use === true ? cfg : null;
+  }
+
+  /**
+   * an address without its scheme or a trailing /, in lower case
+   */
+  static normalise(address) {
+    let s = address.trim().toLowerCase().replace(/^[a-z]+:\/\//, '');
+    while (s.endsWith('/')) {
+      s = s.substring(0, s.length - 1);
+    }
+    return s;
+  }
+
+  /**
+   * a pattern as the registry has them: * matches anything
+   */
+  static patternToRegex(p) {
+    return new RegExp('^' + p.trim().split('*').map(s => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$');
+  }
+
+  isExcludedServer(address) {
+    const a = EcosystemResolver.normalise(address);
+    return this.excludedServers.some(e => a === e || a.startsWith(e + '/') || a.startsWith(e + ':'));
+  }
+
+  /**
+   * True if the code system (or version) is never looked for in the ecosystem: it matches one of
+   * modules.tx.ecosystem.excludedPatterns. Checked before the registry is asked anything
+   */
+  isExcludedSystem(system, version) {
+    return this.excludedPatterns.some(r => r.test(system) || (version && r.test(system + '|' + version)));
+  }
+
+  /**
+   * The host of an http: or https: system, as the registry gives it in unknown-host (lower case,
+   * with the port if there is one), or null for anything else
+   */
+  static hostOf(system) {
+    if (typeof system !== 'string' || !/^https?:\/\//i.test(system)) {
+      return null;
+    }
+    try {
+      return new URL(system).host.toLowerCase() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Whether the registry said, within the hour, that no server hosts any code system on host
+   * at FHIR version fv (an entry older than that is let go)
+   */
+  isUnknownHost(host, fv) {
+    const key = host + '#' + fv;
+    const entry = this.hosts.get(key);
+    if (!entry) {
+      return false;
+    }
+    if (Date.now() - entry.at >= CACHE_MS) {
+      this.hosts.delete(key);
+      return false;
+    }
+    return true;
+  }
+
+  static fhirVersionFor(v) {
+    return v === 3 ? '3.0' : v === 4 ? '4.0' : '5.0';
+  }
+
+  /**
+   * The code a server has in the registry (what its credentials are under), from the registry's
+   * list of servers
+   */
+  async serverCode(address, opContext = null) {
+    const map = await this.#known(this.codes, 'listing', async (ctxt) => {
+      const json = await this.getRegistryJson(this.registry, ctxt);
+      const m = new Map();
+      for (const r of json.results || []) {
+        if (r.url && r['server-code']) {
+          m.set(EcosystemResolver.normalise(r.url), r['server-code']);
+        }
+      }
+      return m;
+    }, opContext, (e) => `Unable to read the list of servers from ${this.registry}: ${e.message}`);
+    return (map && map.get(EcosystemResolver.normalise(address))) || null;
+  }
+
+  /**
+   * What the registry or a server says, kept in cache under key (an hour), loaded by loader if
+   * it isn't known. When it's due for a refresh, what's known is returned, and loaded again in the
+   * background (not counted against the operation: it doesn't wait for it). A loader that fails
+   * (throws) gives null, the first time; on a refresh, the old answer is kept, and the refresh is
+   * tried again in a few minutes. The same thing asked for twice at once is only loaded once
+   *
+   * @param {Map} cache - key -> {at, value, pending, refreshing}
+   * @param {function(OperationContext)} loader
+   * @param {function(Error): string} why - the warning when it fails
+   */
+  async #known(cache, key, loader, opContext, why) {
+    const now = Date.now();
+    const entry = cache.get(key);
+    if (entry) {
+      // most recently used: the last to be dropped (see #remember)
+      this.#remember(cache, key, entry);
+    }
+    if (entry && entry.pending) {
+      // waiting for it is waiting on another server
+      if (opContext && opContext.countExternalRequest) {
+        opContext.countExternalRequest();
+      }
+      return entry.pending;
+    }
+    if (entry && 'value' in entry) {
+      if (now - entry.at >= CACHE_MS && !entry.refreshing) {
+        entry.refreshing = true;
+        loader(null).then(value => {
+          this.#remember(cache, key, { at: Date.now(), value });
+        }).catch(e => {
+          this.log.warn(why(e) + ' (still using what it said before)');
+          entry.at = Date.now() - CACHE_MS + RETRY_MS;
+        }).finally(() => {
+          entry.refreshing = false;
+        });
+      }
+      return entry.value;
+    }
+    const pending = loader(opContext).then(value => {
+      this.#remember(cache, key, { at: Date.now(), value });
+      return value;
+    }, e => {
+      // not known: null for now, and asked again (in the background) in a few minutes. Why is
+      // kept with it (see #failureOf), so that an operation that finds nothing can say that it
+      // wasn't because there's nothing to find
+      const reason = why(e);
+      this.log.warn(reason);
+      this.#remember(cache, key, { at: Date.now() - CACHE_MS + RETRY_MS, value: null, failure: { reason, noAnswer: EcosystemResolver.noAnswer(e.cause) } });
+      return null;
+    });
+    this.#remember(cache, key, { pending });
+    return pending;
+  }
+
+  /**
+   * Why what's known under key is null, if it's because the registry or the server couldn't be
+   * asked (or didn't give a usable answer), not because it said there's nothing: {reason,
+   * noAnswer}, or null. noAnswer: it didn't answer at all (see noAnswer)
+   */
+  #failureOf(cache, key) {
+    const entry = cache.get(key);
+    return entry && 'value' in entry && entry.value === null && entry.failure ? entry.failure : null;
+  }
+
+  /**
+   * Why the registry couldn't say which servers have system|version (findServers gave null
+   * because the registry couldn't be asked), or null
+   */
+  whyNoServers(system, version, fhirVersion) {
+    const key = system + (version ? '|' + version : '');
+    const failure = this.#failureOf(this.servers, key + '#' + fhirVersion);
+    return failure ? failure.reason : null;
+  }
+
+  /**
+   * Why listVersions gave null for server and system, if it's because the server couldn't be
+   * asked, not because it doesn't have the code system, or null
+   */
+  whyUnavailable(server, system, authoritative = false) {
+    const caps = this.#failureOf(this.versions, server);
+    if (caps && caps.noAnswer) {
+      return caps.reason;
+    }
+    const search = this.#failureOf(this.searched, server + '|' + system + (authoritative ? '#auth' : ''));
+    return search ? search.reason : null;
+  }
+
+  /**
+   * Keep entry under key, as the most recently used, and drop the least recently used beyond
+   * MAX_KNOWN. Some of these caches are keyed by what requests ask for (a system and version), so
+   * without a limit they would grow with every code system anyone names
+   */
+  #remember(cache, key, entry) {
+    cache.delete(key);
+    cache.set(key, entry);
+    while (cache.size > MAX_KNOWN) {
+      cache.delete(cache.keys().next().value);
+    }
+  }
+
+  /**
+   * Every request to another server goes through here: it's counted against the operation.
+   *
+   * Redirects are followed (up to MAX_REDIRECTS), under the SSRF guard: the guarded agents check
+   * every address connected to, the redirect targets' included. A request with credentials
+   * (sameHost) is only followed to the same host, so the credentials go nowhere else.
+   *
+   * An http:// address is tried as https:// first, and as http:// only if https:// fails to
+   * answer at all (no connection, a TLS failure, no answer in time): an answer of any kind over
+   * https:// is the answer. Which one works is remembered for each host (for CACHE_MS), so a
+   * server that only has http:// costs the failed try once an hour, not every time.
+   *
+   * @param {OperationContext|null} opContext
+   * @param {Object} config - axios's
+   * @param {boolean} [sameHost] - redirects only to the host asked (the request has credentials)
+   */
+  async #request(opContext, config, sameHost = false) {
+    if (opContext && opContext.countExternalRequest) {
+      opContext.countExternalRequest();
+    }
+    const url = config.url;
+    if (!/^http:\/\//i.test(url)) {
+      return this.#send(config, sameHost);
+    }
+    const host = new URL(url).host;
+    const known = this.schemes.get(host);
+    const fresh = known && Date.now() - known.at < CACHE_MS;
+    if (fresh && known.scheme === 'http') {
+      return this.#send(config, sameHost);
+    }
+    const secure = { ...config, url: 'https://' + url.substring('http://'.length) };
+    try {
+      const response = await this.#send(secure, sameHost, fresh ? this.timeoutMs : this.httpsProbeMs);
+      this.#remember(this.schemes, host, { scheme: 'https', at: Date.now() });
+      return response;
+    } catch (e) {
+      if (!EcosystemResolver.noAnswer(e.cause)) {
+        throw e;
+      }
+      const response = await this.#send(config, sameHost);
+      this.#remember(this.schemes, host, { scheme: 'http', at: Date.now() });
+      this.log.info(`${host} doesn't answer on https (${describeRequestFailure(e.cause, { timeoutMs: this.httpsProbeMs, maxBytes: MAX_RESPONSE_BYTES })}): using http`);
+      return response;
+    }
+  }
+
+  /**
+   * Whether an error from axios means the server didn't answer at all (so the other scheme is
+   * worth trying): not an answer it didn't like, not a response that was too big, and not an
+   * address the SSRF guard refused (which the other scheme would be refused too)
+   */
+  static noAnswer(e) {
+    if (!e || e.response) {
+      return false;
+    }
+    const message = String(e.message || '');
+    if (/maxContentLength|Blocked request to non-public address/.test(message)) {
+      return false;
+    }
+    return true;
+  }
+
+  async #send(config, sameHost, headerTimeoutMs = this.timeoutMs) {
+    // the deadline covers the whole request; axios's timeout only the wait for the headers
+    const deadline = requestDeadline(this.timeoutMs);
+    const host = new URL(config.url).hostname;
+    try {
+      return await axios.request({
+        ...config,
+        timeout: headerTimeoutMs,
+        signal: deadline.signal,
+        maxContentLength: MAX_RESPONSE_BYTES,
+        maxRedirects: MAX_REDIRECTS,
+        beforeRedirect: (options) => {
+          if (sameHost && options.hostname !== host) {
+            throw new Error(`${config.url} redirects to another host (${options.hostname}): not followed, since the request has credentials`);
+          }
+        }
+      });
+    } catch (e) {
+      // the warnings that report this give the server's answer in words, not axios's
+      throw new Error(`${config.url}: ${describeRequestFailure(e, { timeoutMs: headerTimeoutMs, maxBytes: MAX_RESPONSE_BYTES, deadline })}`, { cause: e });
+    }
+  }
+
+  async getRegistryJson(url, opContext = null) {
+    const response = await this.#request(opContext, {
+      url,
+      method: 'GET',
+      headers: { 'Accept': 'application/json', [FORWARDED_HEADER]: 'true' },
+      validateStatus: () => true,
+      httpAgent: this.agents.httpAgent,
+      httpsAgent: this.agents.httpsAgent
+    });
+    if (response.status !== 200 || !response.data || typeof response.data !== 'object') {
+      throw new Error(`${url} returned ${response.status}`);
+    }
+    return response.data;
+  }
+
+  /**
+   * Send a request to another server, with its credentials, if it has any. An OAuth token that
+   * the server refuses (401) is renewed, and the request sent once more
+   *
+   * @param {string} server - the server's address
+   * @param {string} url - the request
+   * @param {Object} [body] - a JSON body (POST), or none (GET)
+   * @param {OperationContext} [opContext] - the operation it's for
+   * @returns {Promise<{status: number, json: Object|null}>}
+   */
+  async send(server, url, body = null, opContext = null) {
+    const code = await this.serverCode(server, opContext);
+    const attempt = async (renew) => {
+      const credentials = code ? await this.credentials.headers(code, renew) : {};
+      const headers = Object.assign({ 'Accept': 'application/fhir+json', [FORWARDED_HEADER]: 'true' }, credentials);
+      if (body) {
+        headers['Content-Type'] = 'application/fhir+json';
+      }
+      return this.#request(opContext, {
+        url,
+        method: body ? 'POST' : 'GET',
+        headers,
+        data: body ? JSON.stringify(body) : undefined,
+        validateStatus: () => true,
+        httpAgent: this.agents.httpAgent,
+        httpsAgent: this.agents.httpsAgent
+      }, Object.keys(credentials || {}).length > 0); // with credentials, a redirect is only followed on the same host
+    };
+    let response = await attempt(false);
+    if (response.status === 401 && code && this.credentials.getOAuthConfig(code)) {
+      response = await attempt(true);
+    }
+    const json = response.data && typeof response.data === 'object' ? response.data : null;
+    return { status: response.status, json };
+  }
+
+  /**
+   * The address of the first server that the registry says can provide system|version, and that
+   * can be used (see findServers), or null
+   */
+  async findServer(system, version, fhirVersion, opContext = null) {
+    const servers = await this.findServers(system, version, fhirVersion, opContext);
+    return servers && servers.length > 0 ? servers[0].url : null;
+  }
+
+  /**
+   * The servers that the registry says can provide system|version, and that can be used (open,
+   * or there are credentials for it, and not excluded), authoritative ones first, as
+   * {url, authoritative}, or null if there are none. The registry is asked about the FHIR version
+   * of the endpoint first, then the other versions: the operations used on the other server don't
+   * depend on its FHIR version. Whether a candidate has the content is checked when it's used
+   * (listVersions)
+   *
+   * If this server (an excluded one: see modules.tx.ecosystem.excludedServers) is authoritative
+   * for it, there are none: the answer is this server's - e.g. that it doesn't have that version -
+   * not whatever another server says
+   *
+   * @param {string} system
+   * @param {string} version - may be null
+   * @param {number} fhirVersion - the endpoint's (3, 4, 5 or 6)
+   * @param {OperationContext} [opContext] - the operation it's for
+   * @returns {Promise<{url: string, authoritative: boolean}[]|null>}
+   */
+  async findServers(system, version, fhirVersion, opContext = null) {
+    if (!EcosystemResolver.isUri(system) || this.isExcludedSystem(system, version)) {
+      return null;
+    }
+    const key = system + (version ? '|' + version : '');
+    return this.#known(this.servers, key + '#' + fhirVersion, async (ctxt) => {
+      const first = EcosystemResolver.fhirVersionFor(fhirVersion);
+      const host = EcosystemResolver.hostOf(system);
+      let failure = null;
+      for (const fv of [first, ...['5.0', '4.0'].filter(v => v !== first)]) {
+        if (host && this.isUnknownHost(host, fv)) {
+          continue; // the registry has said it knows nothing on this host, at this FHIR version
+        }
+        try {
+          const json = await this.getRegistryJson(this.registry + '/resolve?fhirVersion=' + fv + '&url=' + encodeURIComponent(key), ctxt);
+          if (host && json['unknown-host'] === host && (json.authoritative || []).length === 0 && (json.candidates || []).length === 0) {
+            this.#remember(this.hosts, host + '#' + fv, { at: Date.now(), unknownHost: true });
+            continue;
+          }
+          if ((json.authoritative || []).some(s => s.url && this.isExcludedServer(s.url))) {
+            return null;
+          }
+          const servers = [...(await this.chooseServers(json.authoritative, true, ctxt)), ...(await this.chooseServers(json.candidates, false, ctxt))];
+          const seen = new Set();
+          const list = servers.filter(s => !seen.has(s.url) && seen.add(s.url));
+          if (list.length > 0) {
+            return list;
+          }
+        } catch (e) {
+          this.log.warn(`Ecosystem resolution of ${key} for FHIR ${fv} failed: ${e.message}`);
+          failure = e;
+        }
+      }
+      if (failure) {
+        throw failure; // not known: not the same as no server
+      }
+      return null;
+    }, opContext, (e) => `Ecosystem resolution of ${key} failed: ${e.message}`);
+  }
+
+  /**
+   * The servers in a list from the registry that can be used, in the registry's order. A
+   * candidate the registry says doesn't have the content (from its TerminologyCapabilities) isn't
+   * used; an authoritative server is, whatever it says: a server that provides services for a code
+   * system it says it has no content for (because it holds the concepts in its own tables) has to
+   * be registered as authoritative for it
+   */
+  async chooseServers(list, authoritative, opContext = null) {
+    const result = [];
+    for (const s of list || []) {
+      if (!s.url || this.isExcludedServer(s.url)) {
+        continue;
+      }
+      if (!authoritative && s.content && !EcosystemResolver.isUsableContent(s.content)) {
+        continue;
+      }
+      const open = (s.open || s.security === 'open') && !s.token;
+      if (open || this.credentials.hasCredentials(await this.serverCode(s.url, opContext))) {
+        result.push({ url: s.url, authoritative });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * True if a code system's content mode means its codes are there to validate against (the same
+   * test the validator applies: complete or fragment)
+   */
+  static isUsableContent(content) {
+    return content === 'complete' || content === 'fragment';
+  }
+
+  /**
+   * The content mode a TerminologyCapabilities.codeSystem states: R5 has codeSystem.content; R4
+   * (and R3) carry it in the cross-version extension. undefined if it doesn't say
+   */
+  static capsContent(cs) {
+    if (cs.content) {
+      return cs.content;
+    }
+    const ext = (cs.extension || []).find(e => e.url === CAPS_CONTENT_EXT);
+    return ext ? ext.valueCode : undefined;
+  }
+
+  /**
+   * The versions of system that a server has, or null if it doesn't have it (or couldn't be
+   * asked).
+   *
+   * What the server says in its TerminologyCapabilities comes first: if it lists the code system,
+   * and doesn't say that the content is anything other than complete or fragment, the versions it
+   * lists there are the answer. Otherwise - it doesn't list it, or says the content isn't there, or
+   * there's no TerminologyCapabilities - the server's CodeSystem resources for it are searched for,
+   * and the versions with complete or fragment content are the answer (searchVersions).
+   *
+   * For a server that's authoritative for the code system, what it says about the content isn't
+   * looked at (see chooseServers)
+   *
+   * @param {string} server
+   * @param {string} system
+   * @param {OperationContext} [opContext] - the operation it's for
+   * @param {boolean} [authoritative] - the registry says the server is authoritative for it
+   * @returns {Promise<{code: string, isDefault: boolean}[]|null>}
+   */
+  async listVersions(server, system, opContext = null, authoritative = false) {
+    const caps = await this.codeSystemsOf(server, opContext);
+    const entry = caps ? caps.get(system) : null;
+    if (entry && (authoritative || entry.content === undefined || EcosystemResolver.isUsableContent(entry.content))) {
+      return entry.versions;
+    }
+    const failure = caps ? null : this.#failureOf(this.versions, server);
+    if (failure && failure.noAnswer) {
+      // the server didn't answer at all: searching it would only wait out another timeout
+      return null;
+    }
+    return this.searchVersions(server, system, opContext, authoritative);
+  }
+
+  /**
+   * What a server says it has (its TerminologyCapabilities): code system -> {content, versions},
+   * or null if it couldn't be asked. Read once (an hour) for all the code systems. content is
+   * undefined if the server doesn't say
+   */
+  async codeSystemsOf(server, opContext = null) {
+    return this.#known(this.versions, server, async (ctxt) => {
+      const { status, json } = await this.send(server, server.replace(/\/$/, '') + '/metadata?mode=terminology', null, ctxt);
+      if (status >= 300 || !json) {
+        throw new Error(`it returned status ${status}`);
+      }
+      const map = new Map();
+      for (const cs of json.codeSystem || []) {
+        if (cs.uri) {
+          const entry = map.get(cs.uri) || { content: undefined, versions: [] };
+          const content = EcosystemResolver.capsContent(cs);
+          if (content !== undefined && !EcosystemResolver.isUsableContent(entry.content)) {
+            entry.content = content;
+          }
+          entry.versions = entry.versions.concat((cs.version || []).filter(v => v.code).map(v => ({ code: v.code, isDefault: v.isDefault === true })));
+          map.set(cs.uri, entry);
+        }
+      }
+      return map;
+    }, opContext, (e) => `Unable to read the code systems that ${server} has: ${e.message}`);
+  }
+
+  /**
+   * The versions of system that a server has CodeSystem resources for with complete or fragment
+   * content (any content, for a server that's authoritative for it), from a search for them, or
+   * null if there aren't any (or it couldn't be asked). Kept for an hour. None of them is the
+   * default: a search doesn't say
+   */
+  async searchVersions(server, system, opContext = null, authoritative = false) {
+    return this.#known(this.searched, server + '|' + system + (authoritative ? '#auth' : ''), async (ctxt) => {
+      const url = server.replace(/\/$/, '') + '/CodeSystem?url=' + encodeURIComponent(system) + '&_summary=true&_count=100';
+      const { status, json } = await this.send(server, url, null, ctxt);
+      if (status >= 300 || !json || json.resourceType !== 'Bundle') {
+        throw new Error(`it returned status ${status}`);
+      }
+      let found = false;
+      const versions = [];
+      for (const e of json.entry || []) {
+        const cs = e.resource;
+        if (cs && cs.resourceType === 'CodeSystem' && cs.url === system && (authoritative || EcosystemResolver.isUsableContent(cs.content))) {
+          found = true;
+          if (cs.version && !versions.some(v => v.code === cs.version)) {
+            versions.push({ code: cs.version, isDefault: false });
+          }
+        }
+      }
+      return found ? versions : null;
+    }, opContext, (e) => `Unable to search for ${system} on ${server}: ${e.message}`);
+  }
+
+  /**
+   * send(), for requests whose answer doesn't change from one minute to the next ($lookup and
+   * $validate-code): the answer is kept for an hour (the most recent MAX_ANSWERS of them), and the
+   * same request asked for again while it's on its way waits for that answer. Only what the
+   * server answered is kept: an answer that says something is wrong with the request (4xx) is
+   * kept, but not one about authorisation, throttling or the server itself (401, 403, 429, 5xx),
+   * and not a failure to get an answer at all
+   */
+  async sendCached(server, url, body = null, opContext = null) {
+    const key = url + (body ? ' ' + JSON.stringify(body) : '');
+    const entry = this.answers.get(key);
+    if (entry && entry.pending) {
+      if (opContext && opContext.countExternalRequest) {
+        opContext.countExternalRequest();
+      }
+      return entry.pending;
+    }
+    if (entry && Date.now() - entry.at < CACHE_MS) {
+      // most recently used goes to the end, so the oldest are dropped first
+      this.answers.delete(key);
+      this.answers.set(key, entry);
+      return entry.value;
+    }
+    const pending = this.send(server, url, body, opContext).then(value => {
+      const s = value.status;
+      if (s < 500 && s !== 401 && s !== 403 && s !== 429) {
+        this.answers.set(key, { at: Date.now(), value });
+        while (this.answers.size > MAX_ANSWERS) {
+          this.answers.delete(this.answers.keys().next().value);
+        }
+      } else {
+        this.answers.delete(key);
+      }
+      return value;
+    }, e => {
+      this.answers.delete(key);
+      throw e;
+    });
+    this.answers.delete(key);
+    this.answers.set(key, { pending });
+    return pending;
+  }
+}
+
+module.exports = { EcosystemResolver, FORWARDED_HEADER, DEFAULT_REGISTRY };

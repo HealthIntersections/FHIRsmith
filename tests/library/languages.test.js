@@ -283,7 +283,6 @@ describe('LanguageDefinitions Class', () => {
 
     if (fs.existsSync(realDataPath)) {
       definitions = await LanguageDefinitions.fromFiles(realDataPath);
-      // console.log('Using real IETF language data from lang.dat');
     } else {
       throw new Error('Real data file not found');
     }
@@ -310,8 +309,6 @@ describe('LanguageDefinitions Class', () => {
       
       // Test that common scripts are loaded
       expect(definitions.scripts.has('Latn')).toBe(true);
-      
-      // console.log(`Loaded ${definitions.languages.size} languages, ${definitions.regions.size} regions, ${definitions.scripts.size} scripts`);
     });
 
     test('should handle duplicate codes', () => {
@@ -344,6 +341,18 @@ Description: Test
   });
 
   describe('Language Parsing and Validation', () => {
+    test('the cache of parsed tags is capped, dropping the least recently used', () => {
+      const en = definitions.parse('en');
+      for (let i = 0; i < LanguageDefinitions.MAX_PARSED + 10; i++) {
+        definitions.parse('en-x-' + i);
+        definitions.parse('en'); // kept, being used
+      }
+      expect(definitions.parsed.size).toBe(LanguageDefinitions.MAX_PARSED);
+      expect(definitions.parse('en')).toBe(en);
+      expect(definitions.parsed.has(':en-x-0')).toBe(false);
+      expect(definitions.parse('en-x-0').privateUse).toEqual(['0']);
+    });
+
     test('should parse valid language codes', () => {
       const lang = definitions.parse('en-US');
       expect(lang).not.toBeNull();
@@ -460,12 +469,8 @@ Description: Test
       
       complexCodes.forEach(code => {
         const lang = definitions.parse(code);
-        if (lang) {
-          expect(lang.language).toBeTruthy();
-          // console.log(`Successfully parsed: ${code}`);
-        } else {
-          // console.log(`Could not parse (may not be in current dataset): ${code}`);
-        }
+        expect(lang).toBeTruthy();
+        expect(lang.language).toBeTruthy();
       });
     });
   });
@@ -476,6 +481,21 @@ Description: Test
       expect(definitions.getDisplayForLang('en')).toBe('English');
       expect(definitions.getDisplayForLang('fr')).toBe('French');
       expect(definitions.getDisplayForLang('unknown')).toBe('unknown');
+    });
+
+    test('should join folded (continuation) lines in registry fields', () => {
+      // lang.dat folds long Description values onto an indented second line
+      expect(definitions.getDisplayForLang('ia')).toBe('Interlingua (International Auxiliary Language Association)');
+
+      const folded = LanguageDefinitions.fromContent(`%%
+Type: language
+Subtag: xx
+Description: First Name
+Description: Second Name That Is
+  Folded Across
+  Three Lines
+Added: 2005-10-16`);
+      expect(folded.languages.get('xx').displays).toEqual(['First Name', 'Second Name That Is Folded Across Three Lines']);
     });
 
     test('should get display names for regions', () => {
@@ -556,7 +576,6 @@ describe('Language System Integration Tests', () => {
 
     if (fs.existsSync(realDataPath)) {
       definitions = await LanguageDefinitions.fromFiles(realDataPath);
-      // console.log('Using real IETF language data from lang.dat');
     } else {
       throw new Error('Real data file not found');
     }

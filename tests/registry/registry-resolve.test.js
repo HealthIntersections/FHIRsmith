@@ -30,7 +30,6 @@ describe('Registry Resolve Functional Tests', () => {
       const testData = loadTestData();
       crawler.loadData(testData);
       api = new RegistryAPI(crawler);
-      console.log('Test data loaded successfully.');
     } catch (error) {
       console.error('Failed to set up test environment:', error);
       throw error;
@@ -46,18 +45,12 @@ describe('Registry Resolve Functional Tests', () => {
     // Determine which resolver to use
     const isValueSet = !!valueSet;
 
-    console.log(`Running with usage: ${usage || 'none'}`);
-
     // Call the appropriate resolver
     const resolveResult = isValueSet
       ? api.resolveValueSet(fhirVersion, valueSet, authoritativeOnly, usage)
       : api.resolveCodeSystem(fhirVersion, url, authoritativeOnly, usage);
 
     const actual = resolveResult.result;
-
-    // Debug output
-    console.log(`Matches: ${resolveResult.matches}`);
-    console.log(JSON.stringify(actual, null, 2));
 
     // Basic structure checks
     expect(actual.formatVersion).toBe("1");
@@ -101,6 +94,19 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "HL7 Australia Server",
             "url": "https://tx.ontoserver.csiro.au/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          }
+        ],
+        // tx.fhir.org hosts versions of the Australian edition too, so it's a candidate
+        "candidates": [
+          {
+            "server-name": "tx.fhir.org",
+            "url": "http://tx.fhir.org/r4",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           }
         ]
@@ -121,6 +127,8 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "HL7 Australia Server",
             "url": "https://tx.ontoserver.csiro.au/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           }
         ]
@@ -140,30 +148,40 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "tx.fhir.org",
             "url": "http://tx.fhir.org/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           },
           {
             "server-name": "HL7 Australia Server",
             "url": "https://tx.ontoserver.csiro.au/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           },
           {
             "server-name": "HL7 Europe Terminology Server",
             "url": "http://tx.hl7europe.eu/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "Open"
           },
           {
             "server-name": "HL7 Switzerland Terminology Server",
             "url": "https://tx.fhir.ch/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "Open"
           },
           {
             "server-name": "New Zealand Health Terminology Service (NZHTS)",
             "url": "https://nzhts.digital.health.nz/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server requires an API Key - see https://www.tewhatuora.govt.nz/health-services-and-programmes/digital-health/terminology-service"
           }
         ]
@@ -183,30 +201,40 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "tx.fhir.org",
             "url": "http://tx.fhir.org/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           },
           {
             "server-name": "HL7 Australia Server",
             "url": "https://tx.ontoserver.csiro.au/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to the public"
           },
           {
             "server-name": "Canada Health Infoway Terminology Server",
             "url": "https://terminologystandardsservice.ca/tx/fhir",
             "security": "api-key",
+            "fhirVersion": "4.0.1",
+            "token": true,
             "access_info": "This server requires an API Key - see https://infocentral.infoway-inforoute.ca/en/tools/standards-tools/terminology-server"
           },
           {
             "server-name": "HL7 Europe Terminology Server",
             "url": "http://tx.hl7europe.eu/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "Open"
           },
           {
             "server-name": "HL7 Switzerland Terminology Server",
             "url": "https://tx.fhir.ch/r4",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "Open"
           }
         ]
@@ -226,18 +254,24 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "tx.fhir.org",
             "url": "http://tx.fhir.org/r5",
             "security": "open",
+            "fhirVersion": "5.0.0",
+            "open": true,
             "access_info": "This server is open to the public"
           },
           {
             "server-name": "HL7 Europe Terminology Server",
             "url": "http://tx.hl7europe.eu/r5",
             "security": "open",
+            "fhirVersion": "5.0.0",
+            "open": true,
             "access_info": "Open"
           },
           {
             "server-name": "TEHIK Terminology Server",
             "url": "https://term.tehik.ee/fhir",
             "security": "open",
+            "fhirVersion": "5.0.0",
+            "open": true,
             "access_info": "Open"
           }
         ]
@@ -250,8 +284,28 @@ describe('Registry Resolve Functional Tests', () => {
       fhirVersion: '4.0',
       url: 'http://snomed.info/sct|http://snomed.info/sct/11000172109',
       expected: {
+        // The Belgian server is authoritative but restricted to publication use; the
+        // servers that host versions of the Belgian edition are still candidates
         "formatVersion": "1",
-        "registry-url": "https://fhir.github.io/ig-registry/tx-servers.json"
+        "registry-url": "https://fhir.github.io/ig-registry/tx-servers.json",
+        "candidates": [
+          {
+            "server-name": "tx.fhir.org",
+            "url": "http://tx.fhir.org/r4",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          },
+          {
+            "server-name": "HL7 Australia Server",
+            "url": "https://tx.ontoserver.csiro.au/fhir",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          }
+        ]
       }
     });
   });
@@ -262,8 +316,28 @@ describe('Registry Resolve Functional Tests', () => {
       url: 'http://snomed.info/sct|http://snomed.info/sct/11000172109',
       usage: "validation",
       expected: {
+        // The Belgian server is authoritative but restricted to publication use; the
+        // servers that host versions of the Belgian edition are still candidates
         "formatVersion": "1",
-        "registry-url": "https://fhir.github.io/ig-registry/tx-servers.json"
+        "registry-url": "https://fhir.github.io/ig-registry/tx-servers.json",
+        "candidates": [
+          {
+            "server-name": "tx.fhir.org",
+            "url": "http://tx.fhir.org/r4",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          },
+          {
+            "server-name": "HL7 Australia Server",
+            "url": "https://tx.ontoserver.csiro.au/fhir",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          }
+        ]
       }
     });
   });
@@ -281,7 +355,27 @@ describe('Registry Resolve Functional Tests', () => {
             "server-name": "Federal Public Service Health, Food Chain Safety and Environment",
             "url": "https://apps.health.belgium.be/ontoserver/fhir",
             "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
             "access_info": "This server is open to publishers of IGs"
+          }
+        ],
+        "candidates": [
+          {
+            "server-name": "tx.fhir.org",
+            "url": "http://tx.fhir.org/r4",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
+          },
+          {
+            "server-name": "HL7 Australia Server",
+            "url": "https://tx.ontoserver.csiro.au/fhir",
+            "security": "open",
+            "fhirVersion": "4.0.1",
+            "open": true,
+            "access_info": "This server is open to the public"
           }
         ]
       }

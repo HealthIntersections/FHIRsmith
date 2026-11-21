@@ -5,14 +5,36 @@
 // with support for multiple endpoints at different FHIR versions.
 //
 
+const { reportedReleaseDate } = require('../library/changelog');
+
+// serialising a response that takes this long is shown in the request's log line
+const SERIALISE_LOG_MS = 10;
+// the most XML kept for large resources, by default (modules.tx.xmlCacheMB)
+const DEFAULT_XML_CACHE_MB = 256;
+// when this server process started (the release date of a snapshot build)
+const SERVER_STARTED = new Date(Date.now() - process.uptime() * 1000);
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 const Logger = require('../library/logger');
 const { Library } = require('./library');
-const { OperationContext, ResourceCache, ExpansionCache, debugLog} = require('./operation-context');
+const { OperationContext, ResourceCache, ExpansionCache, ExpansionCacheBudget, debugLog} = require('./operation-context');
 const { LanguageDefinitions } = require('../library/languages');
 const { I18nSupport } = require('../library/i18nsupport');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
+const { FhirXmlBase } = require('./xml/xml-base');
+const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
+const { resourceToJson } = require('./json-serialise');
+const { SupplementTextIndex } = require('./library/supplement-text-index');
+const memoryGuard = require('../library/memory-guard');
+const { prepareTextIndexes, registerCaches, buildCachesPage, buildCacheListPage } = require('./tx-caches');
+const escapeHtml = require('escape-html');
+const auth = require('../library/auth');
+const rateLimit = require('express-rate-limit');
+const { trimNativeMemory } = require('../library/native-memory');
+const { connectCaches } = require('../library/cluster-caches');
+const { LibraryFilterMemos, libraryFilterMemos } = require('./library/filter-memo');
+const { storedResourceETag } = require('../library/etags');
 const txHtml = require('./tx-html');
 const { Liquid } = require('liquidjs');
 const packageJson = require("../package.json");
@@ -20,13 +42,14 @@ const packageJson = require("../package.json");
 // Import workers
 const ReadWorker = require('./workers/read');
 const SearchWorker = require('./workers/search');
-const { ExpandWorker, INTERNAL_DEFAULT_LIMIT, EXTERNAL_TEST_DEFAULT_LIMIT} = require('./workers/expand');
+const { ExpandWorker, INTERNAL_DEFAULT_LIMIT, EXTERNAL_DEFAULT_LIMIT, WALK_LIMIT_FACTOR } = require('./workers/expand');
 const { ValidateWorker } = require('./workers/validate');
 const TranslateWorker = require('./workers/translate');
 const LookupWorker = require('./workers/lookup');
 const SubsumesWorker = require('./workers/subsumes');
 const { MetadataHandler } = require('./workers/metadata');
 const { BatchValidateWorker } = require('./workers/batch-validate');
+const { CacheControlWorker } = require('./workers/cache-control');
 const {CapabilityStatementXML} = require("./xml/capabilitystatement-xml");
 const {TerminologyCapabilitiesXML} = require("./xml/terminologycapabilities-xml");
 const {ParametersXML} = require("./xml/parameters-xml");
@@ -36,7 +59,7 @@ const {ConceptMapXML} = require("./xml/conceptmap-xml");
 const {TxHtmlRenderer} = require("./tx-html");
 const {Renderer} = require("./library/renderer");
 const {OperationsWorker} = require("./workers/operations");
-const {RelatedWorker} = require("./workers/related");
+const {CompareWorker} = require("./workers/compare");
 const {codeSystemFromR5} = require("./xversion/xv-codesystem");
 const {operationOutcomeFromR5} = require("./xversion/xv-operationoutcome");
 const {parametersFromR5} = require("./xversion/xv-parameters");
@@ -47,9 +70,16 @@ const {capabilityStatementFromR5} = require("./xversion/xv-capabiliityStatement"
 const {bundleFromR5} = require("./xversion/xv-bundle");
 const {convertResourceToR5} = require("./xversion/xv-resource");
 const ClosureWorker = require("./workers/closure");
+const { ClosureStore } = require("./closure/closure-store");
 const {BundleXML} = require("./xml/bundle-xml");
 const ConceptUsageTracker = require("./usage-tracker");
 const ProblemFinder = require("./problems");
+const { buildOperationOutcome, outcomeFromError } = require('./library/operation-outcome');
+const txOpenApi = require('./openapi');
+const { SyndicationStore } = require('./syndication/syndication-store');
+const syndicationFeed = require('./syndication/syndication-feed');
+const { EcosystemResolver, FORWARDED_HEADER } = require('./ecosystem-resolver');
+const { summariseBody } = require('./library/request-summary');
 // const {writeFileSync} = require("fs");
 
 class TXModule {
@@ -128,24 +158,117 @@ class TXModule {
   }
 
   /**
+   * The memory limits in effect (see "Configuration Options" in tx/README.md): each from the tx setting
+   * of the same name, or its default when left out (or null); 0 = no limit (Infinity).
+   * @param {Object} config - Module configuration
+   * @returns {{cacheMaxConcepts: number, cacheMaxTotalConcepts: number, usageTrackerMaxCodes: number,
+   *   usageTrackerMaxCodeLength: number, languageTagCacheSize: number}}
+   */
+  static resourceLimits(config) {
+    const limit = (name, dflt) => {
+      let n = Number(config[name] ?? dflt);
+      if (!Number.isFinite(n) || n < 0) {
+        n = dflt; // not a number: the default, not silently no limit
+      }
+      return n === 0 ? Infinity : n;
+    };
+    return {
+      cacheMaxConcepts: limit('cacheMaxConcepts', ResourceCache.MAX_CONCEPTS_PER_CACHE),
+      cacheMaxTotalConcepts: limit('cacheMaxTotalConcepts', ResourceCache.MAX_TOTAL_CONCEPTS),
+      usageTrackerMaxCodes: limit('usageTrackerMaxCodes', ConceptUsageTracker.MAX_CODES),
+      usageTrackerMaxCodeLength: limit('usageTrackerMaxCodeLength', ConceptUsageTracker.MAX_CODE_LENGTH),
+      languageTagCacheSize: limit('languageTagCacheSize', LanguageDefinitions.MAX_PARSED),
+      filterMemoMaxConcepts: limit('filterMemoMaxConcepts', LibraryFilterMemos.DEFAULT_MAX_CONCEPTS)
+    };
+  }
+
+  /**
+   * The expansion limits, from the configuration or the defaults: external (the most codes an
+   * $expand returns; externalLimit, default 10000), internal (the most an expansion builds, an
+   * imported value set's for one; internalLimit, default 100000) and walk (the furthest a paged
+   * $expand walks to reach its page; walkLimit, default 10 x internal). Each, when set, must be a
+   * positive whole number, and external <= internal <= walk: anything else stops startup
+   * @returns {{external: number, internal: number, walk: number}}
+   */
+  static expansionLimits(config = {}) {
+    const read = (name, dflt) => {
+      const v = config[name];
+      if (v === undefined || v === null) {
+        return dflt;
+      }
+      const n = typeof v === 'number' || (typeof v === 'string' && /^\s*\d+\s*$/.test(v)) ? Number(v) : NaN;
+      if (!Number.isInteger(n) || n <= 0) {
+        throw new Error(`modules.tx.${name} must be a whole number above 0, not '${v}'`);
+      }
+      return n;
+    };
+    const internal = read('internalLimit', INTERNAL_DEFAULT_LIMIT);
+    const external = read('externalLimit', Math.min(EXTERNAL_DEFAULT_LIMIT, internal));
+    const walk = read('walkLimit', internal * WALK_LIMIT_FACTOR);
+    if (external > internal) {
+      throw new Error(`modules.tx.externalLimit (${external}) can't be more than internalLimit (${internal}): an expansion can't return more codes than it builds`);
+    }
+    if (internal > walk) {
+      throw new Error(`modules.tx.walkLimit (${walk}) can't be less than internalLimit (${internal})`);
+    }
+    return { external, internal, walk };
+  }
+
+  /**
    * Initialize the TX module
    * @param {Object} config - Module configuration
    * @param {express.Application} app - Express application for registering endpoints
+   * @param {Object} [server] - server level settings: {hostName} (config.hostName)
    */
-  async initialize(config, app) {
+  async initialize(config, app, server = {}) {
     this.config = config;
+    // the server's public host name, when it is configured as one (it is also used as a
+    // display name, so anything that isn't a host name is ignored)
+    this.publicHost = typeof server.hostName === 'string' && /^[A-Za-z0-9.-]+(:[0-9]{1,5})?$/.test(server.hostName)
+      ? server.hostName : null;
     // Initialize logger with config settings
     this.log = Logger.getInstance().child({
       module: 'tx',
       consoleErrors: config.consoleErrors,
       telnetErrors: config.telnetErrors
     });
-    this.usageTracker = new ConceptUsageTracker();
+    this.limits = TXModule.resourceLimits(config);
+    this.expansionLimitValues = TXModule.expansionLimits(config);
+    this.usageTracker = new ConceptUsageTracker(this.limits.usageTrackerMaxCodes, this.limits.usageTrackerMaxCodeLength);
+    // what providers remember on the filters of the packages' value sets (library/filter-memo.js)
+    libraryFilterMemos.maxConcepts = this.limits.filterMemoMaxConcepts;
 
     this.log.info('Initializing TX module');
+    if (config.adminPassword) {
+      this.log.warn('modules.tx.adminPassword is no longer used: the server\'s administrators (logged in) empty the caches');
+    }
+    this.log.info(`Limits: operationTimeLimit=${config.operationTimeLimit ?? 20}s, cacheTimeout=${config.cacheTimeout || 30}min, ` +
+      Object.entries(this.limits).map(([name, value]) => `${name}=${value === Infinity ? 'unlimited' : value}`).join(', '));
+    this.log.info(`Expansion limits: externalLimit=${this.expansionLimitValues.external}, internalLimit=${this.expansionLimitValues.internal}, ` +
+      `walkLimit=${this.expansionLimitValues.walk}`);
+    if (config.errorsForInvalidCodes !== undefined && typeof config.errorsForInvalidCodes !== 'boolean') {
+      throw new Error(`modules.tx.errorsForInvalidCodes must be true or false, not ${JSON.stringify(config.errorsForInvalidCodes)}`);
+    }
+    this.log.info(`Invalid codes in value set includes: ${config.errorsForInvalidCodes === true ? 'an error' : 'left out, with a warning'} (errorsForInvalidCodes)`);
+    if (config.conceptMapValueSetMatching !== undefined && typeof config.conceptMapValueSetMatching !== 'boolean') {
+      throw new Error(`modules.tx.conceptMapValueSetMatching must be true or false, not ${JSON.stringify(config.conceptMapValueSetMatching)}`);
+    }
+    this.log.info(`ConceptMap elements that name a value set: ${config.conceptMapValueSetMatching === true ? 'matched' : 'not matched'} (conceptMapValueSetMatching)`);
+
+    // Optional instance code, prefixed onto every cache-id this server issues so a
+    // proxy in front of several instances can route by it (see nginx.md). Checked
+    // here so a bad value stops startup rather than surfacing per endpoint.
+    if (ResourceCache.checkInstanceCode(config.instanceCode)) {
+      this.log.info(`Cache-ids will be issued with instance code '${config.instanceCode}'`);
+    }
 
     // Load HTML template
     txHtml.loadTemplate();
+
+    // Off unless the operator opts in. This gates the nav item as well as the route, so a
+    // server that does not publish its library source shows no link to it.
+    txHtml.setPublishLibrarySource(config.publishLibrarySource === true);
+    txHtml.setSyndicationFeed(!!(config.syndication && config.syndication.enabled));
 
     // Validate config
     if (!config.librarySource) {
@@ -160,6 +283,7 @@ class TXModule {
     const langPath = path.join(__dirname, 'data');
     this.log.info(`Loading language definitions from: ${langPath}`);
     this.languages = await LanguageDefinitions.fromFiles(langPath);
+    this.languages.maxParsed = this.limits.languageTagCacheSize;
     this.log.info('Language definitions loaded');
 
     // Initialize i18n support
@@ -169,8 +293,42 @@ class TXModule {
     await this.i18n.load();
     this.log.info('I18n support initialized');
 
+    // $closure keeps its tables on disk, across sessions and restarts, so it only exists
+    // when the administrator turns it on and says where they go. If it is turned on and
+    // the database can't be opened, that stops startup - silently running without it
+    // would be worse.
+    this.closureStore = null;
+    // a tx-worker (cluster.md) opens neither the closure tables nor the syndication store:
+    // the master owns them, and $closure and the feed are routed to it - unless
+    // server.cluster.sharedClosure is on (set only with a role), when every process
+    // answers $closure on the one database (see closure-store.js)
+    const worker = config.clusterRole === 'tx-worker';
+    const sharedClosure = config.sharedClosure === true;
+    if (config.closure && config.closure.enabled && (!worker || sharedClosure)) {
+      this.closureStore = new ClosureStore(config.closure, this.log, { shared: sharedClosure });
+      this.closureStore.open();
+      this.log.info(`$closure enabled: tables in ${this.closureStore.path}${sharedClosure ? ', shared with the other processes' : ''}`);
+      const days = config.closure.retentionDays;
+      // with the tables shared, the master alone drops the stale ones
+      if (days && !worker) {
+        const prune = async () => {
+          try {
+            const dropped = await this.closureStore.pruneUnused(days);
+            if (dropped.length > 0) {
+              this.log.info(`closure: dropped ${dropped.length} table(s) unused for ${days} days`);
+            }
+          } catch (error) {
+            this.log.error(`closure: pruning failed: ${error.message}`);
+          }
+        };
+        void prune(); // errors are logged inside
+        this.timers.push(setInterval(() => void prune(), 24 * 60 * 60 * 1000));
+      }
+    }
+
     // Initialize metadata handler with config
     this.metadataHandler = new MetadataHandler({
+      closure: this.closureStore != null || (worker && !!(config.closure && config.closure.enabled)),
       baseUrl: config.baseUrl,
       serverVersion: packageJson.version,
       txVersion: packageJson.txVersion,
@@ -180,13 +338,46 @@ class TXModule {
       description: config.description || 'FHIR Terminology Server',
       contactUrl: config.contactUrl,
       contact: config.contact,
-      releaseDate: config.releaseDate,
+      // when this version was released, from its CHANGELOG.md heading - or, for a snapshot,
+      // when the server started
+      releaseDate: config.releaseDate || reportedReleaseDate(packageJson.version, SERVER_STARTED),
       host: config.host ? config.host : "localhost"
     });
 
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
-    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats);
+    this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
+    if (config.pruneTerminologyCache !== undefined && typeof config.pruneTerminologyCache !== 'boolean') {
+      throw new Error(`modules.tx.pruneTerminologyCache must be true or false, not '${config.pruneTerminologyCache}'`);
+    }
+    // delete the .db and .cache files and package folders in terminology-cache that aren't used
+    // (once the endpoints are set up: see below)
+    this.library.pruneTerminologyCacheFiles = config.pruneTerminologyCache === true;
+    // how many connections LOINC requests share; 0: each opens its own
+    this.library.loincConnections = config.loincConnections;
+    if (config.clusterRole) {
+      // the folder:/file: source caches are the master's, under one name every process shares
+      this.library.localSourceTag = 'master';
+      // the master builds the package caches; a worker only reads them
+      this.library.packageCachesReadOnly = config.clusterRole === 'tx-worker';
+      // the master refreshes the IANA media types registry; a worker reads its copy
+      this.library.mimeTypesReadOnly = config.clusterRole === 'tx-worker';
+      // the LOINC, RxNorm, NDC, UNII, CPT and OMOP databases are the master's; a worker opens
+      // them read-only
+      this.library.terminologyDatabasesReadOnly = config.clusterRole === 'tx-worker';
+      this.library.oclCluster = config.clusterRole === 'master' ? 'leader' : 'follower';
+    }
+
+    // The syndication feed: content is recorded in the store as the library loads it, from
+    // the time the administrator turns it on (see tx/syndication). One store serves every
+    // endpoint, since the library is shared. If it is turned on and the store can't be
+    // opened, that stops startup.
+    this.syndicationStore = null;
+    if (config.syndication && config.syndication.enabled && !worker) {
+      this.syndicationStore = new SyndicationStore(path.join(this.library.cacheFolder, 'syndication'), this.log).open();
+      this.library.syndication = this.syndicationStore;
+      this.log.info(`Syndication feed enabled: store in ${this.syndicationStore.folder}`);
+    }
     this.log.info(`Load...`);
     await this.library.load();
     this.log.info('Library loaded successfully');
@@ -195,8 +386,22 @@ class TXModule {
     for (const endpoint of config.endpoints) {
       await this.setupEndpoint(endpoint, app);
     }
+    // the text indexes of the code systems and supplements just loaded: kept in SQLite from
+    // one run to the next, and built now if they aren't there (tx-caches.js)
+    this.textIndexStore = await prepareTextIndexes(this);
+    // every cache, for the caches page and the memory guard
+    this.caches = registerCaches(this);
+    // the caches page asks every process, under the launcher (library/cluster-caches.js)
+    this.cachesChannel = connectCaches((action, arg) => this.localCaches(action, arg), process,
+      { cluster: !!config.clusterRole && typeof process.send === 'function' });
+    // everything the library and the endpoints use is loaded: with pruneTerminologyCache, the
+    // rest of terminology-cache can go
+    await this.library.pruneUnusedCaches();
 
     this.log.info(`TX module initialized with ${config.endpoints.length} endpoint(s)`);
+    // the text indexes of the global supplements (language packs), in the background: otherwise
+    // the first text search of a code system with one waits for its index (seconds, for LOINC's)
+    void this.warmSupplementIndexes();
 
     // Self-test: verify metadata generation works for each endpoint before accepting traffic
     await this.selfTest();
@@ -207,6 +412,36 @@ class TXModule {
    * @param {Object} endpoint - Endpoint configuration {path, fhirVersion, context}
    * @param {express.Application} app - Express application
    */
+  /**
+   * Build the text indexes of the global supplements (SupplementTextIndex) one after another, in
+   * the background, letting other work run. Not awaited: requests are answered meanwhile, and a
+   * search that needs an index before it's ready waits for that one
+   */
+  warmSupplementIndexes() {
+    const supplements = new Map();
+    for (const endpoint of this.endpoints || []) {
+      for (const cs of endpoint.provider?.codeSystems?.values() || []) {
+        if (cs?.jsonObj?.content === 'supplement' && cs.isGlobalSupplement() && !supplements.has(cs.vurl)) {
+          supplements.set(cs.vurl, cs);
+        }
+      }
+    }
+    if (supplements.size === 0) {
+      return null;
+    }
+    const start = Date.now();
+    return (async () => {
+      for (const cs of supplements.values()) {
+        try {
+          await SupplementTextIndex.warm(cs, 'en');
+        } catch (e) {
+          this.log.warn(`Unable to build the text index of the supplement ${cs.vurl}: ${e.message}`);
+        }
+      }
+      this.log.info(`Text indexes of the global supplements built (${supplements.size}) in ${((Date.now() - start) / 1000).toFixed(1)} s`);
+    })();
+  }
+
   async setupEndpoint(endpoint, app) {
     const { path: endpointPath, context } = endpoint;
     const fhirVersion = String(endpoint.fhirVersion);
@@ -225,6 +460,8 @@ class TXModule {
     }
 
     this.log.info(`Setting up endpoint: ${endpointPath} (FHIR v${fhirVersion}, context: ${context || 'none'})`);
+    auth.defineModule('tx', { title: 'Terminology' });
+    auth.addAdminPage('tx', { label: `Caches (${endpointPath})`, path: `${endpointPath}/caches`, description: 'empty the caches' });
 
     const router = express.Router();
 
@@ -232,32 +469,68 @@ class TXModule {
     const cacheTimeoutMinutes = this.config.cacheTimeout || 30;
     const expansionCacheSize = this.config.expansionCacheSize || 1000;
     const expansionCacheMemoryThreshold = this.config.expansionCacheMemoryThreshold || 0;
+    // one budget of codes for the expansion caches of all the endpoints
+    if (!this.expansionCacheBudget) {
+      this.expansionCacheBudget = new ExpansionCacheBudget(this.config.expansionCacheMaxCodes || 0);
+      this.log.info(`Expansion caches: at most ${this.expansionCacheBudget.maxCodes} codes in all` +
+        (this.config.expansionCacheMaxCodes ? '' : ' (a quarter of the heap limit, at 1 KB a code)'));
+    }
+    // the XML (and JSON) of large resources, kept for next time (tx/xml/xml-fragment-cache.js)
+    if (!FhirXmlBase.fragmentCache && this.config.xmlCacheMB !== 0) {
+      const mb = this.config.xmlCacheMB ?? DEFAULT_XML_CACHE_MB;
+      const cache = new XmlFragmentCache({ budgetBytes: mb * 1024 * 1024 });
+      // emptied by the memory guard and the caches page (tx-caches.js registerCaches)
+      FhirXmlBase.setFragmentCache(cache);
+      this.log.info(`XML (and JSON) cache: at most ${mb} MB`);
+    }
 
     // Store endpoint info for provider creation
     const endpointInfo = {
       path: endpointPath,
       fhirVersion,
       context: context || null,
-      resourceCache: new ResourceCache(this.stats),
-      expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold)
+      // server.cluster.sharedCache (cluster.md, "Options"; set only with a role): one SQLite
+      // file that every process shares. Otherwise this process's memory, as ever
+      resourceCache: this.config.sharedCache ? this.createSharedResourceCache(endpointPath) : new ResourceCache(this.stats),
+      expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold, this.expansionCacheBudget)
     };
     // Create the provider once for this endpoint
     endpointInfo.provider = await this.library.cloneWithFhirVersion(fhirVersion, context, endpointPath);
+    for (const old of ['ecosystemResolution', 'ecosystemExcludedServers']) {
+      if (this.config[old] !== undefined) {
+        throw new Error(`modules.tx.${old} has been replaced by modules.tx.ecosystem (see tx/README.md)`);
+      }
+    }
+    const ecosystem = EcosystemResolver.checkConfig(this.config.ecosystem);
+    if (ecosystem) {
+      if (!this.ecosystemResolver) {
+        this.ecosystemResolver = new EcosystemResolver(ecosystem);
+        this.log.info(`Code systems not held here are looked for in the ecosystem (${this.ecosystemResolver.registry})`);
+      }
+      endpointInfo.provider.ecosystem = this.ecosystemResolver;
+    }
 
     // Set up periodic pruning of the resource cache
     // cacheTimeout is in minutes, default to 30 minutes
     const cacheTimeoutMs = cacheTimeoutMinutes * 60 * 1000;
     const pruneIntervalMs = 5 * 60 * 1000; // Run every 5 minutes
+    // Tell the cache what timeout it is being pruned against, so $cache-control?mode=check
+    // can report it and a client can size its keepalive interval to this server rather
+    // than guessing at a number it has no way to see.
+    endpointInfo.resourceCache.setIdleTimeout(cacheTimeoutMs);
+    endpointInfo.resourceCache.setInstanceCode(this.config.instanceCode);
+    endpointInfo.resourceCache.setLimits(this.limits.cacheMaxConcepts, this.limits.cacheMaxTotalConcepts);
     if (this.stats) {
       this.stats.addTask("Client Cache", "5 min");
     }
-    this.timers.push(setInterval(async () => {
+    const updateCodeSystemList = async () => {
       try {
         await endpointInfo.provider.updateCodeSystemList();
       } catch (error) {
         this.log.error(`Error updating CodeSystem list for ${endpointPath}: ${error.message}`);
       }
-    }, 60 * 1000));
+    };
+    this.timers.push(setInterval(() => void updateCodeSystemList(), 60 * 1000)); // errors are logged inside
     this.log.info(`CodeSystem list update scheduled for ${endpointPath}`);
     this.timers.push(setInterval(() => {
       endpointInfo.resourceCache.prune(cacheTimeoutMs);
@@ -290,12 +563,37 @@ class TXModule {
       // Get Accept-Language header for language preferences
       const acceptLanguage = req.get('Accept-Language') || 'en';
 
-      // Create operation context with language, ID, time limit, and caches
-      const opContext = new OperationContext(
-        acceptLanguage, this.i18n, requestId, 30,
-        endpointInfo.resourceCache, endpointInfo.expansionCache
-      );
+      // Create operation context with language, ID, time limit, and caches.
+      // The time limit is a compute-time budget (see OperationContext._clock)
+      // and is configurable (config.operationTimeLimit, seconds). The default
+      // sits deliberately under common client timeouts (okhttp reads give up at
+      // 10-30s): if the server's limit is >= the client's, the client hangs up
+      // first and the carefully-built too-costly OperationOutcome is written to
+      // a socket nobody is reading.
+      let opContext;
+      try {
+        opContext = new OperationContext(
+          acceptLanguage, this.i18n, requestId, this.config.operationTimeLimit ?? 20,
+          endpointInfo.resourceCache, endpointInfo.expansionCache
+        );
+      } catch (err) {
+        // an Accept-Language header that isn't valid (e.g. a region that doesn't exist) is the
+        // client's error: 400, not 500
+        err.statusCode = err.statusCode || 400;
+        throw err;
+      }
       opContext.usageTracker = this.usageTracker;
+      // Normalise the cache-id from the X-Cache-Id header onto the operation
+      // context once, here, so every worker honours a front-loaded cache no
+      // matter how it later assembles its Parameters (some use buildParameters,
+      // others read req.body / query directly). An explicit cache-id parameter
+      // on the request still wins (see setupAdditionalResources).
+      opContext.cacheId = req.get('X-Cache-Id') || null;
+      // named in the message if the operation runs out of time
+      opContext.operationName = OperationContext.operationNameFor(req.path);
+      // a request another server sent on while resolving a code system through the ecosystem
+      // isn't resolved through the ecosystem again (see EcosystemResolver)
+      opContext.ecosystemForwarded = !!req.get(FORWARDED_HEADER);
 
       // Attach everything to request
       req.txProvider = endpointInfo.provider;
@@ -306,6 +604,28 @@ class TXModule {
       req.txI18n = this.i18n;
       req.txLog = this.log;
 
+      // Release any code-system providers that opened sqlite connections
+      // during this request. closeProviders() is idempotent so it's safe
+      // for both events to fire. Listeners are sync; the close itself
+      // runs fire-and-forget on the event loop.
+      const releaseProviders = () => {
+        opContext.closeProviders().catch((err) => {
+          try { this.log.warn(`closeProviders failed: ${err && err.message}`); } catch (_) { /* ignore */ }
+        });
+      };
+      res.on('finish', releaseProviders);
+      res.on('close', releaseProviders);
+
+      // If the connection closes before the response was completed, the client
+      // has given up (timeout, cancelled build, dropped connection). Mark the
+      // operation so it aborts at its next yield point instead of computing a
+      // response nobody will read.
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          opContext.markClientGone();
+        }
+      });
+
       // Add X-Request-Id header to response
       res.setHeader('X-Request-Id', requestId);
 
@@ -315,29 +635,72 @@ class TXModule {
       let txhtml = new TxHtmlRenderer(new Renderer(opContext, endpointInfo.provider), this.liquid, this.languages, this.i18n, endpointInfo.path);
       res.json = async (data) => {
         try {
-          const duration = Date.now() - req.txStartTime;
+          // the operation's time; what follows (version conversion, serialising) is timed
+          // separately: for a large resource it can be the larger part
+          const serialiseStart = Date.now();
+          const duration = serialiseStart - req.txStartTime;
           const isHtml = txhtml.acceptsHtml(req);
           const xmlFmt = this.acceptsXml(req);
           const jsonFmt = this.acceptsJson(req);
+          // the client has hung up: there is no one to serialise the response for. (499, as nginx
+          // logs a client that closed the connection, though nothing is sent)
+          const abandon = () => {
+            this.log.info(`[${requestId}] ${req.method} ${isHtml ? 'html' : (xmlFmt ? 'xml' : 'json')} 499 ${duration}+${Date.now() - serialiseStart}ms 0: ${req.originalUrl} (the client disconnected before the response was sent))`);
+            return res;
+          };
+          if (opContext.clientGone) {
+            return abandon();
+          }
+          // a stored resource that was read: its ETag, from where it came from (library/etags.js),
+          // and a 304 at once if the client has it already. Not for HTML, where the page around
+          // the resource varies
+          if (!isHtml && req.txStoredResource === data && data && (req.method === 'GET' || req.method === 'HEAD') && res.statusCode === 200) {
+            const format = xmlFmt ? 'xml' : 'json';
+            res.setHeader('ETag', storedResourceETag(data, format, endpointInfo.fhirVersion,
+              { sourcePackage: req.sourcePackage, contentHash: req.txStoredContentHash }));
+            if (req.fresh) {
+              res.status(304).end();
+              this.log.info(`[${requestId}] ${req.method} ${format} 304 ${duration}ms 0: ${req.originalUrl} )`);
+              return res;
+            }
+          }
           data = this.transformResourceForVersion(data, endpointInfo.fhirVersion);
 
           let responseSize;
           let result;
+          let serialisedAt = null;
 
           if (isHtml) {
-            const title = txhtml.buildTitle(data, req);
+            // _format=html/fragment: the rendering only, with no page around it, for a
+            // page that runs an operation and puts the result inside itself (the ECL
+            // panel does this). The rendering is the same either way, so an error comes
+            // back as the rendered OperationOutcome rather than as something the caller
+            // has to handle separately.
             const content = await txhtml.render(data, req);
-            const html = await txhtml.renderPage(title, content, req.txEndpoint, req.txStartTime);
+            const fragment = (req.query._format || req.query.format) === 'html/fragment';
+            const html = fragment ? content
+              : await txhtml.renderPage(txhtml.buildTitle(data, req), content, req.txEndpoint, req.txStartTime);
             responseSize = Buffer.byteLength(html, 'utf8');
             res.setHeader('Content-Type', 'text/html');
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const xml = this.convertResourceToXml(data);
-              responseSize = Buffer.byteLength(xml, 'utf8');
+              const parts = await FhirXmlBase.toXmlChunksAsync(() => this.convertResourceToXml(data), () => !opContext.clientGone);
               res.setHeader('Content-Type', xmlFmt);
-              result = res.send(xml);
+              if (parts.length === 1 && typeof parts[0] === 'string') {
+                responseSize = Buffer.byteLength(parts[0], 'utf8');
+                result = res.send(parts[0]);
+              } else {
+                // a large resource: written in its parts, never joined (see toXmlChunksAsync). The
+                // time logged is the time to serialise, not to send (which is up to the client)
+                serialisedAt = Date.now();
+                responseSize = await FhirXmlBase.writeXmlParts(res, parts);
+                result = res;
+              }
             } catch (err) {
+              if (err.abandoned) {
+                return abandon();
+              }
               console.error(err);
               // Fall back to JSON if XML conversion not supported
               this.log.warn(`XML conversion failed for ${data.resourceType}: ${err.message}, falling back to JSON`);
@@ -347,17 +710,30 @@ class TXModule {
               result = originalJson(data);
             }
           } else {
-            const jsonStr = JSON.stringify(data);
+            // the JSON of large arrays comes from the XML cache, when it's there (tx/json-serialise.js)
+            const jsonStr = resourceToJson(data, FhirXmlBase.fragmentCache);
             res.setHeader('Content-Type', jsonFmt);
             this.checkProperJson(jsonStr);
             responseSize = Buffer.byteLength(jsonStr, 'utf8');
-            result = originalJson(data);
+            // send the string built above: res.json(data) would serialise the resource again
+            result = res.send(jsonStr);
           }
 
           // Log the request with request ID
           const format = isHtml ? 'html' : (xmlFmt ? 'xml' : 'json');
           let li = req.logInfo ? "(" + req.logInfo + ")" : "";
-          this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${duration}ms ${responseSize}: ${req.originalUrl} ${li})`);
+          // operation+serialising, when serialising took long enough to matter (e.g. "5+6120ms")
+          const serialiseMs = (serialisedAt ?? Date.now()) - serialiseStart;
+          const timing = serialiseMs >= SERIALISE_LOG_MS ? `${duration}+${serialiseMs}ms` : `${duration}ms`;
+          this.log.info(`[${requestId}] ${req.method} ${format} ${res.statusCode} ${timing} ${responseSize}: ${req.originalUrl} ${li})`);
+          // a slow request: what it asked, so that it can be repeated (the line above has the url)
+          const slowMs = (this.config.slowRequestSeconds ?? 30) * 1000;
+          const total = duration + serialiseMs;
+          if (slowMs > 0 && total >= slowMs) {
+            const body = req.method === 'POST' || req.method === 'PUT' ? summariseBody(req.body) : '';
+            this.log.warn(`[${requestId}] slow request (${Math.round(total / 1000)}s): ${req.method} ${req.originalUrl}` +
+              (req.get('Accept-Language') ? ` Accept-Language: ${req.get('Accept-Language')}` : '') + (body ? ` body: ${body}` : ''));
+          }
 
           return result;
         } catch (err) {
@@ -370,21 +746,21 @@ class TXModule {
       next();
     });
 
-    // CORS headers
-    router.use((req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-      if (req.method === 'OPTIONS') {
-        return res.sendStatus(200);
-      }
-      next();
-    });
+    // CORS is handled once at the app level (server.js, from config.server.cors).
+    // Do not set Access-Control-* headers here - doing so stacks a second
+    // CORS layer and produces duplicate, conflicting headers that browsers
+    // reject.
 
     // JSON body parsing - accept both application/json and application/fhir+json
     // Handle body that may already be read as a Buffer by app-level middleware
     router.use((req, res, next) => {
       const contentType = req.get('Content-Type') || '';
+
+      // The body was bigger than the server accepts (server.maxBodyMB; see below)
+      if (req.bodyTooLarge) {
+        return res.status(413).json(buildOperationOutcome('error', 'too-costly',
+          `The request body is bigger than this server accepts (${req.bodyTooLarge.limit} bytes)`));
+      }
 
       // Only process POST/PUT
       if (req.method !== 'POST' && req.method !== 'PUT') {
@@ -404,14 +780,7 @@ class TXModule {
             }
           } catch (e) {
             this.log.error(`JSON parse error: ${e.message}`);
-            return res.status(400).json({
-              resourceType: 'OperationOutcome',
-              issue: [{
-                severity: 'error',
-                code: 'invalid',
-                diagnostics: `Invalid JSON: ${e.message}`
-              }]
-            });
+            return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid JSON: ${e.message}`));
           }
         }
 
@@ -432,25 +801,15 @@ class TXModule {
             req.body = this.convertXmlToResource(xmlStr);
           } catch (e) {
             this.log.error(`XML parse error: ${e.message}`);
-            return res.status(400).json({
-              resourceType: 'OperationOutcome',
-              issue: [{
-                severity: 'error',
-                code: 'invalid',
-                diagnostics: `Invalid XML: ${e.message}`
-              }]
-            });
+            return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid XML: ${e.message}`));
           }
         }
-      } else if (contentType != 'application/x-www-form-urlencoded') {
-        return res.status(415).json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'error',
-            code: 'invalid',
-            diagnostics: `Unsupported Media Type: ${contentType}`
-          }]
-        });
+      } else if (contentType.split(';')[0].trim().toLowerCase() != 'application/x-www-form-urlencoded') {
+        // compare the media type alone: a form post may carry a charset parameter
+        const message = contentType
+          ? `Unsupported Media Type: ${contentType}`
+          : `No Content-Type was given for this ${req.method}; use application/fhir+json or application/fhir+xml`;
+        return res.status(415).json(buildOperationOutcome('error', 'invalid', message));
       }
 
       if (req.body) {
@@ -461,14 +820,30 @@ class TXModule {
 
     app.use(express.urlencoded({ extended: true }));
 
+    // The OpenAPI description, on the endpoints it describes (R5)
+    if (txOpenApi.describes(fhirVersion)) {
+      this.setupOpenApi(router, endpointInfo);
+    }
+
     // Set up routes
-    this.setupRoutes(router);
+    this.setupRoutes(router, endpointInfo.path);
 
     // Redirect /r5 → /r5/
     app.use((req, res, next) => {
       if (req.path === endpointPath) {
         return res.redirect(301, endpointPath + '/');
       }
+      next();
+    });
+
+    // A body over the size limit is refused by the body parsers, which run before this
+    // router, and Express would answer with its HTML error page. Note it and carry on, so
+    // the router answers with an OperationOutcome, in the format the client asked for
+    app.use(endpointPath, (err, req, res, next) => {
+      if (err.type !== 'entity.too.large') {
+        return next(err);
+      }
+      req.bodyTooLarge = err;
       next();
     });
 
@@ -481,10 +856,62 @@ class TXModule {
   }
 
   /**
+   * The OpenAPI description of an endpoint: /openapi.json, /openapi.yaml, and /openapi (an
+   * HTML reference for browsers, the JSON otherwise), and an RFC 8631 Link header on every
+   * response that points to them. These are sent directly, not through the res.json the
+   * endpoint wraps for FHIR resources.
+   *
+   * @param {express.Router} router
+   * @param {Object} endpointInfo
+   */
+  setupOpenApi(router, endpointInfo) {
+    const doc = txOpenApi.forEndpoint(endpointInfo.path);
+    const sendJson = (res) => res.type('application/json').send(doc.getJson());
+    router.use((req, res, next) => {
+      res.setHeader('Link', `<${req.baseUrl}/openapi.json>; rel="service-desc", <${req.baseUrl}/openapi>; rel="service-doc"`);
+      next();
+    });
+    const count = (start) => this.countRequest(endpointInfo.path, 'openapi', Date.now() - start);
+    router.get('/openapi.json', (req, res) => {
+      const start = Date.now();
+      try {
+        sendJson(res);
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi.yaml', (req, res) => {
+      const start = Date.now();
+      try {
+        res.type('application/yaml').send(doc.getYaml());
+      } finally {
+        count(start);
+      }
+    });
+    router.get('/openapi', async (req, res) => {
+      const start = Date.now();
+      try {
+        if (!txHtml.acceptsHtml(req)) {
+          return sendJson(res);
+        }
+        const txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, endpointInfo.path);
+        const html = await txhtml.renderPage('API', doc.renderHtml(), endpointInfo, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        count(start);
+      }
+    });
+  }
+
+  /**
    * Set up routes for an endpoint
    * @param {express.Router} router - Express router
+   * @param {string} endpointPath - the endpoint these routes belong to, e.g.
+   *   '/tx/r4'. Captured by the handlers below so that every request is
+   *   counted against the endpoint that served it, not just the operation.
    */
-  setupRoutes(router) {
+  setupRoutes(router, endpointPath) {
     const resourceTypes = ['CodeSystem', 'ValueSet', 'ConceptMap'];
 
     // ===== Operations =====
@@ -497,7 +924,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$lookup', async (req, res) => {
@@ -506,7 +933,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
 
@@ -517,7 +944,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$subsumes', async (req, res) => {
@@ -526,7 +953,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
 
@@ -535,18 +962,20 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
@@ -555,18 +984,20 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest('$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/\\$batch-validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystem(req, res);
       } finally {
-        this.countRequest('$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     // ValueSet/$validate-code (GET and POST)
@@ -574,38 +1005,40 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
-    // ValueSet/$related(GET and POST)
-    router.get('/ValueSet/\\$related', async (req, res) => {
+    // ValueSet/$compare(GET and POST)
+    router.get('/ValueSet/\\$compare', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new RelatedWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$related', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
-    router.post('/ValueSet/\\$related', async (req, res) => {
+    router.post('/ValueSet/\\$compare', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new RelatedWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$related', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
 
@@ -614,18 +1047,20 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest('$batch', Date.now() - start);
+        this.countRequest(endpointPath, '$batch', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$batch-validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new BatchValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSet(req, res);
       } finally {
-        this.countRequest('validate', Date.now() - start);
+        this.countRequest(endpointPath, 'validate', Date.now() - start, req);
       }
     });
 
@@ -633,19 +1068,41 @@ class TXModule {
     router.get('/ValueSet/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
+      }
+    });
+
+    // $cache-control (GET and POST) - base-level operation: mode=start|end
+    router.get('/\\$cache-control', async (req, res) => {
+      const start = Date.now();
+      try {
+        let worker = new CacheControlWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        await worker.handle(req, res, this.log);
+      } finally {
+        this.countRequest(endpointPath, '$cache-control', Date.now() - start, req);
+      }
+    });
+    router.post('/\\$cache-control', async (req, res) => {
+      const start = Date.now();
+      try {
+        let worker = new CacheControlWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        await worker.handle(req, res, this.log);
+      } finally {
+        this.countRequest(endpointPath, '$cache-control', Date.now() - start, req);
       }
     });
 
@@ -654,38 +1111,41 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
     router.post('/ConceptMap/\\$translate', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
 
-    // ConceptMap/$closure (GET and POST)
-    router.get('/ConceptMap/\\$closure', async (req, res) => {
+    // $closure (GET and POST). System level: the OperationDefinition is
+    // ConceptMap-closure, but it is declared system=true, type=false (#100).
+    router.get('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$closure', Date.now() - start);
+        this.countRequest(endpointPath, '$closure', Date.now() - start, req);
       }
     });
-    router.post('/ConceptMap/\\$closure', async (req, res) => {
+    router.post('/\\$closure', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new ClosureWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.closureStore, this.config.closure);
         await worker.handle(req, res, this.log);
       } finally {
-        this.countRequest('$closure', Date.now() - start);
+        this.countRequest(endpointPath, '$closure', Date.now() - start, req);
       }
     });
 
@@ -698,7 +1158,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest('$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$lookup', async (req, res) => {
@@ -707,7 +1167,7 @@ class TXModule {
         let worker = new LookupWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest('$lookup', Date.now() - start);
+        this.countRequest(endpointPath, '$lookup', Date.now() - start, req);
       }
     });
 
@@ -718,7 +1178,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest('$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$subsumes', async (req, res) => {
@@ -727,7 +1187,7 @@ class TXModule {
         let worker = new SubsumesWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res);
       } finally {
-        this.countRequest('$subsumes', Date.now() - start);
+        this.countRequest(endpointPath, '$subsumes', Date.now() - start, req);
       }
     });
 
@@ -736,18 +1196,20 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/CodeSystem/:id/\\$validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleCodeSystemInstance(req, res, this.log);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
 
     });
@@ -757,39 +1219,41 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/:id/\\$validate-code', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new ValidateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleValueSetInstance(req, res, this.log);
       } finally {
-        this.countRequest('$validate', Date.now() - start);
+        this.countRequest(endpointPath, '$validate', Date.now() - start, req);
       }
     });
 
 
-    // ValueSet/[id]/$related
-    router.get('/ValueSet/:id/\\$related', async (req, res) => {
+    // ValueSet/[id]/$compare
+    router.get('/ValueSet/:id/\\$compare', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new RelatedWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$related', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
-    router.post('/ValueSet/:id/\\$related', async (req, res) => {
+    router.post('/ValueSet/:id/\\$compare', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new RelatedWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        let worker = new CompareWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$related', Date.now() - start);
+        this.countRequest(endpointPath, '$compare', Date.now() - start, req);
       }
     });
 
@@ -797,19 +1261,21 @@ class TXModule {
     router.get('/ValueSet/:id/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
     router.post('/ValueSet/:id/\\$expand', async (req, res) => {
       const start = Date.now();
       try {
-        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req));
+        let worker = new ExpandWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n, this.internalLimit(req), this.externalLimit(req), this.walkLimit(req));
+        worker.errorsForInvalidCodes = this.config.errorsForInvalidCodes === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$expand', Date.now() - start);
+        this.countRequest(endpointPath, '$expand', Date.now() - start, req);
       }
     });
 
@@ -818,18 +1284,20 @@ class TXModule {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
     router.post('/ConceptMap/:id/\\$translate', async (req, res) => {
       const start = Date.now();
       try {
         let worker = new TranslateWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
+        worker.conceptMapValueSetMatching = this.config.conceptMapValueSetMatching === true;
         await worker.handleInstance(req, res, this.log);
       } finally {
-        this.countRequest('$translate', Date.now() - start);
+        this.countRequest(endpointPath, '$translate', Date.now() - start, req);
       }
     });
 
@@ -849,9 +1317,9 @@ class TXModule {
             ));
           }
           let worker = new ReadWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
-          await worker.handle(req, res, resourceType);
+          await worker.handle(req, res, resourceType, (req, res, resourceType, id, matches) => this.renderIdChoices(req, res, resourceType, id, matches));
         } finally {
-          this.countRequest('read', Date.now() - start);
+          this.countRequest(endpointPath, 'read', Date.now() - start, req);
         }
       });
     }
@@ -864,7 +1332,7 @@ class TXModule {
           let worker = new SearchWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
           await worker.handle(req, res, resourceType);
         } finally {
-          this.countRequest('search', Date.now() - start);
+          this.countRequest(endpointPath, 'search', Date.now() - start, req);
         }
       });
       router.post(`/${resourceType}/_search`, async (req, res) => {
@@ -873,16 +1341,22 @@ class TXModule {
           let worker = new SearchWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
           await worker.handle(req, res, resourceType);
         } finally {
-          this.countRequest('search', Date.now() - start);
+          this.countRequest(endpointPath, 'search', Date.now() - start, req);
         }
       });
     }
 
     // Unsupported methods
     for (const resourceType of resourceTypes) {
-      router.all(`/${resourceType}/:id`, (req, res) => {
+      router.all(`/${resourceType}/:id`, (req, res, next) => {
         const start = Date.now();
         try {
+          // /ConceptMap/$closure etc: an operation this server doesn't have at this
+          // level, not a resource that refuses the method
+          if (req.params.id.startsWith('$')) {
+            return res.status(404).json(this.operationOutcome('error', 'not-found',
+              `Unknown operation on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+          }
           if (['PUT', 'POST', 'DELETE', 'PATCH'].includes(req.method)) {
             return res.status(405).json(this.operationOutcome(
               'error',
@@ -890,8 +1364,10 @@ class TXModule {
               `Method ${req.method} is not supported`
             ));
           }
+          // anything else falls through to the not-found fallback rather than hanging
+          return next();
         } finally {
-          this.countRequest('$read', Date.now() - start);
+          this.countRequest(endpointPath, '$read', Date.now() - start, req);
         }
       });
     }
@@ -902,7 +1378,23 @@ class TXModule {
         let worker = new OperationsWorker(req.txOpContext, this.log, req.txProvider, this.languages, this.i18n);
         await worker.handle(req, res);
       } finally {
-        this.countRequest('$op', Date.now() - start);
+        this.countRequest(endpointPath, '$op', Date.now() - start, req);
+      }
+    });
+
+    // The ECL panel: an expression, an edition, and the expansion it produces. ECL is
+    // written by trial and error, so the page keeps the inputs and puts each result under
+    // them rather than navigating away from what you just typed.
+    router.get('/ecl', async (req, res) => {
+      const start = Date.now();
+      try {
+        let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+        const content = await txhtml.buildEclPage(req);
+        const html = await txhtml.renderPage('ECL', content, req.txEndpoint, req.txStartTime);
+        res.setHeader('Content-Type', 'text/html');
+        res.send(html);
+      } finally {
+        this.countRequest(endpointPath, 'ecl', Date.now() - start, req);
       }
     });
 
@@ -916,9 +1408,52 @@ class TXModule {
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
       } finally {
-        this.countRequest('problems', Date.now() - start);
+        this.countRequest(endpointPath, 'problems', Date.now() - start, req);
       }
     });
+
+    // The library source YAML - the file this server loaded its content from.
+    //
+    // Only registered when the operator turns modules.tx.publishLibrarySource on: the file
+    // names every database, cache and package the server runs, which some deployments are
+    // happy to publish and others are not, so it is opt-in rather than opt-out.
+    //
+    // One URL, negotiated: a browser (Accept: text/html) gets the highlighted page, anything
+    // else gets the file itself. ?_format=html and ?_format=yaml force either way, through the
+    // same acceptsHtml() the rest of the module uses.
+    if (this.config.publishLibrarySource === true) {
+      router.get('/library', async (req, res) => {
+        const start = Date.now();
+        try {
+          const filename = this.config.librarySource;
+          let source;
+          try {
+            source = await fs.promises.readFile(filename, 'utf8');
+          } catch (error) {
+            this.log.error(`Error reading library source ${filename}: ${error.message}`);
+            res.status(500).json(this.operationOutcome('error', 'exception',
+              'The library source is published by this server, but could not be read'));
+            return;
+          }
+          if (txHtml.acceptsHtml(req)) {
+            let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+            const content = txHtml.buildLibrarySourcePage(source, path.basename(filename), req.txEndpoint.path);
+            const html = await txhtml.renderPage('Library Source', content, req.txEndpoint, req.txStartTime);
+            res.setHeader('Content-Type', 'text/html');
+            res.send(html);
+          } else {
+            res.setHeader('Content-Type', 'application/yaml; charset=utf-8');
+            res.send(source);
+          }
+        } finally {
+          this.countRequest(endpointPath, 'library', Date.now() - start, req);
+        }
+      });
+    }
+
+    if (this.syndicationStore) {
+      this.setupSyndicationRoutes(router, endpointPath);
+    }
 
     // Metadata / CapabilityStatement
     router.get('/metadata', async (req, res) => {
@@ -931,7 +1466,7 @@ class TXModule {
           res.status(500).json(this.operationOutcome('error', 'exception', error.message));
         }
       } finally {
-        this.countRequest('metadata', Date.now() - start);
+        this.countRequest(endpointPath, 'metadata', Date.now() - start, req);
       }
     });
 
@@ -946,7 +1481,7 @@ class TXModule {
           res.status(500).json(this.operationOutcome('error', 'exception', error.message));
         }
       } finally {
-        this.countRequest('$versions', Date.now() - start);
+        this.countRequest(endpointPath, '$versions', Date.now() - start, req);
       }
     });
 
@@ -954,21 +1489,16 @@ class TXModule {
     router.get('/', async (req, res) => {
       const start = Date.now();
       try {
-        await res.json({
-          resourceType: 'OperationOutcome',
-          issue: [{
-            severity: 'information',
-            code: 'informational',
-            diagnostics: `FHIR Terminology Server - FHIR v${req.txEndpoint.fhirVersion}`
-          }]
-        });
+        await res.json(buildOperationOutcome('information', 'informational', `FHIR Terminology Server - FHIR v${req.txEndpoint.fhirVersion}`));
       } finally {
-        this.countRequest('home', Date.now() - start);
+        this.countRequest(endpointPath, 'home', Date.now() - start, req);
       }
     });
 
     // External source info pages
-    router.get('/info/:id', async (req, res) => {
+    // GET renders the info page; POST lets a source's info() handle a form
+    // submission (e.g. VSAC on-demand resync) and re-renders the same page.
+    const infoHandler = async (req, res) => {
       const start = Date.now();
       try {
         const source = req.txEndpoint.provider.externalSources.find(s => s.id() === req.params.id);
@@ -977,7 +1507,7 @@ class TXModule {
           return;
         }
         let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
-        const content = await txhtml.buildInfoPage(source, req);
+        const content = await txhtml.buildInfoPage(source, req, res);
         const html = await txhtml.renderPage(source.name(), content, req.txEndpoint, start);
         res.setHeader('Content-Type', 'text/html');
         res.send(html);
@@ -986,8 +1516,116 @@ class TXModule {
         this.log.error(`Error rendering info page for ${req.params.id}: ${error.message}`);
         res.status(500).send('Internal server error');
       } finally {
-        this.countRequest('info', Date.now() - start);
+        this.countRequest(endpointPath, 'info', Date.now() - start, req);
       }
+    };
+    // the session (library/auth), so a source can offer an administrator its actions (VSAC: resync a ValueSet)
+    // the pages that look up who is asking are rate limited, for requests that bring a login or
+    // a token - only these routes: the terminology API is heavy, anonymous and not limited here
+    const credentialLimit = rateLimit(auth.credentialLimits());
+    router.get('/info/:id', credentialLimit, auth.session, auth.csrfIfLoggedIn, infoHandler);
+    router.post('/info/:id', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, infoHandler);
+
+    // The caches page: what each cache holds; and, for the server's administrators (library/auth),
+    // emptying them (all but the client caches, or all of them), in every process (tx-caches.js)
+    const cachesHandler = async (req, res) => {
+      const start = Date.now();
+      try {
+        let message = null;
+        let action = 'report';
+        // ?show=<id>: the entries of one cache, in every process - for the administrators: they
+        // hold what clients asked (code systems, codes, language tags)
+        const show = req.method === 'GET' && typeof req.query.show === 'string' ? req.query.show : null;
+        if (show) {
+          const user = auth.currentUser(req);
+          let content;
+          if (!user || !user.isAdmin) {
+            content = '<h2>Caches</h2>\n<p>Only the server\'s administrators can see what a cache holds: <a href="' +
+              escapeHtml(auth.loginUrl(req, req.originalUrl)) + '">log in</a>.</p>\n';
+          } else {
+            content = buildCacheListPage({ answer: await this.cachesChannel.ask('list', show.substring(0, 64)) });
+          }
+          let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+          const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
+          res.setHeader('Content-Type', 'text/html');
+          res.setHeader('Cache-Control', 'no-store');
+          res.send(html);
+          return;
+        }
+        if (req.method === 'POST') {
+          const body = req.body || {};
+          const user = auth.currentUser(req);
+          if (!user || !user.isAdmin) {
+            message = 'Only the server\'s administrators can empty the caches: nothing was emptied';
+          } else if (body.action !== 'unload' && body.action !== 'unload-all') {
+            message = 'Unknown action: nothing was emptied';
+          } else {
+            action = body.action;
+          }
+        }
+        // every process, under the launcher (library/cluster-caches.js); else this one
+        const answer = await this.cachesChannel.ask(action);
+        if (action !== 'report') {
+          const done = answer.results.filter(r => r.result);
+          const entries = done.reduce((t, r) => t + r.result.cleared.reduce((u, c) => u + (c.entries || 0), 0), 0);
+          message = `Emptied the caches of ${done.length} process${done.length === 1 ? '' : 'es'} (${entries} entries)` +
+            (action === 'unload-all' ? ', client caches included' : ', not the client caches');
+          this.log.info(`Caches page: ${message}`);
+        }
+        const user = auth.currentUser(req);
+        const content = buildCachesPage({
+          answer, message,
+          isAdmin: !!(user && user.isAdmin),
+          csrf: res.locals._csrf || '',
+          loginUrl: auth.loginUrl(req, req.originalUrl)
+        });
+        let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+        const html = await txhtml.renderPage('Caches', content, req.txEndpoint, start);
+        res.setHeader('Content-Type', 'text/html');
+        res.setHeader('Cache-Control', 'no-store');
+        res.send(html);
+      } finally {
+        this.countRequest(endpointPath, 'caches', Date.now() - start, req);
+      }
+    };
+    router.get('/caches', credentialLimit, auth.session, auth.csrfIfLoggedIn, cachesHandler);
+    router.post('/caches', credentialLimit, auth.sameOrigin, auth.session, auth.form, auth.csrf, cachesHandler);
+    // a form post (caches, a source's info page) with a missing or wrong CSRF token: lusca
+    // passes on an error, which is the poster's problem, not the server's
+    router.use((err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
+      }
+      next(err);
+    });
+
+    // ===== Fallbacks - keep these last =====
+
+    // Nothing above matched. Without this, Express answers with its own HTML
+    // "Cannot POST /r4/$foo" page; a FHIR server must answer with an
+    // OperationOutcome (#100). Goes through the wrapped res.json, so it is
+    // rendered as JSON, XML or HTML to suit the client like everything else.
+    router.use((req, res) => {
+      const start = Date.now();
+      try {
+        const what = req.path.includes('$') ? 'operation' : 'path';
+        res.status(404).json(this.operationOutcome('error', 'not-found',
+          `Unknown ${what} on this server: ${req.method} ${req.baseUrl}${req.path}`, 'not-found'));
+      } finally {
+        this.countRequest(endpointPath, 'unknown', Date.now() - start, req);
+      }
+    });
+
+    // A handler threw or rejected without answering. Express 5 forwards those here;
+    // its default handler would send an HTML error page.
+    // eslint-disable-next-line no-unused-vars
+    router.use((err, req, res, next) => {
+      this.log.error(err);
+      debugLog(err);
+      if (res.headersSent) {
+        return next(err);
+      }
+      res.status(err.statusCode || 500).json(outcomeFromError(err));
     });
   }
 
@@ -1065,17 +1703,17 @@ class TXModule {
   }
 
   /**
-   * Build an OperationOutcome for errors
+   * Build an OperationOutcome. Delegates to the shared builder so that every outcome this
+   * server emits has details.text and a tx-issue-type coding: diagnostics is stripped by
+   * the test harness, so nothing a caller needs may live there.
+   * @param {string} severity - error, warning, information
+   * @param {string} code - FHIR issue type
+   * @param {string} message - the human readable account of the problem
+   * @param {string} [txIssueType] - tx-issue-type; defaulted from code when not given
+   * @returns {Object} OperationOutcome resource
    */
-  operationOutcome(severity, code, message) {
-    return {
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity,
-        code,
-        diagnostics: message
-      }]
-    };
+  operationOutcome(severity, code, message, txIssueType = null) {
+    return buildOperationOutcome(severity, code, message, txIssueType);
   }
 
   /**
@@ -1094,17 +1732,223 @@ class TXModule {
   }
 
   /**
+   * The paragraph for the server's daily report: how many of each operation
+   * were performed, over all the endpoints.
+   */
+  dailyReport({since, now}) {
+    const {plural} = require('../library/daily-report');
+    if (!this.stats) {
+      return null;
+    }
+    const counts = this.stats.countsSince(since, now);
+    if (counts.total === 0) {
+      return 'No requests were served.';
+    }
+    // the FHIR operations first, busiest first, then the rest (pages, metadata, reads)
+    const names = Object.keys(counts.operations).sort((a, b) => {
+      const opA = a.startsWith('$') ? 0 : 1;
+      const opB = b.startsWith('$') ? 0 : 1;
+      return opA - opB || counts.operations[b] - counts.operations[a] || a.localeCompare(b);
+    });
+    const list = names.map(n => `${n} ${counts.operations[n].toLocaleString('en-US')}`).join(', ');
+    const endpoints = Object.keys(counts.endpoints).filter(e => e).length;
+    const where = endpoints > 1 ? ` over ${plural(endpoints, 'endpoint')}` : '';
+    return `${counts.total.toLocaleString('en-US')} requests were served${where}: ${list}.`;
+  }
+
+  /**
+   * An endpoint's $cache-control cache in the shared SQLite file (databases/resource-cache.db),
+   * for server.cluster.sharedCache. Endpoints share the file but not caches.
+   * @param {string} endpointPath - e.g. /r4
+   * @returns {SqliteResourceCache}
+   */
+  createSharedResourceCache(endpointPath) {
+    const { SqliteResourceCache } = require('./resource-cache-sqlite');
+    const { newCacheGeneration } = require('../library/cache-generation');
+    const folders = require('../library/folder-setup');
+    const file = path.join(folders.databasesDir(), 'resource-cache.db');
+    // from server.cluster.sharedCacheMaxMB, by applyRole (library/role.js, where the default
+    // is); 0: no cap
+    const maxBytes = this.config.sharedCacheMaxBytes ?? 0;
+    if (this.sharedCacheGeneration === undefined) {
+      // Caches don't survive a server restart: each time the master starts (under the
+      // launcher or by hand) it begins a new generation, and every live cache becomes a
+      // "lost to a server restart" tombstone. A tx-worker joins the current generation,
+      // so one restarting while the master carries on keeps every cache. One token for
+      // all of this process's endpoints
+      this.sharedCacheGeneration = this.config.clusterRole === 'master' ? newCacheGeneration() : null;
+    }
+    this.log.info(`Resource cache for ${endpointPath}: shared with the other processes, in ${file}, ` +
+      (maxBytes ? `client resources capped at ${+(maxBytes / 2 ** 20).toFixed(1)} MB for every endpoint together` : 'no size cap') +
+      ' (server.cluster.sharedCacheMaxMB)');
+    const cache = new SqliteResourceCache(this.stats, { path: file, scope: endpointPath, maxBytes,
+      generation: this.sharedCacheGeneration });
+    if (cache.lostToRestart) {
+      this.log.info(`Resource cache: ${cache.lostToRestart} cache(s) from before this start are now tombstones (lost to a server restart)`);
+    }
+    return cache;
+  }
+
+  /**
    * Shutdown the module
    */
+  /**
+   * This process's caches, for the caches page (tx-caches.js): what each holds, after emptying
+   * them if the action says so (all but the client caches, or all), then a full GC and
+   * malloc_trim, so RSS shows what was let go
+   * @param {string} action - 'report', 'unload', 'unload-all', or 'list' (the entries of one cache)
+   * @param {string} [arg] - for list: the cache's id
+   * @returns {Promise<Object>} {process, report, cleared, memory: {rss, heapUsed, heapTotal, external, before}};
+   *   for list, {process, list} (CacheRegistry.list)
+   */
+  async localCaches(action, arg = null) {
+    const processName = `${this.config.clusterRole || 'server'}${this.config.instanceCode ? ' ' + this.config.instanceCode : ''}, pid ${process.pid}`;
+    if (action === 'list') {
+      return { process: processName, list: this.caches ? this.caches.list(arg) : null };
+    }
+    let cleared = null;
+    let before = null;
+    if (action === 'unload' || action === 'unload-all') {
+      before = process.memoryUsage().rss;
+      cleared = this.caches ? this.caches.clear(action === 'unload-all' ? ['cache', 'content', 'client'] : ['cache', 'content']) : [];
+      const gc = memoryGuard.getGc();
+      if (gc) {
+        try {
+          gc();
+        } catch (e) {
+          // RSS shows what it shows
+        }
+      }
+      trimNativeMemory();
+      this.log.info(`Caches emptied (${action}): RSS ${(before / 2 ** 30).toFixed(2)} GB -> ${(process.memoryUsage().rss / 2 ** 30).toFixed(2)} GB`);
+    }
+    const mem = process.memoryUsage();
+    return {
+      process: processName,
+      report: this.caches ? this.caches.report() : [],
+      cleared,
+      memory: { rss: mem.rss, heapUsed: mem.heapUsed, heapTotal: mem.heapTotal, external: mem.external, before }
+    };
+  }
+
   async shutdown() {
     this.log.info('Shutting down TX module');
     for (const timer of this.timers) {
       clearInterval(timer);
     }
     this.timers = [];
+    if (this.config && this.config.sharedCache) {
+      for (const ep of this.endpoints || []) {
+        if (ep.resourceCache) {
+          ep.resourceCache.close();
+        }
+      }
+    }
+    if (this.syndicationStore) {
+      // let an induction in progress finish, so the store isn't left with a half-copied file
+      await this.syndicationStore.whenIdle();
+    }
     // Clean up any resources if needed
     await this.library.close();
+    if (this.closureStore) {
+      this.closureStore.close();
+      this.closureStore = null;
+    }
+    if (this.cachesChannel) {
+      this.cachesChannel.disconnect();
+    }
+    if (this.textIndexStore) {
+      this.textIndexStore.close();
+      this.textIndexStore = null;
+    }
     this.log.info('TX module shut down');
+  }
+
+  /**
+   * The syndication feed for an endpoint (Terminology Syndication Feed IG, RFC 5005
+   * archived feeds) - see tx/syndication/syndication-feed.js. Atom unless HTML is asked for.
+   */
+  /**
+   * The public url of an endpoint, for the links in its feed: from the configured host name
+   * (config.hostName), so the links don't depend on what a client puts in the Host header.
+   * Only without one does it fall back to the request (as for a local test server).
+   */
+  syndicationBase(req, endpointPath) {
+    if (this.publicHost) {
+      return `https://${this.publicHost}${endpointPath}`;
+    }
+    return `${req.protocol}://${req.get('host')}${endpointPath}`;
+  }
+
+  setupSyndicationRoutes(router, endpointPath) {
+    const sendFeed = async (req, res, page) => {
+      const start = Date.now();
+      try {
+        const params = {
+          store: this.syndicationStore,
+          endpointPath,
+          fhirVersion: req.txEndpoint.fhirVersion,
+          base: this.syndicationBase(req, endpointPath),
+          page,
+          title: this.config.title,
+          serverVersion: packageJson.version
+        };
+        if (txHtml.acceptsHtml(req)) {
+          const content = syndicationFeed.renderHtml(params);
+          if (content == null) {
+            res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication archive'));
+            return;
+          }
+          let txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txProvider), this.liquid, this.languages, this.i18n, endpointPath);
+          const title = page == null ? 'Syndication Feed' : `Syndication Feed (archive ${page})`;
+          const html = await txhtml.renderPage(title, content, req.txEndpoint, req.txStartTime);
+          res.setHeader('Content-Type', 'text/html');
+          res.send(html);
+          return;
+        }
+        const xml = syndicationFeed.renderAtom(params);
+        if (xml == null) {
+          res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication archive'));
+          return;
+        }
+        // an archive never changes; the current document changes whenever content is added.
+        // An archive is only cacheable forever when its links come from the configured host
+        // name - links made from the request's Host header must not be cached for others
+        res.setHeader('Cache-Control', page == null || !this.publicHost ? 'no-cache' : 'public, max-age=31536000, immutable');
+        res.setHeader('Content-Type', 'application/atom+xml; charset=utf-8');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.send(xml);
+      } catch (error) {
+        this.log.error(`Error rendering syndication feed: ${error.message}`);
+        res.status(500).json(this.operationOutcome('error', 'exception', 'Unable to render the syndication feed'));
+      } finally {
+        this.countRequest(endpointPath, 'syndication', Date.now() - start, req);
+      }
+    };
+
+    router.get('/syndication', (req, res) => sendFeed(req, res, null));
+
+    router.get('/syndication/archive/:page', (req, res) => {
+      const page = /^[1-9][0-9]{0,8}$/.test(req.params.page) ? Number(req.params.page) : -1;
+      return sendFeed(req, res, page);
+    });
+
+    // not rate limited here: as for the rest of the tx module, nginx does that (see nginx.md)
+    router.get('/syndication/files/:name', (req, res) => {
+      const file = this.syndicationStore.filePath(req.params.name);
+      if (!file) {
+        res.status(404).json(this.operationOutcome('error', 'not-found', 'There is no such syndication file'));
+        return;
+      }
+      // copies in the store never change
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Content-Type', 'application/fhir+json');
+      // the file is whatever the source folder held: never let a browser sniff it as a page
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      // served from the store's folder by the store's own name for it (sendFile refuses
+      // anything that would leave root)
+      res.sendFile(path.basename(file), { root: this.syndicationStore.filesFolder });
+    });
   }
 
   trimParameters(params) {
@@ -1119,8 +1963,9 @@ class TXModule {
 
   convertResourceToXml(res) {
     switch (res.resourceType) {
-      case "CodeSystem" : return CodeSystemXML._jsonToXml(res);
+      case "CodeSystem" : return CodeSystemXML.toXml(res);
       case "ValueSet" : return ValueSetXML.toXml(res);
+      case "ConceptMap" : return ConceptMapXML.toXml(res);
       case "Bundle" : return BundleXML.toXml(res, this.fhirVersion);
       case "CapabilityStatement" : return CapabilityStatementXML.toXml(res, "R5");
       case "TerminologyCapabilities" : return TerminologyCapabilitiesXML.toXml(res, "R5");
@@ -1160,16 +2005,82 @@ class TXModule {
     return data;
   }
 
-  countRequest(name, tat) {
+  /**
+   * Count a request. One that had to ask other servers (ecosystem resolution: the operation
+   * context counts the requests it sent) is counted as an external request: those take
+   * seconds, and are graphed separately (ServerStats.countExternalRequest)
+   *
+   * @param {Object} [req] - the request, for its operation context
+   */
+  countRequest(endpoint, name, tat, req = null) {
     if (this.stats) {
-      this.stats.countRequest(name, tat);
+      if (req && req.txOpContext && req.txOpContext.externalRequests > 0) {
+        this.stats.countExternalRequest(name, tat, endpoint);
+      } else {
+        this.stats.countRequest(name, tat, endpoint);
+      }
     }
   }
 
-  cacheCount() {
+  // Number of entries in the expansion cache, summed across endpoints.
+  expansionItemCount() {
     let count = 0;
     for (let ep of this.endpoints) {
-      count = count + ep.resourceCache.size() + ep.expansionCache.size();
+      count = count + ep.expansionCache.size();
+    }
+    return count;
+  }
+
+  // Number of concepts held in the client (resource) cache, summed across endpoints.
+  clientConceptCount() {
+    let count = 0;
+    for (let ep of this.endpoints) {
+      count = count + ep.resourceCache.conceptCount();
+    }
+    return count;
+  }
+
+  // Number of caches (cache-ids) currently held in the client cache, across endpoints.
+  clientCacheCount() {
+    let count = 0;
+    for (let ep of this.endpoints) {
+      count = count + ep.resourceCache.size();
+    }
+    return count;
+  }
+
+  // A read of an unprefixed id that several resources had in their source: the page
+  // that lists them (status 300, Multiple Choices). See ReadWorker.notFound.
+  async renderIdChoices(req, res, resourceType, id, matches) {
+    const txhtml = new TxHtmlRenderer(new Renderer(req.txOpContext, req.txEndpoint.provider), this.liquid, this.languages, this.i18n, req.txEndpoint.path);
+    const content = txhtml.renderIdChoices(resourceType, id, matches);
+    const html = await txhtml.renderPage(`${resourceType}/${id}`, content, req.txEndpoint, req.txStartTime);
+    res.status(300);
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(html);
+  }
+
+  // $closure usage for the home page: null when closure isn't turned on
+  closureStats() {
+    if (!this.closureStore) {
+      return null;
+    }
+    return { ...this.closureStore.totals(), retentionDays: this.config.closure.retentionDays || null };
+  }
+
+  // High-water marks for the client cache, summed across endpoints.
+  maxClientCacheCount() {
+    let count = 0;
+    for (let ep of this.endpoints) {
+      count = count + ep.resourceCache.maxSize();
+    }
+    return count;
+  }
+
+  maxClientConceptCount() {
+    let count = 0;
+    for (let ep of this.endpoints) {
+      count = count + ep.resourceCache.maxConceptCount();
     }
     return count;
   }
@@ -1206,18 +2117,38 @@ class TXModule {
     }
   }
 
+  // the configured expansion limits, checked at startup (see expansionLimits). Every client gets
+  // the same: the tx-ecosystem test runner (User-Agent Tools/Java) used to be held to the
+  // defaults, and now asks for a lower limit where a test depends on one (x-too-costly-threshold)
+  currentExpansionLimits() {
+    return this.expansionLimitValues || TXModule.expansionLimits(this.config || {});
+  }
+
+  // eslint-disable-next-line no-unused-vars
   internalLimit(req) {
-    let isTest = req.header("User-Agent") == 'Tools/Java';
-    if (this.config.internalLimit && !isTest) return this.config.internalLimit; else return INTERNAL_DEFAULT_LIMIT;
+    return this.currentExpansionLimits().internal;
+  }
+
+  // How far a paged expansion (count and offset) may walk to reach its page: offset + count. Only
+  // the page is built, the codes before it are counted, so this can be well past internalLimit
+  // eslint-disable-next-line no-unused-vars
+  walkLimit(req) {
+    return this.currentExpansionLimits().walk;
   }
 
   externalLimit(req) {
-    let hdr = req.headers["x-too-costly-threshold"];
-    if (hdr) {
-      return parseInt(hdr);
+    let limit = this.currentExpansionLimits().external;
+    // x-too-costly-threshold sets the limit for this request - mostly so test cases can ask for
+    // a lower one. It can't be more than the internal limit, and a value that isn't a positive
+    // whole number is ignored: it never means "no limit"
+    const hdr = req.headers["x-too-costly-threshold"];
+    if (hdr !== undefined) {
+      const n = Number(hdr);
+      if (Number.isInteger(n) && n > 0) {
+        limit = Math.min(n, this.internalLimit(req));
+      }
     }
-    let isTest = req.header("User-Agent") == 'Tools/Java';
-    if (this.config.internalLimit && !isTest) return this.config.externalLimit; else return EXTERNAL_TEST_DEFAULT_LIMIT;
+    return limit;
   }
 
 }

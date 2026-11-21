@@ -86,10 +86,10 @@ describe('IETF Language CodeSystem Provider', () => {
       expect(result.context.region).toBe('CN');
     });
 
-    test('should reject invalid language codes', async () => {
+    test('should reject invalid language codes, saying which subtag is wrong', async () => {
       const result = await provider.locate('invalid-code');
       expect(result.context).toBe(null);
-      expect(result.message).toBeUndefined();
+      expect(result.message).toBe("The language 'invalid' in the code 'invalid-code' is not valid");
     });
 
     test('should handle empty codes', async () => {
@@ -124,7 +124,7 @@ describe('IETF Language CodeSystem Provider', () => {
     });
 
     test('should throw an error for invalid codes', async () => {
-      await expect(provider.display('invalid')).rejects.toThrow("Invalid language code: invalid");
+      await expect(provider.display('invalid')).rejects.toThrow("The language 'invalid' in the code 'invalid' is not valid");
     });
 
     test('should return null for empty codes', async () => {
@@ -155,7 +155,7 @@ describe('IETF Language CodeSystem Provider', () => {
     });
 
     test('should return empty array for invalid codes', async () => {
-      await expect(provider.designations('invalid')).rejects.toThrow('Invalid language code: invalid');
+      await expect(provider.designations('invalid')).rejects.toThrow("The language 'invalid' in the code 'invalid' is not valid");
     });
   });
 
@@ -182,7 +182,7 @@ describe('IETF Language CodeSystem Provider', () => {
       
       await expect(
         provider.filter(prep, true, 'language', 'equals', 'en')
-      ).rejects.toThrow('Unsupported filter operator');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "language equals en" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
 
     test('should reject invalid exists values', async () => {
@@ -198,7 +198,15 @@ describe('IETF Language CodeSystem Provider', () => {
       
       await expect(
         provider.filter(prep, true, 'invalid-prop', 'exists', 'true')
-      ).rejects.toThrow('Unsupported filter property');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "invalid-prop exists true" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+    });
+
+    test('should reject = on a component that has no equality filter', async () => {
+      const prep = await provider.getPrepContext(false);
+
+      await expect(
+        provider.filter(prep, true, 'variant', '=', 'x')
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "variant = x" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
@@ -280,7 +288,7 @@ describe('IETF Language CodeSystem Provider', () => {
       
       expect(async () => {
         await provider.filterCheck(new FilterExecutionContext(), 'invalid', concept);
-      }).rejects.toThrow('set must be a IETFLanguageCodeFilter');
+      }).rejects.toThrow('set must be a language filter');
     });
 
     test('should validate concept type in filterCheck', async () => {
@@ -288,7 +296,7 @@ describe('IETF Language CodeSystem Provider', () => {
       
       expect(async () => {
         await provider.filterCheck(new FilterExecutionContext(), filter, 'invalid');
-      }).rejects.toThrow('Invalid language code: invalid');
+      }).rejects.toThrow("The language 'invalid' in the code 'invalid' is not valid");
     });
   });
 
@@ -343,7 +351,7 @@ describe('IETF Language CodeSystem Provider', () => {
     test('should not support text search', async () => {
       await expect(
         provider.searchFilter(new FilterExecutionContext(), 'english', false)
-      ).rejects.toThrow('Text Search is not supported');
+      ).rejects.toThrow('Text search is not supported for the code system');
     });
 
     test('should indicate filters are not closed', async () => {
@@ -362,8 +370,8 @@ describe('IETF Language CodeSystem Provider', () => {
       expect(await provider.sameConcept('en-US', 'en-US')).toBe(true);
     });
 
-    test('should not support subsumption testing', async () => {
-      expect(await provider.subsumesTest('en', 'en-US')).toBe('not-subsumed');
+    test('supports subsumption testing (see lang-validation.test.js for the rules)', async () => {
+      expect(await provider.subsumesTest('en', 'en-US')).toBe('subsumes');
     });
 
     test('should return empty definitions', async () => {

@@ -25,8 +25,9 @@ jobs:
 
       - name: Lint changed files only
         run: |
-          # Get changed JS files, excluding vendor directories
-          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/main...HEAD | grep -E '\.(js|mjs)$' | grep -v 'static/' | grep -v 'node_modules/' | tr '\n' ' ')
+          # Get changed JS files, excluding vendor directories and the ESLint configs (which
+          # .eslintrc.js ignores: passed by name, ESLint warns that they're ignored)
+          CHANGED_FILES=$(git diff --name-only --diff-filter=ACMRT origin/main...HEAD | grep -E '\.(js|mjs)$' | grep -v 'static/' | grep -v 'node_modules/' | grep -v '^\.eslintrc' | tr '\n' ' ')
           if [ -n "$CHANGED_FILES" ]; then
             echo "Linting changed files: $CHANGED_FILES"
             npx eslint $CHANGED_FILES
@@ -49,26 +50,34 @@ jobs:
       - name: Use Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - name: Install dependencies
         run: npm ci
 
       - name: Run npm audit
-        run: npm audit --audit-level=moderate
-        continue-on-error: true  # Don't fail on low-severity issues
+        # Everything, dev tooling included: fail on high/critical; moderate and low are reported
+        # here but don't fail the build. utilities/audit-check.js is npm audit with the accepted
+        # advisories in audit-allowlist.json (each with a reason and an expiry date) left out
+        run: node utilities/audit-check.js --audit-level=high
 
-      - name: Check for known vulnerabilities
+      - name: Check what ships for known vulnerabilities
+        # What the Docker image gets (it is built with npm ci --omit=dev): fail on anything moderate or worse
+        run: node utilities/audit-check.js --omit=dev --audit-level=moderate
+
+      - name: Audit a fresh install of the published package
+        # npm ignores package.json "overrides" when FHIRsmith is installed (npm install -g fhirsmith)
+        # rather than cloned, and the published package has no lock file. So the repo's own audit can
+        # be clean while installed servers get vulnerable transitive versions. This installs the
+        # package the way users do, into an empty folder, and audits what that actually gets
         run: |
-          # Check for high/critical vulnerabilities only
-          # npm audit returns non-zero exit code if vulnerabilities are found at the specified level
-          if npm audit --audit-level=high; then
-            echo "No high or critical vulnerabilities found"
-          else
-            echo "High or critical vulnerabilities found!"
-            exit 1
-          fi
+          npm pack --pack-destination "$RUNNER_TEMP"
+          mkdir "$RUNNER_TEMP/fresh-install"
+          cd "$RUNNER_TEMP/fresh-install"
+          npm init -y > /dev/null
+          npm install --ignore-scripts --no-audit --no-fund "$RUNNER_TEMP"/fhirsmith-*.tgz
+          node "$GITHUB_WORKSPACE/utilities/audit-check.js" --omit=dev --audit-level=moderate
 
   dependency-check:
     name: Dependency Analysis

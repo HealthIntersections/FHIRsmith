@@ -1,5 +1,5 @@
 const {Languages, LanguageDefinitions} = require("../library/languages");
-const { validateResource, strToBool, getValuePrimitive, validateParameter, Utilities} = require("../library/utilities");
+const { validateResource, strToBool, getValuePrimitive, getValueName, validateParameter, Utilities} = require("../library/utilities");
 const {Issue} = require("./library/operation-outcome");
 const {I18nSupport} = require("../library/i18nsupport");
 
@@ -53,8 +53,18 @@ class TxParameters {
 
     this.FHTTPLanguages = null;
     this.FDisplayLanguages = null;
+    // Whether languages were explicitly supplied by the request (vs a
+    // synthesised default). Consumed by hasHTTPLanguages/hasDisplayLanguages so
+    // the requested language folds into the expansion cache key.
+    this.FHasHTTPLanguages = false;
+    this.FHasDisplayLanguages = false;
     this.FValueSetVersionRules = null;
     this.FUid = '';
+
+    // names of single-valued parameters that have been set explicitly, so that
+    // parameters seen later with overwrite=false (i.e. from a ValueSet's
+    // embedded expansion parameters) don't clobber them. See seeParameter.
+    this.FSeen = new Set;
 
     this.FActiveOnly = false;
     this.FExcludeNested = false;
@@ -87,176 +97,21 @@ class TxParameters {
     if (!params.parameter) {
       return;
     }
-    if (!this.hasHTTPLanguages && this.hasParam(params, "__Content-Language")) {
-      this.HTTPLanguages = Languages.fromAcceptLanguage(this.paramstr(params, "__Content-Language"), this.languageDefinitions, !this.validating);
+    if (this.hasParam(params, "__Content-Language")) {
+      const lang = this.paramstr(params, "__Content-Language");
+      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating);
+      if (lang) this.FHasHTTPLanguages = true;
     }
-    if (!this.hasHTTPLanguages && this.hasParam(params, "__Accept-Language")) {
-      this.HTTPLanguages = Languages.fromAcceptLanguage(this.paramstr(params, "__Accept-Language"), this.languageDefinitions, !this.validating);
+    if (this.hasParam(params, "__Accept-Language")) {
+      const lang = this.paramstr(params, "__Accept-Language");
+      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating);
+      if (lang) this.FHasHTTPLanguages = true;
     }
 
     for (let p of params.parameter) {
-      switch (p.name) {
-        // Version rules
-        case 'system-version': {
-          this.seeVersionRule(getValuePrimitive(p), false,'default');
-          break;
-        }
-        case 'check-system-version': {
-          this.seeVersionRule(getValuePrimitive(p), false, 'check');
-          break;
-        }
-        case 'force-system-version': {
-          this.seeVersionRule(getValuePrimitive(p), false, 'override');
-          break;
-        }
-        case 'default-valueset-version': {
-          this.seeVersionRule(getValuePrimitive(p), true, 'default');
-          break;
-        }
-        case 'force-valueset-version': {
-          this.seeVersionRule(getValuePrimitive(p), true, 'override');
-          break;
-        }
-        case 'check-valueset-version': {
-          this.seeVersionRule(getValuePrimitive(p), true, 'check');
-          break;
-        }
-
-        case 'displayLanguage': {
-          try {
-            this.DisplayLanguages = Languages.fromAcceptLanguage(getValuePrimitive(p), this.languageDefinitions, !this.validating);
-          } catch (error) {
-            throw new Issue("error", "processing", null, 'INVALID_DISPLAY_NAME', this.i18n.translate('INVALID_DISPLAY_NAME', this.HTTPLanguages, [getValuePrimitive(p)]), "invalid-display").handleAsOO(400);
-          }
-          break;
-        }
-        case 'designation': {
-          this.designations.push(getValuePrimitive(p));
-          break;
-        }
-        case 'property': {
-          this.properties.push(getValuePrimitive(p));
-          break;
-        }
-        case 'no-cache': {
-          if (getValuePrimitive(p) === 'true') this.uid = crypto.randomUUID();
-          break;
-        }
-        case '_incomplete':
-        case 'limitedExpansion': {
-          let value = getValuePrimitive(p);
-          this.limitedExpansion = strToBool(value, false);
-          break;
-        }
-        case 'includeDesignations': {
-          let value = getValuePrimitive(p);
-          this.includeDesignations = strToBool(value, false);
-          break;
-        }
-        case 'includeDefinition': {
-          let value = getValuePrimitive(p);
-          this.includeDefinition = strToBool(value, false);
-          break;
-        }
-        case 'activeOnly': {
-          let value = getValuePrimitive(p);
-          this.activeOnly = strToBool(value, false);
-          break;
-        }
-        case 'excludeNested': {
-          let value = getValuePrimitive(p);
-          this.excludeNested = strToBool(value, false);
-          break;
-        }
-        case 'excludeNotForUI': {
-          let value = getValuePrimitive(p);
-          this.excludeNotForUI = strToBool(value, false);
-          break;
-        }
-        case 'excludePostCoordinated': {
-          let value = getValuePrimitive(p);
-          this.excludePostCoordinated = strToBool(value, false);
-          break;
-        }
-        case 'default-to-latest-version': {
-          let value = getValuePrimitive(p);
-          this.defaultToLatestVersion = strToBool(value, false);
-          break;
-        }
-        case 'incomplete-ok': {
-          let value = getValuePrimitive(p);
-          this.incompleteOK = strToBool(value, false);
-          break;
-        }
-        case 'diagnostics': {
-          let value = getValuePrimitive(p);
-          this.diagnostics = strToBool(value, false);
-          break;
-        }
-        case 'lenient-display-validation': {
-          if (getValuePrimitive(p) == true) this.displayWarning = true;
-          break;
-        }
-        case 'valueset-membership-only': {
-          if (getValuePrimitive(p) == true) this.membershipOnly = true;
-          break;
-        }
-        case 'versionsMatch' : {
-          if (getValuePrimitive(p) == true) this.FVersionsMatch = true;
-          break;
-        }
-        case 'profile' : {
-          let value = p.resource;
-          if (value && (value.resourceType === 'Parameters' || value.resourceType === 'ExpansionProfile')) {
-            this.readParams(value);
-          }
-          break;
-        }
-        // eslint-disable-next-line no-fallthrough
-        case 'term': // jQuery support
-        case 'filter' : {
-          this.filter = getValuePrimitive(p);
-          break;
-        }
-        case 'count' : {
-          this.count = Utilities.parseIntOrDefault(getValuePrimitive(p), -1);
-          break;
-        }
-        case 'offset' : {
-          this.offset = Utilities.parseIntOrDefault(getValuePrimitive(p), -1);
-          break;
-        }
-
-        case 'limit' : {
-          this.limit = Utilities.parseIntOrDefault(getValuePrimitive(p), -1);
-          break;
-        }
-
-        case 'useSupplement' : {
-          this.supplements.add(getValuePrimitive(p));
-          break;
-        }
-
-        case 'abstract': {
-          if (getValuePrimitive(p) == true) {
-            this.abstractOk = true;
-          } else if (getValuePrimitive(p) == false) {
-            this.abstractOk = false;
-          }
-          break;
-        }
-        case 'inferSystem': {
-          if (getValuePrimitive(p) == true) this.inferSystem = true;
-          break;
-        }
-        case 'sort': {
-          this.sort = getValuePrimitive(p);
-          break;
-        }
-        case "exclude-system": {
-          throw new Issue('error', 'not-supported', null, null, "The parameter 'exclude-system' is not supported by this system", null, 400);
-        }
-      }
+      // parameters that come from the request itself always win over anything
+      // seen earlier (e.g. from a ValueSet's embedded expansion parameters)
+      this.seeParameter(p.name, p, true);
     }
 
   }
@@ -292,11 +147,11 @@ class TxParameters {
   }
 
   get hasHTTPLanguages() {
-    return this.FHTTPLanguages && this.FHTTPLanguages.source;
+    return this.FHasHTTPLanguages;
   }
 
   get hasDisplayLanguages() {
-    return this.FDisplayLanguages && this.FDisplayLanguages.source;
+    return this.FHasDisplayLanguages;
   }
 
   get hasDesignations() {
@@ -357,6 +212,24 @@ class TxParameters {
     this.hasIncludeDesignations = true;
   }
 
+  /**
+   * Whether a response to this request shows each code's display and none of its other
+   * designations: it asks for no designations (includeDesignations, designation,
+   * displayLanguage), and its languages are English or none. A provider may then leave the
+   * other designations unread: one that handles selecting asks this of the params
+   * processSelection gets; $expand tells prefetchCodes (hints.displayOnly, when there is no text
+   * filter either, since a text filter is matched against the designations).
+   *
+   * @param {Languages|null} langs - the request's languages (OperationContext.langs)
+   * @returns {boolean}
+   */
+  showsDisplayOnly(langs) {
+    if (this.includeDesignations || this.hasDesignations || this.hasDisplayLanguages) {
+      return false;
+    }
+    return !langs || (langs.languages || []).every(l => l.code === '*' || l.isEnglishOrNothing());
+  }
+
   get includeDefinition() {
     return this.FIncludeDefinition;
   }
@@ -401,7 +274,7 @@ class TxParameters {
     this.FVersionsMatch = value;
     this.hasVersionsMatch = true;
   }
-e
+
   get versionRules() {
     return this.FVersionRules;
   }
@@ -418,18 +291,244 @@ e
     return new TxParameters(langDefs);
   }
 
+  /**
+   * Process a single parameter. This is the single place where parameter names
+   * are interpreted; both the request Parameters resource (see readParams) and
+   * the valueset-expansion-parameter extension route through here.
+   *
+   * @param {string} name - the parameter name
+   * @param {Object} value - any element getValuePrimitive() understands: a
+   *   Parameters.parameter entry, or the 'value' sub-extension of a
+   *   valueset-expansion-parameter extension
+   * @param {boolean} overwrite - true when the parameter comes from the request
+   *   (later values win); false when it comes from a ValueSet's embedded
+   *   expansion parameters, which must not clobber what the request set
+   *   explicitly. Parameters that accumulate (version rules, designations,
+   *   properties, supplements) are unaffected - they always add.
+   */
   seeParameter(name, value, overwrite) {
-    if (value) {
-      if (name === 'displayLanguage' && (!this.FDisplayLanguages || overwrite)) {
-        this.DisplayLanguages = Languages.fromAcceptLanguage(getValuePrimitive(value), this.languageDefinitions, !this.validating)
+    if (!name || !value) {
+      return;
+    }
+
+    // returns false if this single-valued parameter has already been set
+    // explicitly and we're not allowed to overwrite it
+    const claim = (key) => {
+      if (!overwrite && this.FSeen.has(key)) {
+        return false;
+      }
+      this.FSeen.add(key);
+      return true;
+    };
+    // string ('true') and boolean (valueBoolean) forms are both accepted, since
+    // GET parameters always arrive as valueString
+    const asBool = () => strToBool(getValuePrimitive(value), false);
+
+    switch (name) {
+      // -- accumulating parameters: version rules --------------------------
+      case 'system-version': {
+        this.seeVersionRule(getValuePrimitive(value), false, 'default');
+        break;
+      }
+      case 'check-system-version': {
+        this.seeVersionRule(getValuePrimitive(value), false, 'check');
+        break;
+      }
+      case 'force-system-version': {
+        this.seeVersionRule(getValuePrimitive(value), false, 'override');
+        break;
+      }
+      case 'default-valueset-version': {
+        this.seeVersionRule(getValuePrimitive(value), true, 'default');
+        break;
+      }
+      case 'force-valueset-version': {
+        this.seeVersionRule(getValuePrimitive(value), true, 'override');
+        break;
+      }
+      case 'check-valueset-version': {
+        this.seeVersionRule(getValuePrimitive(value), true, 'check');
+        break;
       }
 
-      if (name === 'designation') {
+      // -- other accumulating parameters -----------------------------------
+      case 'designation': {
         this.designations.push(getValuePrimitive(value));
+        break;
+      }
+      case 'property': {
+        // properties can arrive from the request, from an expansion parameter
+        // extension, and (R6) from ValueSet.compose.property, so de-duplicate:
+        // a repeat would emit the property twice and change the cache key
+        const prop = getValuePrimitive(value);
+        if (prop && !this.properties.includes(prop)) {
+          this.properties.push(prop);
+        }
+        break;
+      }
+      case 'useSupplement': {
+        this.supplements.add(getValuePrimitive(value));
+        break;
       }
 
-      if (name === 'versionsMatch') {
-        this.versionsMatch = getValuePrimitive(value) === 'true';
+      // -- single valued parameters ----------------------------------------
+      case 'displayLanguage': {
+        if (claim('displayLanguage')) {
+          const lang = getValuePrimitive(value);
+          try {
+            this.DisplayLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating);
+            if (lang) this.FHasDisplayLanguages = true;
+          } catch (error) {
+            throw new Issue("error", "processing", null, 'INVALID_DISPLAY_NAME', this.i18n.translate('INVALID_DISPLAY_NAME', this.HTTPLanguages, [lang]), "invalid-display").handleAsOO(400);
+          }
+        }
+        break;
+      }
+      case 'no-cache': {
+        // Write FUid (the field the cache key reads via hashSource); writing
+        // `this.uid` was a no-op so no-cache=true never busted the cache.
+        if (claim('no-cache') && asBool()) this.FUid = crypto.randomUUID();
+        break;
+      }
+      case 'includeDesignations': {
+        if (claim('includeDesignations')) this.includeDesignations = asBool();
+        break;
+      }
+      case 'includeDefinition': {
+        if (claim('includeDefinition')) this.includeDefinition = asBool();
+        break;
+      }
+      // $lookup: describe each postcoordination axis in full (ICD-11) - the axis rules, and the
+      // axes that carry no value. Off unless asked for
+      case 'post-coordination-metadata': {
+        if (claim('post-coordination-metadata')) this.postCoordinationMetadata = asBool();
+        break;
+      }
+      case 'activeOnly': {
+        if (claim('activeOnly')) this.activeOnly = asBool();
+        break;
+      }
+      case 'excludeNested': {
+        if (claim('excludeNested')) this.excludeNested = asBool();
+        break;
+      }
+      case 'excludeNotForUI': {
+        if (claim('excludeNotForUI')) this.excludeNotForUI = asBool();
+        break;
+      }
+      case 'excludePostCoordinated': {
+        if (claim('excludePostCoordinated')) this.excludePostCoordinated = asBool();
+        break;
+      }
+      case 'default-to-latest-version': {
+        if (claim('default-to-latest-version')) this.defaultToLatestVersion = asBool();
+        break;
+      }
+      case 'diagnostics': {
+        if (claim('diagnostics')) this.diagnostics = asBool();
+        break;
+      }
+      case 'lenient-display-validation': {
+        if (claim('lenient-display-validation')) this.displayWarning = asBool();
+        break;
+      }
+      case 'valueset-membership-only': {
+        if (claim('valueset-membership-only')) this.membershipOnly = asBool();
+        break;
+      }
+      case 'versionsMatch': {
+        if (claim('versionsMatch')) this.versionsMatch = asBool();
+        break;
+      }
+      case 'inferSystem': {
+        if (claim('inferSystem')) this.inferSystem = asBool();
+        break;
+      }
+      case 'abstract': {
+        // tri-state: only an explicit true/false changes the default (true)
+        const v = getValuePrimitive(value);
+        if (v === true || v === 'true') {
+          if (claim('abstract')) this.abstractOk = true;
+        } else if (v === false || v === 'false') {
+          if (claim('abstract')) this.abstractOk = false;
+        }
+        break;
+      }
+      case 'term': // jQuery support
+      case 'filter': {
+        if (claim('filter')) this.filter = getValuePrimitive(value);
+        break;
+      }
+      case 'count': {
+        if (claim('count')) this.count = Utilities.parseIntOrDefault(getValuePrimitive(value), -1);
+        break;
+      }
+      case 'offset': {
+        if (claim('offset')) this.offset = Utilities.parseIntOrDefault(getValuePrimitive(value), -1);
+        break;
+      }
+      case 'limit': {
+        if (claim('limit')) this.limit = Utilities.parseIntOrDefault(getValuePrimitive(value), -1);
+        break;
+      }
+      case 'sort': {
+        if (claim('sort')) this.sort = getValuePrimitive(value);
+        break;
+      }
+
+      // -- nested parameters -------------------------------------------------
+      case 'profile': {
+        // only an inline Parameters resource can be read. Anything else - an (R3) ExpansionProfile,
+        // another resource, or a uri/canonical/string naming a profile - is refused, rather than
+        // answered without what it asks for. A 'profile' among a ValueSet's embedded expansion
+        // parameters (overwrite=false) can only be a value and is left ignored, as before
+        const res = value.resource;
+        if (res && res.resourceType === 'Parameters') {
+          this.readParams(res);
+        } else if (overwrite) {
+          const primitive = res ? null : getValuePrimitive(value);
+          if (res) {
+            this.#notSupported('TX_PARAM_PROFILE_RESOURCE', [res.resourceType]);
+          } else if (primitive !== null && primitive !== undefined) {
+            this.#notSupported('TX_PARAM_PROFILE_VALUE', [String(primitive)]);
+          } else {
+            // a value with no primitive (a valueCoding, say): its type
+            this.#notSupported('TX_PARAM_PROFILE_TYPE', [(getValueName(value) || 'value').replace(/^value/, '')]);
+          }
+        }
+        break;
+      }
+
+      case 'exclude-system': {
+        this.#notSupported('TX_PARAM_NOT_SUPPORTED', ['exclude-system']);
+      }
+    }
+  }
+
+  /**
+   * Refuse a request for a parameter, or a form of one, that this server doesn't support (400)
+   * @param {string} msgId - the message (translations/Messages.properties)
+   * @param {string[]} args - its parameters
+   */
+  #notSupported(msgId, args) {
+    throw new Issue('error', 'not-supported', null, msgId, this.i18n.translate(msgId, this.HTTPLanguages, args), 'not-supported', 400);
+  }
+
+  /**
+   * Read parameters a ValueSet declares on its own compose. Presently that's
+   * R6's ValueSet.compose.property (0..* code) - the properties to return in
+   * the expansion, named by the value set rather than by the request. We don't
+   * formally support R6, but the element is harmless in earlier versions and
+   * honouring it costs nothing.
+   *
+   * @param {Object} compose - ValueSet.compose (raw JSON)
+   */
+  seeCompose(compose) {
+    if (compose && Array.isArray(compose.property)) {
+      for (const prop of compose.property) {
+        if (typeof prop === 'string') {
+          this.seeParameter('property', {valueCode: prop}, false);
+        }
       }
     }
   }
@@ -441,6 +540,19 @@ e
       }
     }
     return '';
+  }
+
+  // The code system version the request's version rules ask for - force-system-version,
+  // else system-version, else check-system-version - or null when they name none
+  requestedSystemVersion(systemURI) {
+    const rules = this.rulesForSystem(systemURI).filter(t => !t.vs);
+    for (const mode of ['override', 'default', 'check']) {
+      const rule = rules.find(t => t.mode === mode);
+      if (rule) {
+        return rule.version;
+      }
+    }
+    return null;
   }
 
   rulesForSystem(systemURI) {
@@ -460,6 +572,18 @@ e
     } else {
       throw new Error('Unable to understand ' + mode + ' system version "' + url + '"');
     }
+  }
+
+  // The languages the request named - displayLanguage, else the HTTP Accept-Language - or
+  // null when it named none (workingLanguages() falls back to a default; this does not)
+  requestedLanguages() {
+    if (this.FHasDisplayLanguages && this.FDisplayLanguages) {
+      return this.FDisplayLanguages;
+    }
+    if (this.FHasHTTPLanguages && this.FHTTPLanguages) {
+      return this.FHTTPLanguages;
+    }
+    return null;
   }
 
   workingLanguages() {
@@ -561,6 +685,17 @@ e
     if (this.hasDesignations) {
       s = s + this.FDesignations.join(',') + '|';
     }
+    if (this.supplements && this.supplements.size > 0) {
+      // useSupplement changes the expansion result (and a bad supplement must
+      // error), so it must be part of the cache key. Sort for determinism.
+      s = s + '$' + [...this.supplements].sort().join(',') + '|';
+    }
+    // Further result-affecting parameters that were previously omitted from the
+    // key: the text filter (changes which codes expand), whether abstract codes
+    // are included, and diagnostics.
+    // filter is free text, so JSON.stringify it to avoid delimiter collisions.
+    s = s + 'f:' + JSON.stringify(this.filter || '') + '|' +
+      b(this.abstractOk) + b(this.diagnostics) + b(this.postCoordinationMetadata);
     for (let t of this.FVersionRules) {
       s = s + t.asString() + '|';
     }
@@ -612,6 +747,11 @@ e
     this.hasVersionsMatch = other.hasVersionsMatch;
     this.hasDisplayWarning = other.hasDisplayWarning;
     this.sort = other.sort;
+    this.postCoordinationMetadata = other.postCoordinationMetadata;
+
+    if (other.FSeen) {
+      this.FSeen = new Set(other.FSeen);
+    }
 
     if (other.FProperties) {
       this.FProperties = [...other.FProperties];
@@ -623,9 +763,11 @@ e
 
     if (other.FHTTPLanguages) {
       this.FHTTPLanguages = other.FHTTPLanguages;
+      this.FHasHTTPLanguages = this.FHasHTTPLanguages || other.FHasHTTPLanguages;
     }
     if (other.FDisplayLanguages) {
       this.FDisplayLanguages = other.FDisplayLanguages;
+      this.FHasDisplayLanguages = this.FHasDisplayLanguages || other.FHasDisplayLanguages;
     }
   }
 

@@ -1,0 +1,17 @@
+{%- comment -%}
+  The external requests (server.js externalStatus): requests whose answer had to ask another
+  server (the tx module's ecosystem resolution). They take seconds, so they are kept out of the
+  turnaround time graph above and graphed here, just above Storage on / and /dashboard, when
+  there have been any in the graphs' 24 hours. The chart is drawn by the graphs' script
+  (cluster-metrics-script.liquid), from the same samples (point.ext, point.extTat), in the same
+  styles and key. `level`: the heading's level
+{%- endcomment -%}
+<section class="fs-status fs-status-external">
+  <h{{ level | default: 4 }} class="fs-status-head">External requests <span class="fs-status-meta">· {{ external.count }} in the last {{ external.span }}, average turnaround {{ external.average }}</span></h{{ level | default: 4 }}>
+  <div class="server-metrics-grid">
+    <div class="server-metrics-chart">
+      <h{{ level | plus: 1 | default: 5 }}>Turnaround Time (external)</h{{ level | plus: 1 | default: 5 }}>
+      <div class="server-metrics-canvas"><canvas id="externalChart" aria-label="Turnaround time of the requests that had to ask another server"></canvas></div>
+    </div>
+  </div>
+</section>

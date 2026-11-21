@@ -60,6 +60,27 @@ const Utilities = {
     }
 
     return parts.join(' ');
+  },
+
+  /**
+   * How long ago a time was, for people: "35 minutes ago", "3 hours ago", "2 days ago"
+   * @param {Date|string|number} time - the earlier time
+   * @param {number} now - Date.now(), for testing
+   * @returns {string}
+   */
+  describeAgo(time, now = Date.now()) {
+    const secs = Math.max(0, Math.floor((now - new Date(time).getTime()) / 1000));
+    const plural = (n, unit) => `${n} ${unit}${n === 1 ? '' : 's'} ago`;
+    if (secs < 60) {
+      return 'just now';
+    }
+    if (secs < 3600) {
+      return plural(Math.floor(secs / 60), 'minute');
+    }
+    if (secs < 172800) {
+      return plural(Math.floor(secs / 3600), 'hour');
+    }
+    return plural(Math.floor(secs / 86400), 'day');
   }
 
 };

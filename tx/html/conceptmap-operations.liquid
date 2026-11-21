@@ -8,7 +8,7 @@
         <td>System:</td><td><select name="sourceSystem">{{ sources }}</select></td>
       </tr>
       <tr>
-        <td>Code:</td><td><select name="sourceCode">{{ codes }}</select></td>
+        <td>Code:</td><td>{% if codes %}<select name="sourceCode">{{ codes }}</select>{% else %}<input type="text" name="sourceCode" size="20" aria-label="Code" title="The map has too many codes to list: type one"/>{% endif %}</td>
       </tr>
       <tr>
         <td>Target:</td><td><select name="targetSystem">{{ targets }}</select></td>

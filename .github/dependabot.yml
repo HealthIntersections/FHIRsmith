@@ -1,0 +1,26 @@
+# Dependabot for FHIRsmith.
+#
+# Email notification of vulnerable dependencies does NOT come from this file - it comes
+# from Dependabot alerts, which are switched on in the repository settings
+# (Settings > Code security > Dependabot alerts, and Dependabot security updates), and
+# delivered according to each person's GitHub notification settings
+# (Settings > Notifications > Dependabot alerts > Email).
+#
+# What this file does: when an alert is raised, Dependabot opens one pull request that
+# moves the affected packages to fixed versions. Routine version-bump PRs are turned off
+# (open-pull-requests-limit: 0) - only security fixes produce PRs.
+
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    open-pull-requests-limit: 0
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    commit-message:
+      prefix: "deps"

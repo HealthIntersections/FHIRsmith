@@ -1,0 +1,286 @@
+<style>
+  /* the status panel's grid (tx/html/status-panel.liquid): its six columns, two a chart */
+  .server-metrics-grid { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:16px; margin-bottom:16px; }
+  .server-metrics-chart { min-width:0; }
+  .server-metrics-chart > :first-child { font-size:12px; font-weight:600; margin:0 0 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .server-metrics-canvas { position:relative; height:200px; }
+  @media (max-width:600px) { .server-metrics-grid { grid-template-columns:minmax(0, 1fr); } }
+  .server-metrics-legend { display:flex; flex-wrap:wrap; gap:3px 14px; font:11px sans-serif; margin:10px 0 8px; }
+  .server-metrics-key { display:inline-block; width:22px; text-align:center; margin-right:4px; }
+  .server-metrics-shedding { font:11px sans-serif; margin:0 0 8px; }
+  .server-metrics-shedding::before { content:''; display:inline-block; width:14px; height:10px; margin-right:5px; vertical-align:middle;
+    border-top:2px solid #333; background:repeating-linear-gradient(135deg, #555 0 1px, transparent 1px 4px); }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
+<script>
+(function() {
+  const metrics = {{ metricsJson }};
+  // Colour (by lightness, not red against green), line pattern and marker each tell the
+  // processes apart. Past eight processes only the first eight are drawn; none share a style.
+  const styles = [
+    { color:'#08306b', dash:[], point:'circle', symbol:'●' },
+    { color:'#5b9bd5', dash:[6,3], point:'rect', symbol:'■' },
+    { color:'#d98c00', dash:[2,2], point:'triangle', symbol:'▲' },
+    { color:'#6a3d9a', dash:[8,3,2,3], point:'rectRot', symbol:'◆' },
+    { color:'#9e9e9e', dash:[12,4], point:'star', symbol:'★' },
+    { color:'#8a5a00', dash:[3,5], point:'crossRot', symbol:'✕' },
+    { color:'#b4a7d6', dash:[8,2,2,2,2,2], point:'cross', symbol:'✚' },
+    { color:'#404040', dash:[4,2], point:'rectRounded', symbol:'▢' }
+  ];
+  const total = { color:'#111111', dash:[], symbol:'', width:3 };
+  // the memory guard's refusal threshold: mid grey, long dash and dot, no markers, and labelled
+  const threshold = { color:'#666666', dash:[10,3,2,3], symbol:'', width:2 };
+  const drawn = metrics.series.slice(0, styles.length);
+  const showTotal = metrics.series.length > 1;
+  // private memory (RssAnon) where the processes could read it, else (not Linux) heap change
+  const hasAnon = metrics.series.some(series => series.history.some(point => Number.isFinite(point.anon)));
+  const memoryTotal = hasAnon && metrics.total && metrics.total.history.some(point => Number.isFinite(point.anon)) ? metrics.total : null;
+  const rejectAt = hasAnon && metrics.total && Number.isFinite(metrics.total.rejectAt) && metrics.total.rejectAt > 0 ? metrics.total.rejectAt : null;
+  const memoryTitle = document.getElementById('memoryChartTitle');
+  if (memoryTitle && !hasAnon) memoryTitle.textContent = 'Heap change since start';
+
+  // the key's items: put in #serverMetricsLegend, which can be further down the page than this
+  // script (under "More" on / and /dashboard), so once the page has loaded
+  const legendItems = [];
+  function legendItem(style, text) {
+    const item = document.createElement('span');
+    const key = document.createElement('span');
+    key.className = 'server-metrics-key';
+    key.style.color = style.color;
+    key.style.borderBottom = (style.width || 2) + 'px ' + (style.dash.length ? 'dashed' : 'solid') + ' ' + style.color;
+    key.textContent = style.symbol;
+    item.appendChild(key);
+    item.appendChild(document.createTextNode(text));
+    legendItems.push(item);
+  }
+  drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
+    (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
+  if (showTotal) {
+    legendItem(total, 'The cluster, on every graph but memory: requests per minute summed, turnaround time averaged over the requests, ' +
+      (metrics.sharedCache ? 'client concepts (one shared store, counted once)' : 'client concepts summed') +
+      ', node blocking the worst process\'s' +
+      (memoryTotal ? '; on memory, the Total (' + (memoryTotal.group ? 'the cgroup\'s private' : 'the processes\' private, summed') + ')' : ''));
+  } else if (memoryTotal) {
+    legendItem(total, 'Total: memory (' + (memoryTotal.group ? 'the cgroup\'s private' : 'the processes\' private, summed') + ')');
+  }
+  if (rejectAt) legendItem(threshold, 'Memory guard refuses above ' + (rejectAt / 2 ** 30).toFixed(1) + ' GB' +
+    (metrics.total.local ? (metrics.total.group ? ' (the cgroup, every process)' : ' (this process)')
+      : metrics.total.group ? ' (the cgroup)' : ' (each process)'));
+  if (metrics.series.length > drawn.length) {
+    legendItems.push(document.createTextNode((metrics.series.length - drawn.length) +
+      ' more workers are not drawn individually on the memory graph; the Total and the cluster lines include them.'));
+  }
+  function placeLegend() {
+    const legend = document.getElementById('serverMetricsLegend');
+    if (legend) legendItems.forEach(item => legend.appendChild(item));
+  }
+  // (while the page is loading, at the end, with the external requests' chart)
+  if (document.readyState !== 'loading') placeLegend();
+
+  const times = metrics.series.flatMap(series => series.history.map(point => point.time));
+  const latest = times.reduce((latest, time) => Math.max(latest, time), metrics.sampledAt);
+  const earliest = times.length ? times.reduce((earliest, time) => Math.min(earliest, time), latest) : latest - 60000;
+  // Every chart uses the same numeric time axis: each sample sits at its actual time.
+  // (at least a minute, so a new cluster's first samples don't make an axis of one instant)
+  const minTime = Math.min(earliest, latest - 60000);
+
+  // The cluster's figure for a field, per sample interval, counted from the earliest sample
+  // (the processes start, and so sample, seconds apart). how:
+  //   sum  - the processes' figures added (requests per minute, client concepts)
+  //   once - the processes all report the same figure (the shared client cache): the largest
+  //   max  - the worst process's (node blocking)
+  //   mean - averaged over the requests: each process's figure weighted by its requests per
+  //          minute, or plainly averaged where none of them had any (turnaround time)
+  function clusterOf(field, how) {
+    const interval = metrics.series.map(series => series.intervalMs).find(ms => ms > 0) || 600000;
+    const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point[field])));
+    const start = points.reduce((start, point) => Math.min(start, point.time), Infinity);
+    const buckets = new Map();
+    for (const point of points) {
+      const x = start + Math.round((point.time - start) / interval) * interval;
+      const b = buckets.get(x) || { sum:0, max:-Infinity, weighted:0, weight:0, count:0, refused:0 };
+      const weight = Number.isFinite(point.rpm) && point.rpm > 0 ? point.rpm : 0;
+      b.sum += point[field];
+      b.max = Math.max(b.max, point[field]);
+      b.weighted += point[field] * weight;
+      b.weight += weight;
+      b.count++;
+      if (point.refused > 0) b.refused += point.refused;
+      buckets.set(x, b);
+    }
+    const rows = [...buckets].sort((a, b) => a[0] - b[0]);
+    // the newest interval, while some processes have yet to send their sample for it, would
+    // show a fall that isn't there: left off until they have
+    while (rows.length > 1 && rows[rows.length - 1][1].count < rows[rows.length - 2][1].count) rows.pop();
+    return rows.map(([x, b]) => ({ x, refused:b.refused,
+      y:how === 'sum' ? b.sum : how === 'once' || how === 'max' ? b.max
+        : b.weight > 0 ? b.weighted / b.weight : b.sum / b.count }));
+  }
+  const totalLine = data => ({ label:'Total', data, borderColor:total.color, backgroundColor:total.color,
+    borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
+  // the cluster's one line, on the graphs that don't split by process
+  const clusterLine = data => ({ label:'Cluster', data, borderColor:total.color, backgroundColor:total.color,
+    borderWidth:2, pointStyle:'circle', pointBackgroundColor:total.color, pointRadius:1.5, pointHitRadius:5, pointHoverRadius:4,
+    fill:false, tension:0, spanGaps:false });
+  // how each graph that shows the cluster as one line combines the processes
+  const combined = { rpm:'sum', tat:'mean', clientConcepts:metrics.sharedCache ? 'once' : 'sum', block:'max', blockMax:'max' };
+  // and their titles say so
+  if (showTotal) {
+    const titles = { requestChartTitle:'Requests per Minute (all processes)', tatChartTitle:'Turnaround Time (mean, all processes)',
+      clientCacheChartTitle:'Client Cache (all processes)', blockChartTitle:'Node Blocking (mean, worst process)',
+      blockMaxChartTitle:'Node Blocking (max, worst process)' };
+    for (const [id, text] of Object.entries(titles)) {
+      const title = document.getElementById(id);
+      if (title) title.textContent = text;
+    }
+  }
+
+  // A hatched interval means at least one memory-pressure 503 was counted in it, not that
+  // the guard refused all through it. Overlapping intervals of different processes merge.
+  const refusals = metrics.series.flatMap(series => series.history.filter(point =>
+    Number.isFinite(point.intervalStart) && point.intervalStart < point.time && point.refused > 0));
+  const windows = [];
+  refusals.map(point => [point.intervalStart, point.time]).sort((a, b) => a[0] - b[0]).forEach(window => {
+    const last = windows[windows.length - 1];
+    if (last && window[0] <= last[1]) last[1] = Math.max(last[1], window[1]);
+    else windows.push(window);
+  });
+  const notice = document.getElementById('serverMetricsShedding');
+  if (notice && refusals.length) {
+    notice.hidden = false;
+    notice.textContent = refusals.reduce((sum, point) => sum + point.refused, 0).toLocaleString() +
+      ' memory-pressure 503 refusals in view. Hatching marks the sample intervals with refusals; request lines count admitted work.';
+  }
+  const hatch = {
+    id:'memoryShedding',
+    beforeDraw(chart) {
+      if (!windows.length || !chart.chartArea) return;
+      const {ctx, chartArea:area, scales:{x}} = chart;
+      for (const [from, to] of windows) {
+        const left = Math.max(area.left, x.getPixelForValue(from)), right = Math.min(area.right, x.getPixelForValue(to));
+        if (right <= left) continue;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, area.top, right - left, area.bottom - area.top);
+        ctx.clip();
+        ctx.strokeStyle = 'rgba(60,60,60,.35)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        for (let at = left - (area.bottom - area.top); at < right; at += 6) {
+          ctx.moveTo(at, area.bottom);
+          ctx.lineTo(at + area.bottom - area.top, area.top);
+        }
+        ctx.stroke();
+        ctx.fillStyle = '#333';
+        ctx.fillRect(left, area.top, right - left, 2);
+        ctx.restore();
+      }
+    }
+  };
+
+  // until there are two samples to draw a line between, the chart says so
+  const waiting = {
+    id:'waitingForSamples',
+    afterDatasetsDraw(chart) {
+      if (!chart.chartArea || chart.data.datasets.some(d => !d.threshold && d.data.filter(p => Number.isFinite(p.y)).length > 1)) return;
+      const {ctx, chartArea:area} = chart;
+      ctx.save();
+      ctx.font = '11px sans-serif';
+      ctx.fillStyle = '#5f6368';
+      ctx.textAlign = 'center';
+      ctx.fillText('Waiting for samples', (area.left + area.right) / 2, (area.top + area.bottom) / 2);
+      ctx.restore();
+    }
+  };
+
+  // the threshold's value, written at the right end of its line
+  const thresholdLabel = {
+    id:'thresholdLabel',
+    afterDatasetsDraw(chart) {
+      const dataset = chart.data.datasets.find(d => d.threshold);
+      if (!dataset || !chart.chartArea) return;
+      const {ctx, chartArea:area, scales:{y}} = chart;
+      const at = y.getPixelForValue(dataset.data[0].y);
+      if (at < area.top || at > area.bottom) return;
+      ctx.save();
+      ctx.font = '10px sans-serif';
+      ctx.fillStyle = '#333';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText('refuses above ' + (dataset.data[0].y / 1024).toFixed(1) + ' GB', area.right - 2, at - 2);
+      ctx.restore();
+    }
+  };
+
+  function formatTime(time) {
+    return new Date(time).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit',
+      ...(latest - minTime < 120000 ? { second:'2-digit' } : {}) });
+  }
+  // pointRadius: bigger where the samples are few and far between (the external requests)
+  function chart(id, field, unit, divisor = 1, pointRadius = 1.5) {
+    const canvas = document.getElementById(id);
+    if (!canvas) return;
+    // in a cluster, all but memory (and the external requests) are the cluster's one line
+    if (showTotal && combined[field]) {
+      createChart(canvas, field, unit, [clusterLine(clusterOf(field, combined[field]).map(p => ({ ...p, y:p.y / divisor })))]);
+      return;
+    }
+    const datasets = drawn.map((series, i) => ({
+      label:series.label,
+      data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
+        refused:point.refused, ext:point.ext })),
+      borderColor:styles[i].color, backgroundColor:styles[i].color + '18', borderDash:styles[i].dash,
+      pointStyle:styles[i].point, pointBackgroundColor:styles[i].color, pointRadius:pointRadius,
+      pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
+      fill:false, tension:0, spanGaps:false
+    }));
+    if (field === 'anon' && memoryTotal) {
+      datasets.push(totalLine(memoryTotal.history.map(point => ({ x:point.time, y:Number.isFinite(point.anon) ? point.anon / divisor : null }))));
+    }
+    if (field === 'anon' && rejectAt) {
+      datasets.push({ label:'Refusal threshold', threshold:true, data:[{ x:minTime, y:rejectAt / divisor }, { x:latest, y:rejectAt / divisor }],
+        borderColor:threshold.color, backgroundColor:threshold.color, borderDash:threshold.dash, borderWidth:threshold.width,
+        pointRadius:0, pointHitRadius:5, fill:false, tension:0 });
+    }
+    createChart(canvas, field, unit, datasets);
+  }
+  function createChart(canvas, field, unit, datasets) {
+    new Chart(canvas, {
+      type:'line',
+      data:{ datasets },
+      options:{
+        responsive:true, maintainAspectRatio:false, animation:false,
+        scales:{
+          x:{ type:'linear', min:minTime, max:latest, ticks:{ maxTicksLimit:4, callback:formatTime, font:{ size:10 } } },
+          y:{ beginAtZero:true, ticks:{ font:{ size:10 } }, title:{ display:true, text:unit, font:{ size:10 } } }
+        },
+        plugins:{
+          legend:{ display:false },
+          tooltip:{ callbacks:{
+            title:items => items.length ? formatTime(items[0].parsed.x) : '',
+            afterLabel:item => field === 'extTat'
+              ? (item.raw.ext > 0 ? item.raw.ext.toLocaleString() + ' external ' + (item.raw.ext === 1 ? 'request' : 'requests') + ' in this sample' : '')
+              : item.raw.refused > 0
+              ? 'Memory-pressure 503s: ' + item.raw.refused.toLocaleString() + ' in this sample'
+              : ''
+          } }
+        }
+      },
+      plugins:[hatch, thresholdLabel, waiting]
+    });
+  }
+  if (hasAnon) chart('memoryChart', 'anon', 'MB private (anon)', 1024 * 1024);
+  else chart('memoryChart', 'mem', 'MB change since start', 1024 * 1024);
+  chart('tatChart', 'tat', 'ms');
+  chart('requestChart', 'rpm', 'req/min');
+  chart('clientCacheChart', 'clientConcepts', 'concepts');
+  // Separate mean and max scales keep a single long stall from flattening the mean.
+  chart('blockChart', 'block', 'ms');
+  chart('blockMaxChart', 'blockMax', 'ms');
+  // the external requests' turnaround (tx/html/external-metrics.liquid): further down the page
+  // than this script (just above Storage), so once the page has loaded
+  const drawExternal = () => chart('externalChart', 'extTat', 'seconds', 1000, 3);
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { placeLegend(); drawExternal(); });
+  else drawExternal();
+})();
+</script>

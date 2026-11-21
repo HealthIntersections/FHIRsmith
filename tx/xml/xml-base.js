@@ -3,6 +3,35 @@
 // Common functionality for all FHIR resource XML serialization/deserialization
 //
 
+const { performance } = require('perf_hooks');
+
+// indentation strings, by level (renderers ask for one per element)
+const INDENTS = Array.from({ length: 32 }, (_, i) => '  '.repeat(i));
+const NO_KEYS = [];
+const URL_ONLY = ['url'];
+// anything escapeXml has to change, or refuse
+// eslint-disable-next-line no-control-regex
+const NEEDS_ESCAPE = /[&<>"'\u0000-\u0008\u000B\u000C\u000E-\u001F]/;
+const ESCAPED_CHARS = /[&<>"']/g;
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
+// serialising for toXmlAsync: the arrays of objects set aside by the synchronous pass,
+// to be rendered by the asynchronous one (null: not deferring). The synchronous pass
+// can't be interleaved with another, so one slot for all of them is enough
+let deferred = null;
+// marks where a deferred array goes in the text. NUL can't appear anywhere else:
+// escapeXml refuses it in content
+// eslint-disable-next-line no-control-regex
+const DEFERRED_MARK = /\u0000(\d+)\u0000/;
+// how long serialising runs before it lets the event loop handle other requests
+const YIELD_MS = 25;
+// every FHIR element name is a simple token. A JSON key that isn't one (from a resource that came
+// in from outside) is refused, rather than written into the XML as markup - or as one of the marks
+// above. The names seen are few, so the ones checked are remembered
+const ELEMENT_NAME = /^[A-Za-z0-9_]+$/;
+const checkedNames = new Set();
+// the XML of large arrays, kept for next time (see xml-fragment-cache.js); null: none
+let fragmentCache = null;
+
 /**
  * Base class for FHIR XML serialization/deserialization
  * Contains shared methods for converting between FHIR JSON and XML formats
@@ -481,22 +510,62 @@ class FhirXmlBase {
    * @returns {string}
    */
   static indent(level) {
-    return '  '.repeat(level);
+    return INDENTS[level] ?? '  '.repeat(level);
+  }
+
+  /**
+   * Refuse a name that isn't an element name: every FHIR element name is a simple token
+   * (letters, digits and _). A JSON key that isn't one could only have come in from outside,
+   * and written into the XML it would be markup.
+   * @param {string} name
+   * @throws {Error} if it isn't one
+   */
+  static checkElementName(name) {
+    if (checkedNames.has(name)) {
+      return;
+    }
+    if (typeof name !== 'string' || !ELEMENT_NAME.test(name)) {
+      throw new Error(`Cannot serialise this content as XML: ${JSON.stringify(String(name)).substring(0, 100)} is not an element name`);
+    }
+    if (checkedNames.size < 10000) {
+      checkedNames.add(name);
+    }
   }
 
   /**
    * Escape special characters for XML
+   *
+   * XML 1.0 cannot represent the C0 control characters at all - not literally,
+   * and not as numeric character references either - so a value carrying one
+   * cannot be serialised as XML by any means. Tab, line feed and carriage
+   * return are the three exceptions; DEL (U+007F) is legal in XML 1.0 and is
+   * left alone.
+   *
+   * Rather than emit a document no conformant parser will read, this rejects
+   * the value. Anything reaching here with a control character in it came from
+   * outside (a remote API, an imported file) and should have been caught at
+   * the boundary.
+   *
+   * Nearly every value has nothing to escape, so one scan decides that and the
+   * value goes out as it is (a large CodeSystem has millions of them).
+   *
    * @param {*} value - Value to escape
    * @returns {string}
+   * @throws {Error} if the value contains a character XML cannot carry
    */
   static escapeXml(value) {
     if (value === null || value === undefined) return '';
-    return String(value)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&apos;');
+    const str = String(value);
+    if (!NEEDS_ESCAPE.test(str)) {
+      return str;
+    }
+    // eslint-disable-next-line no-control-regex
+    const illegal = /[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.exec(str);
+    if (illegal) {
+      const code = illegal[0].charCodeAt(0).toString(16).toUpperCase().padStart(4, '0');
+      throw new Error(`Cannot serialise this content as XML: it contains U+${code} at offset ${illegal.index}, a control character XML does not allow`);
+    }
+    return str.replace(ESCAPED_CHARS, c => ESCAPES[c]);
   }
 
   /**
@@ -513,6 +582,12 @@ class FhirXmlBase {
       .replace(/&apos;/g, "'");
   }
 
+  // The renderers below write their pieces into one array (out), joined once at the
+  // end, rather than each returning a string for its caller to append: for a large
+  // resource (the full ICD-10-CM CodeSystem is 64 MB of XML) the intermediate strings
+  // were most of the work, and most of the garbage collection, of serialising it. The
+  // render* methods keep their string-returning signatures for the classes that use them.
+
   /**
    * Render an element to XML
    * @param {string} name - Element name
@@ -521,35 +596,9 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderElement(name, value, level) {
-    if (value === null || value === undefined) {
-      return '';
-    }
-
-    let xml = '';
-
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        xml += this.renderElement(name, item, level);
-      }
-    } else if (typeof value === 'object') {
-      // Special handling for extension - url is an attribute
-      if (name === 'extension' || name === 'modifierExtension') {
-        const url = value.url ? ` url="${this.escapeXml(value.url)}"` : '';
-        xml += `${this.indent(level)}<${name}${url}>\n`;
-        xml += this.renderObject(value, level + 1, ['url']);
-        xml += `${this.indent(level)}</${name}>\n`;
-      } else {
-        xml += `${this.indent(level)}<${name}>\n`;
-        xml += this.renderObject(value, level + 1);
-        xml += `${this.indent(level)}</${name}>\n`;
-      }
-    } else if (typeof value === 'boolean' || typeof value === 'number') {
-      xml += `${this.indent(level)}<${name} value="${value}"/>\n`;
-    } else {
-      xml += `${this.indent(level)}<${name} value="${this.escapeXml(value)}"/>\n`;
-    }
-
-    return xml;
+    const out = [];
+    this._emitElement(out, name, value, level);
+    return out.join('');
   }
 
   /**
@@ -560,20 +609,9 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderObject(obj, level, skipKeys = []) {
-    let xml = '';
-
-    for (const [key, value] of Object.entries(obj)) {
-      // Skip primitive extension keys (handled separately)
-      if (key.startsWith('_')) {
-        continue;
-      }
-      if (skipKeys.includes(key)) {
-        continue;
-      }
-      xml += this.renderElement(key, value, level);
-    }
-
-    return xml;
+    const out = [];
+    this._emitObject(out, obj, level, skipKeys);
+    return out.join('');
   }
 
   /**
@@ -584,23 +622,309 @@ class FhirXmlBase {
    * @returns {string} XML string
    */
   static renderElementsInOrder(obj, level, elementOrder) {
-    let xml = '';
+    const out = [];
 
     // Process elements in order
     for (const key of elementOrder) {
       if (Object.hasOwn(obj, key) && key !== 'resourceType') {
-        xml += this.renderElement(key, obj[key], level);
+        this._emitElement(out, key, obj[key], level);
       }
     }
 
     // Process any remaining elements not in the order list
     for (const key of Object.keys(obj)) {
       if (!elementOrder.includes(key) && key !== 'resourceType' && !key.startsWith('_')) {
-        xml += this.renderElement(key, obj[key], level);
+        this._emitElement(out, key, obj[key], level);
       }
     }
 
-    return xml;
+    return out.join('');
+  }
+
+  /**
+   * renderElement, into out
+   * @private
+   */
+  static _emitElement(out, name, value, level) {
+    if (value === null || value === undefined) {
+      return;
+    }
+    this.checkElementName(name);
+
+    if (Array.isArray(value)) {
+      if (deferred && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+        out.push('\u0000' + deferred.length + '\u0000');
+        deferred.push({ name, value, level });
+        return;
+      }
+      for (const item of value) {
+        this._emitElement(out, name, item, level);
+      }
+    } else if (typeof value === 'object') {
+      const ind = this.indent(level);
+      // Special handling for extension - url is an attribute
+      if (name === 'extension' || name === 'modifierExtension') {
+        out.push(ind, '<', name, value.url ? ` url="${this.escapeXml(value.url)}"` : '', '>\n');
+        this._emitObject(out, value, level + 1, URL_ONLY);
+      } else {
+        out.push(ind, '<', name, '>\n');
+        this._emitObject(out, value, level + 1, NO_KEYS);
+      }
+      out.push(ind, '</', name, '>\n');
+    } else if (typeof value === 'boolean' || typeof value === 'number') {
+      out.push(this.indent(level), '<', name, ' value="', String(value), '"/>\n');
+    } else {
+      out.push(this.indent(level), '<', name, ' value="', this.escapeXml(value), '"/>\n');
+    }
+  }
+
+  /**
+   * renderObject, into out
+   * @private
+   */
+  static _emitObject(out, obj, level, skipKeys) {
+    for (const key in obj) {
+      if (!Object.hasOwn(obj, key)) {
+        continue;
+      }
+      // Skip primitive extension keys (handled separately)
+      if (key.charCodeAt(0) === 95 /* _ */) {
+        continue;
+      }
+      if (skipKeys.length > 0 && skipKeys.includes(key)) {
+        continue;
+      }
+      this._emitElement(out, key, obj[key], level);
+    }
+  }
+
+  /**
+   * Serialise without holding the event loop for the whole of a large resource.
+   *
+   * The XML for the full ICD-10-CM CodeSystem is 64 MB; serialising it in one go held
+   * tx.fhir.org's event loop for seconds. This runs toXml (render) with every array of
+   * objects - concepts, expansion contains, bundle entries, and so on - set aside, then
+   * renders those an item at a time, letting other work run every YIELD_MS. The result
+   * is the same text toXml produces.
+   *
+   * @param {Function} render - produces the XML synchronously, e.g. () => CodeSystemXML.toXml(json)
+   * @param {Function} [stillWanted] - asked at each yield; when it returns false (the client has
+   *   hung up), serialising stops with an error marked abandoned
+   * @returns {Promise<string>} XML string
+   */
+  static async toXmlAsync(render, stillWanted = null) {
+    const parts = await this.toXmlChunksAsync(render, stillWanted);
+    return parts.length === 1 && typeof parts[0] === 'string'
+      ? parts[0]
+      : parts.map(p => (typeof p === 'string' ? p : p.toString('utf8'))).join('');
+  }
+
+  /**
+   * toXmlAsync, but the XML in parts - strings, and Buffers (UTF-8) - to be written to the
+   * response one after another (see writeXmlParts), never joined into one string.
+   *
+   * Joining 64 MB, then counting and encoding it to send it, can't let other work run, and took
+   * about 150 ms (several times that on tx.fhir.org, and back to back when several requests for
+   * ICD-10-CM came together: blocks of 2-4 s, 2026-11-19). So the XML of a large array is kept
+   * (XmlFragmentCache) encoded, in the parts it was rendered in, and a response that has it
+   * writes those parts as they are; the rest of the text is in parts of what is rendered between
+   * yields.
+   *
+   * @param {Function} render
+   * @param {Function} [stillWanted]
+   * @returns {Promise<Array<string|Buffer>>}
+   */
+  static async toXmlChunksAsync(render, stillWanted = null) {
+    let text;
+    let jobs;
+    deferred = [];
+    try {
+      text = render();
+    } finally {
+      jobs = deferred;
+      deferred = null;
+    }
+    if (jobs.length === 0) {
+      return [text];
+    }
+    const parts = text.split(DEFERRED_MARK);
+    const out = [];
+    // out is joined into chunks (strings) as it goes, at each yield, and kept XML is put among
+    // them as it is (Buffers). busy: the time spent serialising, not counting the time given to
+    // other work
+    const clock = { last: performance.now(), chunks: [], busy: 0, stillWanted };
+    const busyNow = () => clock.busy + (performance.now() - clock.last);
+    const flush = () => {
+      if (out.length > 0) {
+        clock.chunks.push(out.join(''));
+        out.length = 0;
+      }
+    };
+    const cache = fragmentCache;
+    // split leaves the text between the marks at the even positions, and the job numbers at the odd ones
+    for (let i = 0; i < parts.length; i++) {
+      if (i % 2 === 0) {
+        out.push(parts[i]);
+        continue;
+      }
+      const job = jobs[Number(parts[i])];
+      const key = job.name + '|' + job.level;
+      const kept = cache ? cache.get(job.value, key) : null;
+      if (Array.isArray(kept)) {
+        flush();
+        for (const b of kept) {
+          clock.chunks.push(b);
+        }
+        continue;
+      }
+      // this array's text in chunks of its own, in case it's worth keeping
+      flush();
+      const first = clock.chunks.length;
+      const started = busyNow();
+      await this._emitArrayAsync(out, job.name, job.value, job.level, clock);
+      flush();
+      if (cache && cache.wants(job.value, key, busyNow() - started)) {
+        // kept encoded, a chunk at a time (yielding as it goes), and used for this response too
+        const encoded = [];
+        for (let c = first; c < clock.chunks.length; c++) {
+          const b = Buffer.from(clock.chunks[c], 'utf8');
+          clock.chunks[c] = b;
+          encoded.push(b);
+          await this._maybeYield(clock);
+        }
+        cache.put(job.value, key, encoded);
+      }
+    }
+    flush();
+    return clock.chunks;
+  }
+
+  /**
+   * Yield to the event loop if this has been computing for YIELD_MS (see _emitArrayAsync)
+   * @private
+   */
+  static async _maybeYield(clock) {
+    const now = performance.now();
+    if (now - clock.last >= YIELD_MS) {
+      clock.busy += now - clock.last;
+      await new Promise(resolve => setImmediate(resolve));
+      if (clock.stillWanted && !clock.stillWanted()) {
+        const error = new Error('Serialising abandoned: the response is no longer wanted');
+        error.abandoned = true;
+        throw error;
+      }
+      clock.last = performance.now();
+    }
+  }
+
+  /**
+   * Write XML in parts (toXmlChunksAsync) to an HTTP response and end it: Content-Length from
+   * the parts, then each part as it is, waiting whenever the socket says to (backpressure).
+   * Nothing is joined or encoded whole.
+   * @param {http.ServerResponse} res - headers other than Content-Length already set
+   * @param {Array<string|Buffer>} parts
+   * @returns {Promise<number>} the bytes written
+   */
+  static async writeXmlParts(res, parts) {
+    let size = 0;
+    for (const p of parts) {
+      size += typeof p === 'string' ? Buffer.byteLength(p, 'utf8') : p.length;
+    }
+    res.setHeader('Content-Length', size);
+    if (res.req && res.req.method === 'HEAD') {
+      res.end();
+      return size;
+    }
+    for (const p of parts) {
+      if (res.destroyed || res.writableEnded) {
+        return size;
+      }
+      if (!res.write(p)) {
+        await new Promise(resolve => {
+          const done = () => {
+            res.off('drain', done);
+            res.off('close', done);
+            resolve();
+          };
+          res.on('drain', done);
+          res.on('close', done);
+        });
+      }
+    }
+    res.end();
+    return size;
+  }
+
+  /**
+   * The cache toXmlAsync keeps the XML of large arrays in (null: none)
+   * @param {XmlFragmentCache|null} cache
+   */
+  static setFragmentCache(cache) {
+    fragmentCache = cache;
+  }
+
+  static get fragmentCache() {
+    return fragmentCache;
+  }
+
+  /**
+   * Render with nothing set aside for toXmlAsync, for a caller that does more with the
+   * text than include it in the output (ParametersXML re-indents embedded resources)
+   * @param {Function} render - produces the text synchronously
+   * @returns {*} what render returns
+   */
+  static withoutDeferral(render) {
+    const saved = deferred;
+    deferred = null;
+    try {
+      return render();
+    } finally {
+      deferred = saved;
+    }
+  }
+
+  /**
+   * _emitElement for an array, an item at a time, yielding as it goes. Arrays of
+   * objects inside an item (a concept's child concepts) are done the same way, so
+   * one item with a large subtree doesn't hold the loop either.
+   * @private
+   */
+  static async _emitArrayAsync(out, name, array, level, clock) {
+    for (const item of array) {
+      if (Array.isArray(item)) {
+        await this._emitArrayAsync(out, name, item, level, clock);
+      } else if (item !== null && typeof item === 'object') {
+        this.checkElementName(name);
+        const ind = this.indent(level);
+        let skipKeys = NO_KEYS;
+        if (name === 'extension' || name === 'modifierExtension') {
+          out.push(ind, '<', name, item.url ? ` url="${this.escapeXml(item.url)}"` : '', '>\n');
+          skipKeys = URL_ONLY;
+        } else {
+          out.push(ind, '<', name, '>\n');
+        }
+        // as _emitObject
+        for (const key in item) {
+          if (!Object.hasOwn(item, key) || key.charCodeAt(0) === 95 /* _ */ || (skipKeys.length > 0 && skipKeys.includes(key))) {
+            continue;
+          }
+          const value = item[key];
+          if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+            await this._emitArrayAsync(out, key, value, level + 1, clock);
+          } else {
+            this._emitElement(out, key, value, level + 1);
+          }
+        }
+        out.push(ind, '</', name, '>\n');
+      } else {
+        this._emitElement(out, name, item, level);
+      }
+      if (performance.now() - clock.last >= YIELD_MS) {
+        clock.chunks.push(out.join(''));
+        out.length = 0;
+        await this._maybeYield(clock);
+      }
+    }
   }
 
   /**
@@ -632,122 +956,289 @@ class FhirXmlBase {
  * Simple XML parser for FHIR resources
  * Parses XML string into {name, attributes, children} structure
  */
+/**
+ * A deliberately small XML reader for FHIR resources. It is not a general XML processor: FHIR
+ * XML has no DTDs, no entities beyond the five predefined ones, and carries its values in
+ * attributes, so the grammar it needs is tiny.
+ *
+ * What it does have to be is total. Every input either produces a tree or throws - it must never
+ * loop, and it must never run away with memory or stack. This matters more than it looks: the
+ * server accepts application/fhir+xml on every endpoint, parsing is synchronous, and node is
+ * single threaded, so a parser that fails to terminate does not hang one request, it stops the
+ * process answering anything at all. The cooperative deadCheck cannot help - it needs an await
+ * point, and there isn't one inside a parse.
+ *
+ * Two rules keep that promise, and both are enforced rather than assumed:
+ *
+ *  - no scan may fail silently. Every search for a delimiter goes through #seek(), which throws
+ *    if the delimiter is absent. The bug this replaces was an indexOf() returning -1 whose result
+ *    was assigned to the cursor, sending it back to zero and restarting the parse forever.
+ *  - every loop must consume input. Each iteration asserts the cursor moved forward, so a future
+ *    edit that forgets to advance it fails loudly on the first malformed document instead of
+ *    spinning.
+ */
+
+// FHIR resources nest a couple of dozen deep; narrative markup can go further. This is well
+// clear of anything real and well under the call stack, so deep input is a clean error rather
+// than a RangeError from the recursion in _parseElement.
+const MAX_ELEMENT_DEPTH = 1000;
+
 class FhirXmlParser {
+  /**
+   * @param {string} xml - the document to read
+   */
   constructor(xml) {
+    if (typeof xml !== 'string') {
+      throw new Error('XML input must be a string');
+    }
     this.xml = xml;
     this.pos = 0;
+    this.depth = 0;
   }
 
+  /**
+   * @returns {{name: string, attributes: Object, children: Array}} the root element
+   */
   parse() {
-    this._skipDeclaration();
-    this._skipWhitespace();
-    return this._parseElement();
+    this.#parseProlog();
+    const root = this.#parseElement();
+    return root;
   }
 
-  _skipDeclaration() {
-    this._skipWhitespace();
-    if (this.xml.substring(this.pos, this.pos + 5) === '<?xml') {
-      const end = this.xml.indexOf('?>', this.pos);
-      if (end !== -1) {
-        this.pos = end + 2;
-      }
+  // ========== scanning primitives ==========
+
+  /**
+   * Throw with the position, which is what makes a malformed document diagnosable
+   * @param {string} message
+   */
+  #fail(message) {
+    throw new Error(`${message} at position ${this.pos}`);
+  }
+
+  /**
+   * indexOf that cannot return -1. Every delimiter search goes through here
+   * @param {string} needle
+   * @param {string} what - what we were looking for, for the error message
+   * @returns {number}
+   */
+  #seek(needle, what) {
+    const at = this.xml.indexOf(needle, this.pos);
+    if (at === -1) {
+      this.#fail(`Unterminated ${what}: no '${needle}' found`);
+    }
+    return at;
+  }
+
+  /**
+   * Move the cursor, checking it actually moved forward. Called at the end of every loop body
+   * @param {number} was - the cursor before the iteration
+   */
+  #mustHaveAdvanced(was) {
+    if (this.pos <= was) {
+      // not reachable by any input we know of - it means a code path forgot to consume
+      this.#fail('Internal error: the XML parser stopped making progress');
     }
   }
 
-  _skipWhitespace() {
+  #atEnd() {
+    return this.pos >= this.xml.length;
+  }
+
+  #skipWhitespace() {
     while (this.pos < this.xml.length && /\s/.test(this.xml[this.pos])) {
       this.pos++;
     }
   }
 
-  _parseElement() {
-    this._skipWhitespace();
+  #startsWith(text) {
+    return this.xml.startsWith(text, this.pos);
+  }
 
-    if (this.xml[this.pos] !== '<') {
-      throw new Error(`Expected '<' at position ${this.pos}`);
+  // ========== document structure ==========
+
+  /**
+   * The XML declaration, and any comments or processing instructions before the root element.
+   * A DOCTYPE is refused outright: FHIR XML has no DTD, and accepting one is how a parser ends
+   * up doing entity expansion on someone else's behalf.
+   */
+  #parseProlog() {
+    this.#skipWhitespace();
+    if (this.#startsWith('<?xml')) {
+      this.pos = this.#seek('?>', 'XML declaration') + 2;
     }
-    this.pos++; // Skip '<'
-
-    // Parse element name
-    const nameEnd = this.xml.substring(this.pos).search(/[\s/>]/);
-    const name = this.xml.substring(this.pos, this.pos + nameEnd);
-    this.pos += nameEnd;
-
-    // Parse attributes
-    const attributes = {};
-    this._skipWhitespace();
-
-    while (this.pos < this.xml.length && this.xml[this.pos] !== '>' && this.xml[this.pos] !== '/') {
-      const attr = this._parseAttribute();
-      if (attr) {
-        attributes[attr.name] = attr.value;
+    for (;;) {
+      const was = this.pos;
+      this.#skipWhitespace();
+      if (this.#startsWith('<!--')) {
+        this.#skipComment();
+      } else if (this.#startsWith('<!DOCTYPE') || this.#startsWith('<!')) {
+        this.#fail('Document type declarations are not allowed in FHIR XML');
+      } else if (this.#startsWith('<?')) {
+        this.pos = this.#seek('?>', 'processing instruction') + 2;
+      } else {
+        return;
       }
-      this._skipWhitespace();
+      this.#mustHaveAdvanced(was);
     }
+  }
 
+  #skipComment() {
+    this.pos = this.#seek('-->', 'comment') + 3;
+  }
+
+  /**
+   * One element and everything inside it.
+   * @returns {{name: string, attributes: Object, children: Array}}
+   */
+  #parseElement() {
+    if (++this.depth > MAX_ELEMENT_DEPTH) {
+      this.depth--;
+      this.#fail(`XML is nested more than ${MAX_ELEMENT_DEPTH} elements deep`);
+    }
+    try {
+      return this.#parseElementInner();
+    } finally {
+      this.depth--;
+    }
+  }
+
+  #parseElementInner() {
+    this.#skipWhitespace();
+    if (this.#atEnd() || this.xml[this.pos] !== '<') {
+      this.#fail("Expected '<'");
+    }
+    this.pos++;
+
+    const name = this.#parseName('element name');
+    const attributes = this.#parseAttributes(name);
+
+    if (this.#startsWith('/>')) {
+      this.pos += 2;
+      return { name, attributes, children: [] };
+    }
+    if (this.#atEnd() || this.xml[this.pos] !== '>') {
+      this.#fail(`Expected '>' or '/>' to close the start tag of <${name}>`);
+    }
+    this.pos++;
+
+    return { name, attributes, children: this.#parseChildren(name) };
+  }
+
+  /**
+   * An element or attribute name: everything up to whitespace, '/', '>' or '='.
+   * @param {string} what - for the error message
+   * @returns {string}
+   */
+  #parseName(what) {
+    const from = this.pos;
+    while (this.pos < this.xml.length && !/[\s/>=]/.test(this.xml[this.pos])) {
+      this.pos++;
+    }
+    if (this.pos === from) {
+      this.#fail(`Expected an ${what}`);
+    }
+    return this.xml.substring(from, this.pos);
+  }
+
+  /**
+   * @param {string} elementName - for error messages
+   * @returns {Object} name to value
+   */
+  #parseAttributes(elementName) {
+    const attributes = {};
+    for (;;) {
+      const was = this.pos;
+      this.#skipWhitespace();
+      if (this.#atEnd()) {
+        this.#fail(`Unterminated start tag <${elementName}>`);
+      }
+      if (this.xml[this.pos] === '>' || this.#startsWith('/>')) {
+        return attributes;
+      }
+      if (this.xml[this.pos] === '/') {
+        this.#fail(`Expected '/>' in the start tag of <${elementName}>`);
+      }
+
+      const name = this.#parseName('attribute name');
+      this.#skipWhitespace();
+      if (this.#atEnd() || this.xml[this.pos] !== '=') {
+        this.#fail(`Expected '=' after the attribute '${name}' of <${elementName}>`);
+      }
+      this.pos++;
+      attributes[name] = this.#parseAttributeValue(name, elementName);
+
+      this.#mustHaveAdvanced(was);
+    }
+  }
+
+  /**
+   * A quoted attribute value. XML has no unquoted form, and accepting one is what let a stray
+   * character send the cursor somewhere arbitrary
+   * @param {string} name
+   * @param {string} elementName
+   * @returns {string}
+   */
+  #parseAttributeValue(name, elementName) {
+    this.#skipWhitespace();
+    const quote = this.xml[this.pos];
+    if (quote !== '"' && quote !== "'") {
+      this.#fail(`The value of the attribute '${name}' of <${elementName}> must be quoted`);
+    }
+    this.pos++;
+    const end = this.#seek(quote, `value of the attribute '${name}' of <${elementName}>`);
+    const value = FhirXmlBase.unescapeXml(this.xml.substring(this.pos, end));
+    this.pos = end + 1;
+    return value;
+  }
+
+  /**
+   * Everything between a start tag and its matching end tag. Text is skipped: FHIR carries its
+   * values in attributes, and this parser has never returned character data.
+   * @param {string} elementName
+   * @returns {Array} the child elements
+   */
+  #parseChildren(elementName) {
     const children = [];
+    for (;;) {
+      const was = this.pos;
+      this.#skipWhitespace();
+      if (this.#atEnd()) {
+        this.#fail(`Unclosed element <${elementName}>: expected </${elementName}>`);
+      }
 
-    // Self-closing tag
-    if (this.xml[this.pos] === '/') {
-      this.pos += 2; // Skip '/>'
-      return { name, attributes, children };
-    }
-
-    this.pos++; // Skip '>'
-
-    // Parse children
-    while (this.pos < this.xml.length) {
-      this._skipWhitespace();
-
-      if (this.xml.substring(this.pos, this.pos + 2) === '</') {
-        // Closing tag
-        const closeEnd = this.xml.indexOf('>', this.pos);
-        this.pos = closeEnd + 1;
-        break;
+      if (this.#startsWith('</')) {
+        this.pos += 2;
+        const closing = this.#parseName('element name');
+        if (closing !== elementName) {
+          this.#fail(`Expected </${elementName}> but found </${closing}>`);
+        }
+        this.#skipWhitespace();
+        if (this.#atEnd() || this.xml[this.pos] !== '>') {
+          this.#fail(`Expected '>' to close </${closing}>`);
+        }
+        this.pos++;
+        return children;
       }
 
       if (this.xml[this.pos] === '<') {
-        // Check for comment
-        if (this.xml.substring(this.pos, this.pos + 4) === '<!--') {
-          const commentEnd = this.xml.indexOf('-->', this.pos);
-          this.pos = commentEnd + 3;
-          continue;
+        if (this.#startsWith('<!--')) {
+          this.#skipComment();
+        } else if (this.#startsWith('<![CDATA[')) {
+          this.pos = this.#seek(']]>', 'CDATA section') + 3;
+        } else if (this.#startsWith('<!')) {
+          this.#fail('Declarations are not allowed inside a FHIR XML element');
+        } else if (this.#startsWith('<?')) {
+          this.pos = this.#seek('?>', 'processing instruction') + 2;
+        } else {
+          children.push(this.#parseElement());
         }
-
-        children.push(this._parseElement());
       } else {
-        // Text content - skip for FHIR as values are in attributes
-        const textEnd = this.xml.indexOf('<', this.pos);
-        this.pos = textEnd;
+        // character data - skipped, but it still has to be consumed
+        this.pos = this.#seek('<', `content of <${elementName}>`);
       }
+
+      this.#mustHaveAdvanced(was);
     }
-
-    return { name, attributes, children };
-  }
-
-  _parseAttribute() {
-    this._skipWhitespace();
-
-    if (this.xml[this.pos] === '>' || this.xml[this.pos] === '/') {
-      return null;
-    }
-
-    // Parse attribute name
-    const eqPos = this.xml.indexOf('=', this.pos);
-    const name = this.xml.substring(this.pos, eqPos).trim();
-    this.pos = eqPos + 1;
-
-    // Skip whitespace and opening quote
-    this._skipWhitespace();
-    const quote = this.xml[this.pos];
-    this.pos++;
-
-    // Parse attribute value
-    const valueEnd = this.xml.indexOf(quote, this.pos);
-    const value = FhirXmlBase.unescapeXml(this.xml.substring(this.pos, valueEnd));
-    this.pos = valueEnd + 1;
-
-    return { name, value };
   }
 }
 

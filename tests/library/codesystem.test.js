@@ -539,8 +539,9 @@ describe('CodeSystem', () => {
       expect(Array.isArray(parsed.identifier)).toBe(true);
       expect(parsed.identifier.length).toBe(2);
 
-      // R5-only filter operators should be removed
-      expect(parsed.filter[0].operator).not.toContain('generalizes');
+      // 'generalizes' is a valid R4 operator (filter-operator value set, 4.0.1)
+      // and must be retained on R5 -> R4 conversion
+      expect(parsed.filter[0].operator).toContain('generalizes');
       expect(parsed.filter[0].operator).toContain('=');
       expect(parsed.filter[0].operator).toContain('is-a');
     });
@@ -654,7 +655,7 @@ describe('CodeSystem', () => {
         filter: [
           {
             "code": "concept",
-            "operator": ["generalizes"], // Only R5 operator
+            "operator": ["child-of"], // Only an R5-only operator (stripped for R4)
             "value": "A string value"
           }
         ]
@@ -922,7 +923,8 @@ describe('CodeSystem', () => {
 
       expect(xmlOutput).toContain('<CodeSystem xmlns="http://hl7.org/fhir">');
       expect(xmlOutput).not.toContain('versionAlgorithmString');
-      expect(xmlOutput).not.toContain('<operator value="generalizes"/>');
+      // 'generalizes' is valid in R4 and must be retained
+      expect(xmlOutput).toContain('<operator value="generalizes"/>');
       expect(xmlOutput).toContain('<operator value="="/>');
       expect(xmlOutput).toContain('<operator value="is-a"/>');
 

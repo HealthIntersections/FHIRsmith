@@ -7,8 +7,10 @@ const { FilterExecutionContext, CodeSystemFactoryProvider} = require('./cs-api')
 const ValueSet = require("../library/valueset");
 const assert = require('assert');
 const {UcumService} = require("../library/ucum-service");
+const {Pair, Decimal} = require("../library/ucum-types");
 const {validateArrayParameter, validateParameter, validateOptionalParameter} = require("../../library/utilities");
 const {DesignationUse} = require("../library/designations");
+const { Issue } = require('../library/operation-outcome');
 const {BaseCSServices} = require("./cs-base");
 
 /**
@@ -66,6 +68,12 @@ class UcumCodeSystemProvider extends BaseCSServices {
 
   name() {
     return 'UCUM';
+  }
+
+  /** $lookup's display name: the code system's title. */
+  // eslint-disable-next-line no-unused-vars
+  lookupName(languages) {
+    return 'Unified Code for Units of Measure (UCUM)';
   }
 
   totalCount() {
@@ -263,11 +271,13 @@ class UcumCodeSystemProvider extends BaseCSServices {
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
     if (prop !== 'canonical') {
-      throw new Error(`Unsupported filter property: ${prop}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     if (op !== '=') {
-      throw new Error(`Unsupported filter operator for canonical: ${op}`);
+      throw new Issue('error', 'not-supported', null, 'FILTER_NOT_UNDERSTOOD',
+        this.opContext.i18n.translate('FILTER_NOT_UNDERSTOOD', this.opContext.langs, [prop, op, value]), 'vs-invalid', 422);
     }
 
     const ucumFilter = new UcumFilter(value);
@@ -397,11 +407,48 @@ class UcumCodeSystemProvider extends BaseCSServices {
     return codeA === codeB;
   }
 
+  /**
+   * UCUM has no hierarchy, so no code is ever a subtype of another. Two different codes can
+   * still mean the same unit though - 1/min and min-1 are the same thing written two ways -
+   * so when the codes differ, compare what they canonicalise to.
+   *
+   * This is the canonical *form*, not the canonical units: getCanonicalUnits() drops the
+   * magnitude, so m and cm both answer 'm' and would compare equal when they are different
+   * units. getCanonicalForm() carries the conversion factor with the unit, which is what
+   * distinguishes the same unit written differently from a merely comparable one.
+   *
+   * @param {string|UcumContext} codeA
+   * @param {string|UcumContext} codeB
+   * @returns {string} equivalent or not-subsumed
+   */
   async subsumesTest(codeA, codeB) {
+    const a = await this.#ensureContext(codeA);
+    const b = await this.#ensureContext(codeB);
 
-    await this.#ensureContext(codeA);
-    await this.#ensureContext(codeB);
-    return 'not-subsumed'; // No subsumption in UCUM
+    if (a.code === b.code) {
+      return 'equivalent';
+    }
+
+    try {
+      const ca = this.ucumService.getCanonicalForm(new Pair(Decimal.one(), a.code));
+      const cb = this.ucumService.getCanonicalForm(new Pair(Decimal.one(), b.code));
+      if (ca.getCode() === cb.getCode() && ca.getValue().comparesTo(cb.getValue()) === 0) {
+        return 'equivalent';
+      }
+    } catch (e) {
+      // a unit that won't canonicalise is simply not equivalent to anything. locate() has
+      // already accepted both codes, so this is a unit the analyser can't reduce, not junk
+    }
+
+    return 'not-subsumed';
+  }
+
+  /**
+   * The concept's properties for $expand: built by extendLookup, so that an expansion reports
+   * the same properties $lookup does (see CodeSystemProvider._propertiesFromLookup)
+   */
+  async properties(context, names) {
+    return this._propertiesFromLookup(context, names);
   }
 
   async extendLookup(ctxt, props, params) {
@@ -409,12 +456,14 @@ class UcumCodeSystemProvider extends BaseCSServices {
     validateArrayParameter(params, 'params', Object);
 
 
-    if (this._hasProp(props, 'canonical', true)) {
+    // canonical: the unit's canonical form. Only when asked for (by name or *) - $lookup never
+    // returned it by default (the old code looked for an addProperty method that params, an
+    // array, doesn't have, so it never returned it at all)
+    if (this._hasProp(props, 'canonical', false)) {
       try {
         const canonical = this.ucumService.getCanonicalUnits(ctxt.code);
-        // Add canonical property to params - implementation depends on your Parameters class
-        if (params && typeof params.addProperty === 'function') {
-          params.addProperty('canonical', canonical);
+        if (canonical) {
+          this._addStringProperty(params, 'property', 'canonical', canonical);
         }
       } catch (error) {
         // Ignore errors in canonical form calculation

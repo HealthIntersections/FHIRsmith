@@ -4,6 +4,7 @@ const cliProgress = require('cli-progress');
 const fs = require('fs');
 const path = require('path');
 const { getConfigManager } = require('./tx-import-settings');
+const terminal = require('./terminal');
 
 /**
  * Base class for terminology import modules
@@ -129,16 +130,21 @@ class BaseTerminologyModule {
       message: 'Overwrite existing database if it exists?',
       default: smartDefaults.overwrite !== undefined ? smartDefaults.overwrite : false,
       when: (answers) => {
+        if (options.yes || options.overwrite !== undefined) {
+          return false;
+        }
         const destPath = options.dest || answers.dest;
         return fs.existsSync(destPath);
       }
     });
 
+    // --verbose on the command line, or -y (non-interactive), means don't ask
     questions.push({
       type: 'confirm',
       name: 'verbose',
       message: 'Show verbose progress output?',
-      default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true
+      default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true,
+      when: () => !options.yes && options.verbose === undefined
     });
 
     const answers = await inquirer.prompt(questions);
@@ -162,19 +168,23 @@ class BaseTerminologyModule {
       ...answers,
       source: finalSource
     };
+    if (options.yes && options.overwrite === undefined && answers.overwrite === undefined) {
+      // -y answers yes to the overwrite confirmation too
+      finalConfig.overwrite = true;
+    }
 
     return finalConfig;
   }
 
   async confirmImport(config) {
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version || 'Not specified')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version || 'Not specified')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -218,19 +228,19 @@ class BaseTerminologyModule {
   }
 
   logInfo(message) {
-    console.log(chalk.blue('ℹ'), message);
+    terminal.log(chalk.blue('ℹ'), message);
   }
 
   logSuccess(message) {
-    console.log(chalk.green('✓'), message);
+    terminal.log(chalk.green('✓'), message);
   }
 
   logWarning(message) {
-    console.log(chalk.yellow('⚠'), message);
+    terminal.log(chalk.yellow('⚠'), message);
   }
 
   logError(message) {
-    console.log(chalk.red('✗'), message);
+    terminal.log(chalk.red('✗'), message);
   }
 
   async validatePrerequisites(config) {
@@ -299,7 +309,7 @@ class BaseTerminologyModule {
   // Common import workflow
   async runImport(config) {
     try {
-      console.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
+      terminal.log(chalk.blue.bold(`🏥 Starting ${this.getName()} Import...\n`));
 
       // Pre-flight checks
       this.logInfo('Running pre-flight checks...');
@@ -321,7 +331,7 @@ class BaseTerminologyModule {
       this.stopProgress(); // Ensure progress bar is cleaned up
       this.logError(`${this.getName()} import failed: ${error.message}`);
       if (config.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       process.exit(1);
     }

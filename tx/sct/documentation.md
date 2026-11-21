@@ -1,0 +1,306 @@
+# SNOMED CT support in FHIRsmith: known limitations
+
+This file records what the SNOMED CT code system provider (`tx/cs/cs-snomed.js`,
+`tx/sct/*`) does not do, so that nobody has to rediscover it from the code. It is
+organised by area: ECL, post-coordinated expressions, and everything else. Where
+a limitation is a deliberate decision rather than unfinished work, it says so.
+
+The import pipeline (`tx/importers/import-sct.module.js`) reads the RF2 snapshot
+concept, description (including text definitions, which share the description
+file layout), inferred relationship, concrete value relationship, identifier and
+reference set files. It does not read stated relationships or the OWL axiom
+reference sets; several of the limitations below follow from that.
+
+## ECL
+
+The parser (`tx/sct/ecl.js`) accepts the ECL 2.2 grammar with the exceptions
+listed under "Not parsed". The evaluator (`SnomedServices.filterECL` and the
+`_eval*` methods in `cs-snomed.js`) evaluates the subset listed under
+"Evaluated"; anything the parser accepts but the evaluator does not implement
+is reported as `UNSUPPORTED_ECL`, and a syntax error or an unknown concept as
+`INVALID_ECL`. Both are OperationOutcomes with tx-issue-type `vs-invalid`.
+
+Note that `ECLValidator.evaluate*` in `ecl.js` is an older, weaker evaluator
+that the server does not use. `filterECL` is the one that matters.
+
+### Evaluated
+
+- All eight hierarchy operators (`<`, `<<`, `<!`, `<<!`, `>`, `>>`, `>!`, `>>!`)
+  on a concept reference, on `*`, on `^ refset` and on a bracketed expression
+  (applied to every member of the set), and top/bottom of set (`!!> (...)`,
+  `!!< (...)`).
+- `*` (every concept, active and inactive - `activeOnly` is the expansion's job).
+- `^` member-of on a concept or any bracketed expression, with
+  `{{ M ... }}` member filters on `effectiveTime`, `active`, `moduleId` and the
+  reference set's own fields (concept, integer and string typed from the RF2
+  file name). Since inactive member rows are dropped at import, `active = false`
+  never matches.
+- Refinements: `=` and `!=` against an expression value (`!=` counts the
+  occurrences whose value is outside the set, so `A != X` needs at least one
+  A that is not X, and `[0..0] A != X` means every A is X); reversed
+  attributes (`R A = X`: the concept is the value of an A on something in X,
+  evaluated over the concept's inbound relationships); attribute names that
+  are a concept, `*`, or any sub expression (`<< 762705008 = ...`); attribute
+  sets joined by `AND`, `OR` or `,`, with brackets; attribute groups,
+  including `AND`/`OR` inside and between groups; attribute and group
+  cardinality, including `[0..0]`. Cardinality counts occurrences per role
+  group, per the SNOMED Computable Languages Group ruling (see
+  `_countAttributeMatches`).
+- `AND` / `OR` / `MINUS`, and `,` as a conjunction at the expression level as
+  well as in refinements, with the ECL 6.4 rule that conjunction and
+  disjunction cannot be mixed without brackets.
+- Dotted expressions (`< X . 363698007`, `. << 363698007`, `. (A OR B)`).
+- `{{ C ... }}` concept filters on `active`, `definitionStatus`,
+  `definitionStatusId`, `moduleId` and `effectiveTime`.
+- `{{ D ... }}` description filters on `term` (match semantics: each word of
+  the search term starts a word of the description, case-insensitively; and
+  `wild:` whole-term patterns), `language`, `typeId` / `type` (syn, fsn, def),
+  `dialectId` / `dialect` with acceptability sets (`(prefer)`, `(accept)` or
+  acceptability concept ids; the `dialect` aliases known are en-us, en-gb,
+  en-au, en-ca, en-nz, en-ie, fr-ca, fr-be, nl-be, nl-nl, es-es, sv-se, da-dk),
+  `moduleId`, `effectiveTime`, `active` and `id`. The filters in one block
+  must be satisfied by a single description; separate blocks may be satisfied
+  by different descriptions. Only active descriptions are considered unless
+  the block has an `active` filter.
+- Concrete values in refinements - numeric (`= #5`, `>= #1.5`, `!= #-1`),
+  string (`= "x"`, `= match:"x"`, a set) and boolean (`= true`) - against the
+  concrete value relationships, which the importer reads from
+  `sct2_RelationshipConcreteValues_*` into cache version 19. Numbers compare
+  as numbers (`#5` matches `#5.0`); strings use the same match / wild
+  semantics as description terms; a value of another kind never matches.
+  An edition imported before version 19 has no concrete values and reports
+  such a refinement as unsupported rather than answering with nothing.
+- History supplements: `{{ + HISTORY }}` (= MAX), `HISTORY-MIN` (SAME AS),
+  `HISTORY-MOD` (SAME AS, WAS A, REPLACED BY, PARTIALLY EQUIVALENT TO),
+  `HISTORY-MAX` (every reference set under 900000000000522004 |Historical
+  association|), `HISTORY (*)` and `HISTORY (expression)`: the inactive
+  concepts that the selected association reference sets associate with a
+  concept in the result are added to it. A reference set the edition does not
+  carry contributes nothing. Whether a bare `HISTORY` means MAX is taken from
+  Snow Owl's reading of the specification - to be confirmed.
+- Alternate identifiers (`LOINC#14394-1`, `"LOINC#14394-1"`): the scheme
+  alias names an identifier scheme (`IDENTIFIER_SCHEMES` in `cs-snomed.js`:
+  LOINC = 30051010000102, from the LOINC Extension's `sct2_Identifier` file,
+  cache version 18+), the code resolves to the concept(s) carrying it, and
+  hierarchy operators apply to them as to any set. An unknown scheme or a
+  code nobody carries is `INVALID_ECL`.
+- Comments (`/* ... */`), terms (`|...|`, not checked against descriptions).
+
+### Parsed but reported as unsupported
+
+- Reference set field selection on member-of (`^ [targetComponentId] refset`,
+  `^ [referencedComponentId, targetComponentId] refset`). Deliberate: the
+  selected fields, and the referenced components of many reference sets,
+  are descriptions or other non-concept components, which an expansion has
+  no way to represent.
+
+### Not parsed
+
+- `wild:` search terms are rejected in member filters (accepted in refinement
+  string values, which are then unsupported anyway).
+- A concept id must be 6-18 digits; anything else is a syntax error (this is
+  what makes `<< abc` invalid rather than unsupported).
+
+### Other ECL notes
+
+- Description filter term matching uses the text index to pick the concepts
+  that could match a plain-word `match:` term, then checks their descriptions;
+  a `wild:` term, `!=`, or a one-letter word walks the descriptions of every
+  concept in the result set, so `* {{ D term = wild:"x*" }}` on a full
+  edition scans every description. It yields to the event loop (see below)
+  but is not fast.
+- Evaluation is async: the evaluator (`_evalECLNode` and the functions it
+  calls) awaits `opContext.checkAndYield` every few hundred iterations of its
+  loops (`_eclTick`), so an expensive expression uses its compute time without
+  holding the event loop. The test of each concept against a refinement stays
+  synchronous: the refinement's attribute values are evaluated first
+  (`_eclPrepareRefinement`). The MRCM range check in post-coordinated
+  expression validation runs ECL too, so `checkExpression` and
+  `parseExpression` are async as well.
+- Refinements test only the concepts that have a relationship to one of an
+  attribute's values (found through the values' inbound relationships), when
+  that is fewer than the base set; a chain of ORs is gathered into one set.
+  Running out of time is reported as too-costly, not `UNSUPPORTED_ECL`.
+- A `dialect` alias the server does not know is reported as unsupported, not
+  invalid; the alias table is `ECL_DIALECT_ALIASES` in `cs-snomed.js`.
+
+- Term checking: a wrong term after a concept id (`10200004 |Lever structure|`)
+  is accepted silently. The tx-ecosystem test `expand-ecl-term-mismatch` expects
+  this.
+- `^` on a concept that is not a reference set yields an empty result rather
+  than an error (Snowstorm's behaviour; agreed in the tx-ecosystem suite).
+  `^` on a reference set whose members are descriptions (a language reference
+  set) is reported as unsupported when that reference set is named explicitly
+  - there are no concepts to return. Inside a computed operand (`^ *`,
+  `^ (< 900000000000455006)`) such a reference set contributes nothing and
+  the rest of the operand still counts.
+- An attribute name without a comparison (`< X : 363698007`, or `(< X : A = v
+  OR B)` where the OR binds inside the refinement) is a syntax error, as the
+  grammar requires.
+- The ECL result for a value set filter is cached per (value set, code system
+  version), so the first expansion of a large constraint is slow and later ones
+  are not.
+
+## Post-coordinated expressions
+
+Expressions are parsed by `SnomedExpressionParser` (`tx/sct/expressions.js`)
+in SNOMED Compositional Grammar, including `===` / `<<<` definition status
+markers, nested (bracketed) attribute values, concrete values and terms.
+They are normalised, checked against the MRCM, and compared structurally.
+
+### Validation
+
+`checkExpression` rejects an expression whose refinements break the concept
+model (`$validate-code` then answers `result = false`): the attribute must be
+allowed on the focus concept's domain (MRCM attribute domain reference set
+`723561005`), the value must satisfy the attribute's range (`723562003`,
+whether that is ECL or a concrete range such as `dec(>#0..)`), the attribute
+and in-group cardinality maximums apply, and an attribute the MRCM marks as
+grouped must be in a role group. Known limits:
+
+- Minimum cardinality is not enforced (it constrains a concept's own
+  definition, not a refinement of it). The converse of the grouping rule
+  (grouped = 0 means must not be grouped) is enforced only through the
+  in-group cardinality `0..0`.
+- Attributes with no MRCM rule in the loaded edition are not checked at all.
+  Internationally that is `704347000 |Observes|`, `131195008 |Subject of
+  information|` and `363705008 |Has definitional manifestation|`, and
+  `762951001 |Has ingredient|`, whose only domain row is scoped to new
+  precoordinated content (an MRCM inconsistency, not something to work around).
+- An edition with no MRCM reference sets (e.g. the committed jest test cache)
+  gets no concept model checking at all; the checks go inert.
+- The ungrouped "Close To User Form" is rejected rather than transformed to the
+  classifiable form. None of the seven Level 1 transformations in SNOMED's
+  postcoordination guide (refining an existing attribute, adding a self-grouped
+  attribute, adding severity, lateralising findings and procedures, adding
+  context to findings and procedures) is implemented.
+- Negative concrete values (`#-5`) fail to parse ("Expected character } but
+  found -"). SCG permits them.
+- Laterality on a non-lateralisable body structure is caught only when the
+  edition carries reference set `723264001`; the tx-ecosystem test edition
+  does not, so the IG suite cannot assert it.
+
+### Subsumption
+
+`$subsumes` on expressions works by comparing normal forms: each side is
+expanded through its fully defined concepts (primitives keep their atom and
+contribute their defining attributes), then matched structurally, trying every
+role group pairing.
+
+- Positive answers (`subsumes`, `subsumed-by`, `equivalent`) are sound.
+  A negative answer is not provable this way: SNOMED's OWL axiom reference set
+  carries general concept inclusions and property chains whose entailments are
+  baked into the distributed inferred relationships for precoordinated concepts,
+  but an expression is something the classifier never saw. So when no
+  relationship is found and either side is an expression, the server returns an
+  OperationOutcome (HTTP 422, issue code `not-supported`, tx-issue-type
+  `cannot-determine`) rather than `not-subsumed`. Between two plain concepts all
+  four outcomes are sound (the transitive closure is the classifier's own
+  output).
+- There is no reasoner. Removing the decline above would need an OWL
+  classifier over the axiom reference set (which is not imported).
+- Normalisation depth is capped at 50 and throws rather than truncating,
+  because a truncated normal form is unsound in both directions.
+- `subsumesTest` does not re-validate its inputs; `$subsumes` runs `locate()`
+  (and so `checkExpression`) on both codes first.
+
+### Lookup and display
+
+- `$lookup` on an expression returns the rendered expression and its
+  components; the normal form, parents and children properties are returned
+  for single-concept expressions only.
+- The display of an expression is the server's own rendering (no spaces,
+  `:{...}`), and every concept in it is given its preferred term.
+
+## Everything else
+
+### Data not imported
+
+- Stated relationships and the OWL axiom reference sets. Everything is driven
+  by the distributed inferred relationships; there is no classification.
+- Concrete value relationships are read (since cache version 19, October 2026).
+- Inactive reference set member rows (only active rows are stored).
+- Module ids and definition status on concepts are recorded.
+
+### Language and display
+
+- A description's language is stored as one byte; `tx/sct/languages.js` is
+  the one table of what each byte means (importer, server and expression
+  services). 1-9 are en, fr, nl, es, sv, da, de, it, cs, as earlier importers
+  and the original server wrote them; the rest of ISO 639-1 follows from 10.
+  Caches before format 20 were written with only 1-9, and any other language
+  recorded as English (Norwegian or Finnish descriptions labelled `en`); the
+  importer now records anything that isn't ISO 639-1 as English, with a
+  warning.
+- Cache format 20 (November 2026) was the first written with every language,
+  the edition's language in the default-language slot, and effective dates
+  that don't depend on the time zone the import ran in. Format 21 (November
+  2026) adds the edition's license (the importer's `--license` file, carried
+  in the cache, not read by the server) and the text indexes, built at import,
+  and drops the old words and stems sections, which nothing read.
+  The server reads format 21 only (`SNOMED_CACHE_VERSION` in
+  `structures.js`): any other cache is refused when it loads, and has to be
+  imported again.
+- With no `displayLanguage`, every edition defaults to US then GB English
+  preferred synonyms. A concept whose only English description is its FSN
+  gets its national-language preferred synonym instead.
+- `sharedData.defaultLanguage` is the edition's default description
+  language: the language a text or display regex filter searches when the
+  request names none. `getDisplayName` ignores the language argument it is
+  passed. The importer writes the language byte of the edition's language
+  (`config.language`: the editions table, or `--language`), or 1 if the
+  edition has no active descriptions in it; anything that isn't a language
+  byte is read as 1 (English).
+
+### Filters and implicit resources
+
+- ValueSet filters supported on `compose.include.filter`: `concept` (`is-a`,
+  `descendent-of`, `in`), `inactive =`, `moduleId =`, `constraint =` (ECL),
+  `expressions =`, and `<attributeId> = <conceptId>`. Other operators on these
+  properties, and other properties, are rejected.
+- Implicit value sets: `?fhir_vs`, `?fhir_vs=refset`, `?fhir_vs=refset/<id>`
+  and `?fhir_vs=isa/<id>`, with optional edition and version segments.
+  `?fhir_vs=ecl/<expression>` is not recognised; use a `constraint` filter.
+- Implicit concept maps (`?fhir_cm=<id>`): only the four historical association
+  reference sets (POSSIBLY EQUIVALENT TO, REPLACED BY, SAME AS, ALTERNATIVE).
+  Simple and extended map reference sets (ICD-10, ICD-O, ...) are loaded but
+  are not exposed as implicit concept maps, and reverse translation is not
+  supported.
+- Edition to edition translation (`<edition>/version/<date>?fhir_cm=edition/<module>`):
+  a `$translate` from an edition to one it depends on (per the module dependency
+  reference set) needs no map - the answer comes from the definitions. A concept in
+  the target edition's modules is its own translation; an inactive concept translates
+  through its historical associations; a fully defined extension concept translates
+  to its normal form (or to the target concept with that normal form, if there is
+  one), provided the normal form uses only target edition content; anything else
+  translates to its proximal target-edition ancestors as `source-is-narrower-than-target`,
+  unless the only such ancestors are top-level hierarchies, which is reported as a
+  reason for no translation. The map is found from `targetSystem` =
+  `http://snomed.info/sct|<target edition[/version/date]>`, or nominated by url.
+- `$closure` works through `subsumesTest`, so adding a post-coordinated
+  expression to a closure table hits the `cannot-determine` rule above whenever
+  it is unrelated to an existing entry.
+
+### Text search
+
+- The `filter` parameter on `$expand` uses the edition's word indexes
+  (`tx/sct/text-index.js`), which the importer builds and the cache carries -
+  one for all its languages and, when it has descriptions in more than one,
+  one for each - and the server reads where they are in the file (nothing is
+  built when the cache loads or is searched): every token of every active
+  description, matched by prefix and by stem, in the description's language.
+  Inactive descriptions are not indexed. A change to what decides the words
+  or stems (`text-match.js`) means a new `TEXT_INDEX_VERSION`, and every
+  edition imported again.
+
+### Known data quality traps
+
+- The three copies of the tx-ecosystem SNOMED test edition
+  (`data/terminology-cache/sct_test_*.cache`, `tx/data/snomed-testing.cache`,
+  `data/snomed-testing.cache`) can drift. The committed jest cache was rebuilt
+  from the RF2 subset in `tx/data/snomed` (with `tx/data/snomed/license.txt`)
+  for cache format 21; rebuild it with:
+  `node tx/importers/tx-import.js snomed import -s tx/data/snomed -d tx/data/snomed-testing.cache -e 31000003106 -v 20250909 -u http://snomed.info/sct/31000003106/version/20250909 --license tx/data/snomed/license.txt -y`
+- `tx.fhir.org` (the Java server) and FHIRsmith disagree on a few expected
+  results in the tx-ecosystem suite (display selection, MRCM); the suite
+  records FHIRsmith's reading where Grahame has decided it.

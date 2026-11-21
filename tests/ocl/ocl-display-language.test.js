@@ -162,6 +162,27 @@ describe('toConceptContext', () => {
     const ctx = toConceptContext({ id: 'ID-001', display_name: 'Name' });
     expect(ctx.code).toBe('ID-001');
   });
+
+  it('carries a non-empty extras object through to the context', () => {
+    const extras = { who_stage: '3', order: 5, experimental: true, nested: { a: 1 } };
+    const ctx = toConceptContext({ code: 'X', extras });
+    expect(ctx.extras).toEqual(extras);
+  });
+
+  it('omits extras when empty, missing, or not a plain object', () => {
+    expect(toConceptContext({ code: 'X', extras: {} })).not.toHaveProperty('extras');
+    expect(toConceptContext({ code: 'X' })).not.toHaveProperty('extras');
+    expect(toConceptContext({ code: 'X', extras: ['a'] })).not.toHaveProperty('extras');
+    expect(toConceptContext({ code: 'X', extras: 'text' })).not.toHaveProperty('extras');
+    expect(toConceptContext({ code: 'X', extras: null })).not.toHaveProperty('extras');
+  });
+
+  it('extras survive a JSON round-trip (cold-cache serialization)', () => {
+    const extras = { who_stage: '3', order: 5, flags: ['a', 'b'], nested: { a: 1 } };
+    const ctx = toConceptContext({ code: 'X', extras });
+    const restored = JSON.parse(JSON.stringify(ctx));
+    expect(restored.extras).toEqual(extras);
+  });
 });
 
 // ---------------------------------------------------------------------------

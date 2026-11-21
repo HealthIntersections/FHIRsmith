@@ -46,10 +46,51 @@ describe('Subsumes Worker', () => {
         })
         .set('Accept', 'application/json');
 
-      expect(response.status).toBe(404);
+      expect(response.status).toBe(400);
       expect(response.body.resourceType).toBe('OperationOutcome');
-      expect(response.body.issue[0].code).toBe('not-found');
+      expect(response.body.issue[0].code).toBe('invalid');
+      expect(response.body.issue[0].details.coding[0].code).toBe('invalid-data');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_NO_SYSTEM');
       expect(response.body.issue[0].details.text).toContain('system');
+    });
+
+    test('should return 400 when the codings have no system', async () => {
+      const response = await request(app)
+        .post('/tx/r5/CodeSystem/$subsumes')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/json')
+        .send({
+          resourceType: 'Parameters',
+          parameter: [
+            { name: 'codingA', valueCoding: { code: 'male' } },
+            { name: 'codingB', valueCoding: { code: 'female' } }
+          ]
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.resourceType).toBe('OperationOutcome');
+      expect(response.body.issue[0].code).toBe('invalid');
+      expect(response.body.issue[0].details.coding[0].code).toBe('invalid-data');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_NO_SYSTEM');
+      expect(response.body.issue[0].expression).toEqual(['codingA']);
+    });
+
+    test('should return 400 when only codingB has no system', async () => {
+      const response = await request(app)
+        .post('/tx/r5/CodeSystem/$subsumes')
+        .set('Accept', 'application/json')
+        .set('Content-Type', 'application/json')
+        .send({
+          resourceType: 'Parameters',
+          parameter: [
+            { name: 'codingA', valueCoding: { system: 'http://hl7.org/fhir/administrative-gender', code: 'male' } },
+            { name: 'codingB', valueCoding: { code: 'female' } }
+          ]
+        });
+
+      expect(response.status).toBe(400);
+      expect(response.body.issue[0].code).toBe('invalid');
+      expect(response.body.issue[0].expression).toEqual(['codingB']);
     });
 
     test('should return 400 when codeA is missing', async () => {
@@ -104,7 +145,16 @@ describe('Subsumes Worker', () => {
 
       expect(response.status).toBe(404);
       expect(response.body.resourceType).toBe('OperationOutcome');
-      expect(response.body.issue[0].diagnostics).toContain('nonexistent-code');
+      expect(response.body.issue[0].code).toBe('code-invalid');
+      expect(response.body.issue[0].details.text).toContain('nonexistent-code');
+      expect(response.body.issue[0].details.coding).toEqual([{
+        system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'invalid-code'
+      }]);
+      expect(response.body.issue[0].extension).toEqual([{
+        url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id',
+        valueString: 'Unknown_Code_in_Version'
+      }]);
+      expect(response.body.issue[0].expression).toEqual(['codeA']);
     });
 
     test('should return 404 when codeB is invalid', async () => {
@@ -119,7 +169,16 @@ describe('Subsumes Worker', () => {
 
       expect(response.status).toBe(404);
       expect(response.body.resourceType).toBe('OperationOutcome');
-      expect(response.body.issue[0].diagnostics).toContain('nonexistent-code');
+      expect(response.body.issue[0].code).toBe('code-invalid');
+      expect(response.body.issue[0].details.text).toContain('nonexistent-code');
+      expect(response.body.issue[0].details.coding).toEqual([{
+        system: 'http://hl7.org/fhir/tools/CodeSystem/tx-issue-type', code: 'invalid-code'
+      }]);
+      expect(response.body.issue[0].extension).toEqual([{
+        url: 'http://hl7.org/fhir/StructureDefinition/operationoutcome-message-id',
+        valueString: 'Unknown_Code_in_Version'
+      }]);
+      expect(response.body.issue[0].expression).toEqual(['codeB']);
     });
   });
 
@@ -201,14 +260,15 @@ describe('Subsumes Worker', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.resourceType).toBe('OperationOutcome');
-      expect(response.body.issue[0].details.text).toContain('same system');
+      expect(response.body.issue[0].extension[0].valueString).toBe('SUBSUMPTION_SYSTEM_MISMATCH');
+      expect(response.body.issue[0].details.text).toContain('same code system');
     });
   });
 
   describe('GET /tx/r5/CodeSystem/:id/$subsumes', () => {
     test('should check subsumption by instance id', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .query({
           codeA: 'male',
           codeB: 'female'
@@ -237,7 +297,7 @@ describe('Subsumes Worker', () => {
 
     test('should return 400 when codes are missing for instance subsumes', async () => {
       const response = await request(app)
-        .get('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .get('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .set('Accept', 'application/json');
 
       expect(response.status).toBe(400);
@@ -248,7 +308,7 @@ describe('Subsumes Worker', () => {
   describe('POST /tx/r5/CodeSystem/:id/$subsumes', () => {
     test('should check subsumption by instance id with POST', async () => {
       const response = await request(app)
-        .post('/tx/r5/CodeSystem/administrative-gender/$subsumes')
+        .post('/tx/r5/CodeSystem/core-administrative-gender/$subsumes')
         .set('Accept', 'application/json')
         .set('Content-Type', 'application/json')
         .send({

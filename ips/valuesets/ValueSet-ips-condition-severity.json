@@ -1,0 +1,30 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-condition-severity",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-condition-severity",
+  "name": "IpsConditionSeverity",
+  "title": "Condition severity (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT: 24484000 |Severe|, 6736007 |Moderate|, 255604002 |Mild|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "concept": [
+          {
+            "code": "24484000"
+          },
+          {
+            "code": "6736007"
+          },
+          {
+            "code": "255604002"
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -19,7 +19,32 @@ class ConceptMap extends CanonicalResource {
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = conceptMapToR5(jsonObj, fhirVersion);
     this.validate();
+    this.checkContained();
     this.id = this.jsonObj.id;
+    // Precalculated at construction so callers (e.g. the resource cache) have a
+    // cheap O(1) sense of how large this resource is.
+    this._conceptCount = ConceptMap._countConcepts(this.jsonObj);
+  }
+
+  /**
+   * Number of concept nodes this ConceptMap carries: every source `element` plus
+   * every `target` across all groups (each is a coded node, so this approximates
+   * the resource's size). Precalculated at construction time.
+   * @returns {number}
+   */
+  conceptCount() {
+    return this._conceptCount;
+  }
+
+  static _countConcepts(jsonObj) {
+    let n = 0;
+    for (const g of ((jsonObj && jsonObj.group) || [])) {
+      for (const e of (g.element || [])) {
+        n++;
+        n += Array.isArray(e.target) ? e.target.length : 0;
+      }
+    }
+    return n;
   }
 
   /**
@@ -149,6 +174,82 @@ class ConceptMap extends CanonicalResource {
     return result;
   }
 
+  /**
+   * The canonical references this map defers to. Only group.unmapped.otherMap creates
+   * such a dependency: a map that names another map cannot be resolved without it, so
+   * it has to be consulted first.
+   * @returns {string[]} canonical references, as written (may or may not be versioned)
+   */
+  listDependencies() {
+    const result = [];
+    for (const g of this.jsonObj.group || []) {
+      if (g.unmapped && g.unmapped.mode === 'other-map' && g.unmapped.otherMap) {
+        if (!result.includes(g.unmapped.otherMap)) {
+          result.push(g.unmapped.otherMap);
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * The groups that would have been consulted for this coding, whether or not any of
+   * their elements matched. group.unmapped only applies to a group that was in scope
+   * for the translation, so the caller needs the same source/target test that
+   * listTranslations applies - without the per-element filter.
+   *
+   * "In scope" here is only about this group's source and target code systems. It assumes
+   * the MAP itself is in scope, which is a separate and prior question: ConceptMap.sourceScope
+   * limits the map to codes that are members of that value set, and a map that does not cover
+   * the code has no groups in scope at all, whatever their systems say. That test needs a value
+   * set lookup and a $validate-code, so it lives in the worker (TranslateWorker.filterMapsByScope)
+   * and is applied to the map before this is ever called. Do not read a group coming back from
+   * here as evidence that the map applies.
+   * @returns {Object[]} the matching group objects
+   */
+  listGroupsInScope(coding, targetScope, targetSystem) {
+    const result = [];
+    const vurl = VersionUtilities.vurl(coding.system, coding.version);
+    const all = this.canonicalMatches(targetScope, this.targetScope);
+    for (const g of this.jsonObj.group || []) {
+      const sourceOk = this.canonicalMatches(vurl, g.source);
+      const targetOk = !targetSystem || this.canonicalMatches(targetSystem, g.target);
+      if (all || (sourceOk && targetOk)) {
+        result.push(g);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * As listTranslationsReverse, but the targets that name a value set rather than a code
+   * (target.valueSet): whether the coding is one of them is for the caller to decide
+   */
+  listValueSetTargetsReverse(coding, targetScope, sourceSystem) {
+    let result = [];
+    let vurl = VersionUtilities.vurl(coding.system, coding.version);
+
+    let all = this.canonicalMatches(targetScope, this.targetScope);
+    for (const g of this.jsonObj.group || []) {
+      const targetOk = this.canonicalMatches(vurl, g.target);
+      const sourceOk = !sourceSystem || this.canonicalMatches(sourceSystem, g.source);
+      if (all || (sourceOk && targetOk)) {
+        for (const em of g.element || []) {
+          for (const tm of em.target || []) {
+            if (!tm.code && tm.valueSet) {
+              result.push({
+                group: g,
+                match: em,
+                target: tm
+              });
+            }
+          }
+        }
+      }
+    }
+    return result;
+  }
+
   listTranslationsReverse(coding, targetScope, sourceSystem) {
     let result = [];
     let vurl = VersionUtilities.vurl(coding.system, coding.version);
@@ -175,19 +276,27 @@ class ConceptMap extends CanonicalResource {
     return result;
   }
     /**
-   * Gets the source scope (R5) or source system (R3/R4)
-   * @returns {string|undefined} Source scope/system
+   * Gets the source scope (R5+) or source (R3/R4).
+   *
+   * R5 renamed ConceptMap.source[x] to ConceptMap.sourceScope[x], so an R4 resource spells this
+   * sourceUri / sourceCanonical and an R5 one sourceScopeUri / sourceScopeCanonical. Both have to
+   * be read: this server serves R4 as well as R5, and the R4 client sends the R4 spelling. Reading
+   * only the R5 names made this silently undefined on an R4 server, which made every map look
+   * unscoped - so the scope never limited anything, and $translate answered for codes outside it.
+   * @returns {string|undefined} Source scope
    */
   get sourceScope() {
-    return this.jsonObj.sourceScopeUri ? this.jsonObj.sourceScopeUri : this.jsonObj.sourceScopeCanonical;
+    return this.jsonObj.sourceScopeUri || this.jsonObj.sourceScopeCanonical
+      || this.jsonObj.sourceUri || this.jsonObj.sourceCanonical;
   }
 
   /**
-   * Gets the target scope (R5) or target system (R3/R4)
-   * @returns {string|undefined} Target scope/system
+   * Gets the target scope (R5+) or target (R3/R4). See sourceScope for why both are read.
+   * @returns {string|undefined} Target scope
    */
   get targetScope() {
-    return this.jsonObj.targetScopeUri ? this.jsonObj.targetScopeUri : this.jsonObj.targetScopeCanonical;
+    return this.jsonObj.targetScopeUri || this.jsonObj.targetScopeCanonical
+      || this.jsonObj.targetUri || this.jsonObj.targetCanonical;
   }
 
   /**

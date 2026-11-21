@@ -1,0 +1,35 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-clinical-finding-or-none",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-clinical-finding-or-none",
+  "name": "IpsClinicalFindingOrNone",
+  "title": "Clinical findings, or no problems (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "SNOMED CT International descendants of 404684003 |Clinical finding|, and 160245001 |No current problems or disability|. The reason for a medication, or a complication of a procedure.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "404684003"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "concept": [
+          {
+            "code": "160245001"
+          }
+        ]
+      }
+    ]
+  }
+}

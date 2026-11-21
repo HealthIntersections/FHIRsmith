@@ -4,6 +4,8 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const readline = require('readline');
 const chalk = require('chalk');
+const terminal = require('./terminal');
+const { buildTextIndex, TEXT_INDEX_TABLE } = require('./rxnorm-text-index');
 
 class RxNormModule extends BaseTerminologyModule {
   constructor() {
@@ -45,9 +47,19 @@ class RxNormModule extends BaseTerminologyModule {
       .option('-v, --version <version>', 'RxNorm version identifier')
       .option('-y, --yes', 'Skip confirmations')
       .option('--no-indexes', 'Skip index creation for faster import')
-      .option('--no-stems', 'Skip stem generation for faster import')
+      .option('--no-stems', 'Skip the text index (text filters won\'t work) for faster import')
       .action(async (options) => {
         await this.handleImportCommand({...globalOptions, ...options});
+      });
+
+    // Rebuild the text index of a database imported before it (rxnorm-text-index.js)
+    terminologyCommand
+      .command('upgrade-text-index')
+      .description('Rebuild the text index of an RxNorm database in place, without importing again')
+      .option('-d, --dest <file>', 'Database file to upgrade')
+      .option('--sab <sab>', 'The source whose names are indexed', 'RXNORM')
+      .action(async (options) => {
+        await this.handleUpgradeTextIndexCommand({...globalOptions, ...options});
       });
 
     // Validate command
@@ -98,7 +110,7 @@ class RxNormModule extends BaseTerminologyModule {
     } catch (error) {
       this.logError(`Import command failed: ${error.message}`);
       if (options.verbose) {
-        console.error(error.stack);
+        terminal.error(error.stack);
       }
       throw error;
     }
@@ -121,17 +133,17 @@ class RxNormModule extends BaseTerminologyModule {
   async confirmImport(config) {
     const inquirer = require('inquirer');
 
-    console.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
-    console.log(`  Source: ${chalk.white(config.source)}`);
-    console.log(`  Destination: ${chalk.white(config.dest)}`);
-    console.log(`  Version: ${chalk.white(config.version || 'Auto-detect')}`);
-    console.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
-    console.log(`  Create Stems: ${chalk.white(config.createStems ? 'Yes' : 'No')}`);
-    console.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
-    console.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
+    terminal.log(chalk.cyan(`\n📋 ${this.getName()} Import Configuration:`));
+    terminal.log(`  Source: ${chalk.white(config.source)}`);
+    terminal.log(`  Destination: ${chalk.white(config.dest)}`);
+    terminal.log(`  Version: ${chalk.white(config.version || 'Auto-detect')}`);
+    terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
+    terminal.log(`  Create Stems: ${chalk.white(config.createStems ? 'Yes' : 'No')}`);
+    terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
+    terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
 
     if (config.estimatedDuration) {
-      console.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
+      terminal.log(`  Estimated Duration: ${chalk.white(config.estimatedDuration)}`);
     }
 
     const { confirmed } = await inquirer.prompt({
@@ -161,18 +173,41 @@ class RxNormModule extends BaseTerminologyModule {
       const stats = await this.validateRxNormDirectory(options.source);
 
       this.logSuccess('Directory validation passed');
-      console.log(`  Required files found: ${stats.requiredFiles.length}/3`);
-      console.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
-      console.log(`  Estimated concepts: ${stats.estimatedConcepts.toLocaleString()}`);
-      console.log(`  Estimated relationships: ${stats.estimatedRelationships.toLocaleString()}`);
+      terminal.log(`  Required files found: ${stats.requiredFiles.length}/3`);
+      terminal.log(`  Optional files found: ${stats.optionalFiles.length}/3`);
+      terminal.log(`  Estimated concepts: ${stats.estimatedConcepts.toLocaleString()}`);
+      terminal.log(`  Estimated relationships: ${stats.estimatedRelationships.toLocaleString()}`);
 
       if (stats.warnings.length > 0) {
         this.logWarning('Validation warnings:');
-        stats.warnings.forEach(warning => console.log(`    ${warning}`));
+        stats.warnings.forEach(warning => terminal.log(`    ${warning}`));
       }
 
     } catch (error) {
       this.logError(`Validation failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Rebuild RXNTEXT in place (rxnorm-text-index.js), for a database imported before it. Run it
+   * while no server has the file open
+   */
+  async handleUpgradeTextIndexCommand(options) {
+    const dbPath = options.dest;
+    if (!dbPath || !fs.existsSync(dbPath)) {
+      this.logError(`Database not found: ${dbPath || '(give it with -d)'}`);
+      return;
+    }
+    this.logInfo(`Rebuilding the text index of ${dbPath}`);
+    const db = new sqlite3.Database(dbPath);
+    const start = Date.now();
+    try {
+      const rows = await buildTextIndex(db, options.sab || 'RXNORM', (msg) => terminal.log(`  ${msg}`));
+      this.logSuccess(`Text index rebuilt: ${rows.toLocaleString()} names, in ${((Date.now() - start) / 1000).toFixed(0)} s`);
+    } catch (error) {
+      this.logError(`Rebuilding the text index failed: ${error.message}`);
+    } finally {
+      await new Promise((resolve) => db.close(() => resolve()));
     }
   }
 
@@ -190,13 +225,13 @@ class RxNormModule extends BaseTerminologyModule {
       const stats = await this.getDatabaseStats(dbPath);
 
       this.logSuccess('Database status:');
-      console.log(`  Version: ${stats.version}`);
-      console.log(`  RXNCONSO Records: ${stats.rxnconsoCount.toLocaleString()}`);
-      console.log(`  RXNREL Records: ${stats.rxnrelCount.toLocaleString()}`);
-      console.log(`  RXNSTY Records: ${stats.rxnstyCount.toLocaleString()}`);
-      console.log(`  Stem Records: ${stats.stemCount.toLocaleString()}`);
-      console.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
-      console.log(`  Last Modified: ${stats.lastModified}`);
+      terminal.log(`  Version: ${stats.version}`);
+      terminal.log(`  RXNCONSO Records: ${stats.rxnconsoCount.toLocaleString()}`);
+      terminal.log(`  RXNREL Records: ${stats.rxnrelCount.toLocaleString()}`);
+      terminal.log(`  RXNSTY Records: ${stats.rxnstyCount.toLocaleString()}`);
+      terminal.log(`  Text index names: ${stats.stemCount.toLocaleString()}`);
+      terminal.log(`  Database Size: ${stats.sizeGB.toFixed(2)} GB`);
+      terminal.log(`  Last Modified: ${stats.lastModified}`);
 
     } catch (error) {
       this.logError(`Status check failed: ${error.message}`);
@@ -385,7 +420,7 @@ class RxNormModule extends BaseTerminologyModule {
       { name: 'rxnconsoCount', sql: 'SELECT COUNT(*) as count FROM RXNCONSO' },
       { name: 'rxnrelCount', sql: 'SELECT COUNT(*) as count FROM RXNREL' },
       { name: 'rxnstyCount', sql: 'SELECT COUNT(*) as count FROM RXNSTY' },
-      { name: 'stemCount', sql: 'SELECT COUNT(*) as count FROM RXNSTEMS' }
+      { name: 'stemCount', sql: `SELECT COUNT(*) as count FROM ${TEXT_INDEX_TABLE}` }
     ];
 
     let completed = 0;
@@ -428,15 +463,18 @@ class RxNormModule extends BaseTerminologyModule {
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rel ON RXNREL(REL)',
       'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela ON RXNREL(RELA)',
       'CREATE INDEX IF NOT EXISTS X_RXNSTY_2 ON RXNSTY(TUI)',
-      'CREATE INDEX IF NOT EXISTS idx_rxnstems_stem_cui ON RXNSTEMS(stem, CUI)',
-      'CREATE INDEX IF NOT EXISTS idx_rxnstems_cui_stem ON RXNSTEMS(CUI, stem)'
+      'CREATE INDEX IF NOT EXISTS idx_rxnsty_rxcui ON RXNSTY(RXCUI)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rxcui2 ON RXNREL(RXCUI2, SAB)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxcui1 ON RXNREL(RELA, RXCUI1)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnrel_rela_rxaui1 ON RXNREL(RELA, RXAUI1)',
+      'CREATE INDEX IF NOT EXISTS idx_rxnatomarchive_rxcui_sab ON RXNATOMARCHIVE(RXCUI, SAB)'
     ];
 
     return new Promise((resolve, reject) => {
       db.serialize(() => {
         indexes.forEach(sql => {
           db.run(sql, (err) => {
-            if (err) console.warn(`Index creation warning: ${err.message}`);
+            if (err) terminal.warn(`Index creation warning: ${err.message}`);
           });
         });
       });
@@ -472,7 +510,7 @@ class RxNormImporter {
   }
 
   async import() {
-    if (this.options.verbose) console.log('Starting RxNorm import...');
+    if (this.options.verbose) terminal.log('Starting RxNorm import...');
 
     // Ensure destination directory exists
     const destDir = path.dirname(this.destFile);
@@ -498,10 +536,12 @@ class RxNormImporter {
       await this.loadRXNSTY(db);
 
       if (this.options.createStems) {
-        await this.makeStems(db);
+        // the text index, from what's now in RXNCONSO (rxnorm-text-index.js)
+        this.updateProgress(0, 'Text Index');
+        await buildTextIndex(db, 'RXNORM', (msg) => this.options.verbose && terminal.log(msg));
       }
 
-      if (this.options.verbose) console.log('RxNorm import completed successfully');
+      if (this.options.verbose) terminal.log('RxNorm import completed successfully');
     } finally {
       await this.closeDatabase(db);
     }
@@ -528,7 +568,6 @@ class RxNormImporter {
       'DROP TABLE IF EXISTS RXNCONSO',
       'DROP TABLE IF EXISTS RXNREL',
       'DROP TABLE IF EXISTS RXNSTY',
-      'DROP TABLE IF EXISTS RXNSTEMS',
       'DROP TABLE IF EXISTS RXNATOMARCHIVE',
       'DROP TABLE IF EXISTS RXNCUI',
       'DROP TABLE IF EXISTS RXNSAB',
@@ -581,13 +620,6 @@ class RxNormImporter {
                                        MERGED_TO_RXCUI varchar(8)
        )`,
 
-      // Create RXNSTEMS table
-      `CREATE TABLE RXNSTEMS (
-                                 stem CHAR(20) NOT NULL,
-                                 CUI VARCHAR(8) NOT NULL,
-                                 PRIMARY KEY (stem, CUI)
-       )`,
-
       // Create RXNSAB table
       `CREATE TABLE RXNSAB (
                                VCUI varchar(8),
@@ -634,12 +666,12 @@ class RxNormImporter {
         tableSQL.forEach(sql => {
           db.run(sql, (err) => {
             if (err && this.options.verbose) {
-              console.warn(`Table creation warning: ${err.message}`);
+              terminal.warn(`Table creation warning: ${err.message}`);
             }
           });
         });
 
-        if (this.options.verbose) console.log('Database tables created');
+        if (this.options.verbose) terminal.log('Database tables created');
         resolve();
       });
     });
@@ -701,11 +733,27 @@ class RxNormImporter {
   async loadRRFFile(db, fileName, insertSQL, extractValues) {
     const filePath = path.join(this.sourceDir, fileName);
     if (!fs.existsSync(filePath)) {
-      if (this.options.verbose) console.warn(`File not found: ${fileName}`);
+      if (this.options.verbose) terminal.warn(`File not found: ${fileName}`);
       return;
     }
 
     this.updateProgress(0, `Loading ${fileName}`);
+
+    // Rows go in as multi-row INSERTs, as many rows per statement as fit in SQLite's 999
+    // parameters: one statement (and one callback) per row made the import slow, and slower
+    // still when the process is busy collecting a large heap - the test suite runs it in a
+    // jest process already holding GBs. OR IGNORE keeps the old per-row behaviour, where a row
+    // that broke a constraint was dropped and the rest of the file went in
+    const m = insertSQL.match(/^\s*INSERT\s+(?:OR\s+IGNORE\s+)?INTO([\s\S]*?VALUES\s*)(\([^)]*\))\s*$/i);
+    if (!m) {
+      throw new Error(`Unexpected insert statement for ${fileName}: ${insertSQL}`);
+    }
+    const head = 'INSERT OR IGNORE INTO' + m[1];
+    const group = m[2];
+    const cols = (group.match(/\?/g) || []).length;
+    const batchRows = Math.max(1, Math.floor(999 / cols));
+    const sqlFor = (n) => head + new Array(n).fill(group).join(', ');
+    const fullSql = sqlFor(batchRows);
 
     const rl = readline.createInterface({
       input: fs.createReadStream(filePath),
@@ -713,151 +761,89 @@ class RxNormImporter {
     });
 
     return new Promise((resolve, reject) => {
-      db.serialize(() => {
-        db.run('BEGIN TRANSACTION');
+      // serialized: BEGIN, every batch, and COMMIT run in the order they are queued
+      db.serialize();
+      db.run('BEGIN TRANSACTION');
 
-        const stmt = db.prepare(insertSQL);
-        let lineCount = 0;
-        let processedCount = 0;
-        let errorCount = 0;
+      let lineCount = 0;
+      let processedCount = 0;
+      let errorCount = 0;
+      let pending = [];
+      let pendingRows = 0;
 
-        rl.on('line', (line) => {
-          lineCount++;
-
-          const items = line.split('|');
-          if (items.length === 0) return;
-
-          try {
-            const values = extractValues(items);
-            stmt.run(values, (err) => {
-              if (err && err.code !== 'SQLITE_CONSTRAINT') {
-                errorCount++;
-                if (this.options.verbose && errorCount <= 10) {
-                  console.warn(`Error processing line ${lineCount} in ${fileName}: ${err.message}`);
-                }
-              }
-            });
-            processedCount++;
-
-            if (processedCount % 1000 === 0) {
-              this.updateProgress(1000);
-            }
-          } catch (error) {
+      const flush = () => {
+        if (pendingRows === 0) {
+          return;
+        }
+        const rows = pendingRows;
+        db.run(rows === batchRows ? fullSql : sqlFor(rows), pending, (err) => {
+          if (err) {
             errorCount++;
             if (this.options.verbose && errorCount <= 10) {
-              console.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
+              terminal.warn(`Error loading ${rows} rows of ${fileName}: ${err.message}`);
             }
           }
         });
+        pending = [];
+        pendingRows = 0;
+      };
 
-        rl.on('close', () => {
-          stmt.finalize();
-          db.run('COMMIT', (err) => {
-            if (err) reject(err);
-            else {
-              // Update progress for remaining records
-              const remaining = processedCount % 1000;
-              if (remaining > 0) {
-                this.updateProgress(remaining);
-              }
+      rl.on('line', (line) => {
+        lineCount++;
 
-              if (this.options.verbose) {
-                console.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
-              }
-              resolve();
-            }
-          });
-        });
+        const items = line.split('|');
+        if (items.length === 0) return;
 
-        rl.on('error', reject);
-      });
-    });
-  }
-
-  async makeStems(db) {
-    this.updateProgress(0, 'Generating Stems');
-
-    if (this.options.verbose) console.log('Generating word stems...');
-
-    // Simple English stemmer implementation
-    var natural = require('natural');
-    const stems = new Map();
-
-    // Get all RXNORM concepts
-    return new Promise((resolve, reject) => {
-      db.all("SELECT RXCUI, STR FROM RXNCONSO WHERE SAB = 'RXNORM'", (err, rows) => {
-        if (err) return reject(err);
-
-        // Process each concept and generate stems
-        rows.forEach(row => {
-          const words = this.extractWords(row.STR);
-          words.forEach(word => {
-            const stem = natural.PorterStemmer.stem(word.toLowerCase());
-            if (stem.length > 0 && stem.length <= 20) {
-              if (!stems.has(stem)) {
-                stems.set(stem, new Set());
-              }
-              stems.get(stem).add(row.RXCUI);
-            }
-          });
-        });
-
-        // Insert stems into database
-        db.serialize(() => {
-          db.run('BEGIN TRANSACTION');
-          const stmt = db.prepare('INSERT OR IGNORE INTO RXNSTEMS (stem, CUI) VALUES (?, ?)');
-
-          let totalInserts = 0;
-          let processedStems = 0;
-
-          for (const [stem, cuis] of stems) {
-            for (const cui of cuis) {
-              stmt.run([stem, cui]);
-              totalInserts++;
-
-              if (totalInserts % 1000 === 0) {
-                this.updateProgress(1000);
-              }
-            }
-            processedStems++;
+        try {
+          const values = extractValues(items);
+          for (let i = 0; i < cols; i++) {
+            pending.push(values[i] === undefined ? null : values[i]);
           }
+          pendingRows++;
+          if (pendingRows === batchRows) {
+            flush();
+          }
+          processedCount++;
 
-          stmt.finalize();
-          db.run('COMMIT', (err) => {
-            if (err) reject(err);
-            else {
-              // Update progress for remaining inserts
-              const remaining = totalInserts % 1000;
-              if (remaining > 0) {
-                this.updateProgress(remaining);
-              }
+          if (processedCount % 1000 === 0) {
+            this.updateProgress(1000);
+          }
+        } catch (error) {
+          errorCount++;
+          if (this.options.verbose && errorCount <= 10) {
+            terminal.warn(`Error processing line ${lineCount} in ${fileName}: ${error.message}`);
+          }
+        }
+      });
 
-              if (this.options.verbose) {
-                console.log(`  Generated ${totalInserts} stem entries from ${processedStems} unique stems`);
-              }
-              resolve();
+      rl.on('close', () => {
+        flush();
+        db.run('COMMIT', (err) => {
+          if (err) reject(err);
+          else {
+            // Update progress for remaining records
+            const remaining = processedCount % 1000;
+            if (remaining > 0) {
+              this.updateProgress(remaining);
             }
-          });
+
+            if (this.options.verbose) {
+              terminal.log(`  Loaded ${processedCount} records from ${fileName}${errorCount > 0 ? ` (${errorCount} errors)` : ''}`);
+            }
+            resolve();
+          }
         });
       });
-    });
-  }
 
-  extractWords(text) {
-    // Extract words from text, removing punctuation and numbers
-    return text
-      .toLowerCase()
-      .replace(/[^\w\s]/g, ' ')
-      .split(/\s+/)
-      .filter(word => word.length > 2 && !/^\d+$/.test(word))
-      .filter(word => word.match(/^[a-z]/));
+      rl.on('error', reject);
+    });
   }
 
   async closeDatabase(db) {
     return new Promise((resolve) => {
       db.close((err) => {
         if (err && this.options.verbose) {
-          console.error('Error closing database:', err);
+          terminal.error('Error closing database:', err);
         }
         resolve();
       });

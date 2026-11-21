@@ -9,7 +9,7 @@ const {bundleFromR5, bundleToR5} = require("./xv-bundle");
 
 
 function convertResourceToR5(data, sourceVersion) {
-  if (sourceVersion == "5.0" || !data.resourceType) {
+  if (!data || sourceVersion == "5.0" || !data.resourceType) {
     return data;
   }
   switch (data.resourceType) {
@@ -26,7 +26,7 @@ function convertResourceToR5(data, sourceVersion) {
 }
 
 function convertResourceFromR5(data, targetVersion) {
-  if (targetVersion == "5.0" || !data.resourceType) {
+  if (!data || targetVersion == "5.0" || !data.resourceType) {
     return data;
   }
   switch (data.resourceType) {

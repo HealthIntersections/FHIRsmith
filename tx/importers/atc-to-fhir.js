@@ -1,5 +1,6 @@
 const fs = require('fs');
 const { XMLParser } = require('fast-xml-parser');
+const terminal = require('./terminal');
 
 // Configuration
 const ATC_FILE = process.argv[2] || '2025_ATC.xml';
@@ -147,21 +148,21 @@ function buildConcept(atcRow, dddMap) {
 
 // Main conversion function
 function convertATCtoFHIR(atcFile, dddFile) {
-    console.log(`Parsing ${atcFile}...`);
+    terminal.log(`Parsing ${atcFile}...`);
     const atcParsed = parseXML(atcFile);
     const atcRows = extractRows(atcParsed);
-    console.log(`  Found ${atcRows.length} ATC codes`);
+    terminal.log(`  Found ${atcRows.length} ATC codes`);
     
-    console.log(`Parsing ${dddFile}...`);
+    terminal.log(`Parsing ${dddFile}...`);
     const dddParsed = parseXML(dddFile);
     const dddRows = extractRows(dddParsed);
-    console.log(`  Found ${dddRows.length} DDD entries`);
+    terminal.log(`  Found ${dddRows.length} DDD entries`);
     
-    console.log('Building DDD lookup map...');
+    terminal.log('Building DDD lookup map...');
     const dddMap = buildDDDMap(dddRows);
-    console.log(`  ${dddMap.size} codes have DDD data`);
+    terminal.log(`  ${dddMap.size} codes have DDD data`);
     
-    console.log('Building FHIR CodeSystem...');
+    terminal.log('Building FHIR CodeSystem...');
     
     const codeSystem = {
         resourceType: 'CodeSystem',
@@ -256,7 +257,7 @@ function convertATCtoFHIR(atcFile, dddFile) {
                 parent.concept.push(concept);
             } else {
                 // Parent not found, add to root (shouldn't happen with valid data)
-                console.warn(`Warning: Parent ${parentCode} not found for ${code}`);
+                terminal.warn(`Warning: Parent ${parentCode} not found for ${code}`);
                 rootConcepts.push(concept);
             }
         }
@@ -265,7 +266,7 @@ function convertATCtoFHIR(atcFile, dddFile) {
     codeSystem.concept = rootConcepts;
     codeSystem.count = conceptMap.size;
     
-    console.log(`  Generated ${conceptMap.size} concepts in nested hierarchy`);
+    terminal.log(`  Generated ${conceptMap.size} concepts in nested hierarchy`);
     
     return codeSystem;
 }
@@ -274,19 +275,19 @@ function convertATCtoFHIR(atcFile, dddFile) {
 try {
     const codeSystem = convertATCtoFHIR(ATC_FILE, DDD_FILE);
     
-    console.log(`Writing to ${OUTPUT_FILE}...`);
+    terminal.log(`Writing to ${OUTPUT_FILE}...`);
     fs.writeFileSync(OUTPUT_FILE, JSON.stringify(codeSystem, null, 2));
-    console.log('Done!');
+    terminal.log('Done!');
 
     const totalConcepts = countConcepts(codeSystem.concept);
     const withDDD = countWithDDD(codeSystem.concept);
-    console.log(`\nStatistics:`);
-    console.log(`  Total concepts: ${totalConcepts}`);
-    console.log(`  Top-level concepts: ${codeSystem.concept.length}`);
-    console.log(`  Concepts with DDD data: ${withDDD}`);
+    terminal.log(`\nStatistics:`);
+    terminal.log(`  Total concepts: ${totalConcepts}`);
+    terminal.log(`  Top-level concepts: ${codeSystem.concept.length}`);
+    terminal.log(`  Concepts with DDD data: ${withDDD}`);
     
 } catch (error) {
-    console.error('Error:', error.message);
+    terminal.error('Error:', error.message);
     process.exit(1);
 }
 

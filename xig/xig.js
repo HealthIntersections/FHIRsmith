@@ -16,20 +16,33 @@ const zlib = require('zlib');
 const htmlServer = require('../library/html-server');
 const folders = require('../library/folder-setup');
 const escape = require('escape-html');
+const { guarded } = require('../library/sqlite-utilities');
+const { SqlitePool } = require('../library/sqlite-pool');
 
 const Logger = require('../library/logger');
 const {describeCron} = require("../library/cron-utilities");
+const rateLimit = require('express-rate-limit');
+const auth = require('../library/auth');
+const parse5 = require('parse5');
+const { checkNarrative } = require('../library/narrative-check');
 const xigLog = Logger.getInstance().child({ module: 'xig' });
 
 const router = express.Router();
 
 // Configuration
-const XIG_DB_URL = 'http://fhir.org/guides/stats/xig.db';
+// https: the database is trusted content (its HTML is shown as is), so it must come from fhir.org
+const XIG_DB_URL = 'https://fhir.org/guides/stats/xig.db';
 const XIG_DB_PATH = folders.filePath('xig', 'xig.db');
 const TEMPLATE_PATH = path.join(__dirname, 'xig-template.html');
 
 // Global database instance
 let xigDb = null;
+
+// The most rows any list returns at once (HTML, JSON or CSV); the rest are paged by offset
+const PAGE_SIZE = 200;
+// Resources bigger than this (uncompressed JSON) are not shown inline on their page - building
+// and rendering them blocks the server - but they are available as JSON (_fmt=json)
+const MAX_INLINE_RESOURCE = 1024 * 1024;
 
 // Request tracking
 let requestStats = {
@@ -53,6 +66,9 @@ let cacheLoadInProgress = false;
 
 // Update history - tracks every download attempt for diagnostics
 const MAX_UPDATE_HISTORY = 20;
+// The daily download runs at 02:00 local time
+const UPDATE_CRON = '0 2 * * *';
+const UPDATE_HOUR = 2;
 let updateHistory = [];
 let updateInProgress = false;
 
@@ -97,11 +113,139 @@ function validateExternalUrl(url) {
   }
 }
 
-// Secure SQL query building with parameterized queries
-function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
+// The columns that say which FHIR versions a resource is for (also the values of ver)
+const VERSION_COLUMNS = ['R2', 'R2B', 'R3', 'R4', 'R4B', 'R5', 'R6'];
 
-  let baseQuery = `
+/**
+ * One request parameter as a string. Express makes a repeated parameter (?realm=a&realm=b) an
+ * array, and can make a bracketed one (?realm[x]=a) an object: the first value is used, and
+ * anything else is treated as not given.
+ */
+function queryValue(v) {
+  if (Array.isArray(v)) {
+    v = v[0];
+  }
+  return typeof v === 'string' ? v : '';
+}
+
+/**
+ * The WHERE clause for the resource list filters (realm, auth, ver, type, rt, text, pkg,
+ * onlyUsed), with a ? for every value that comes from the request, and those values in order.
+ * Nothing from the request is put in the SQL itself: only fixed SQL chosen by it (ver, type).
+ * The list, its count and the summary statistics all use this, so they always agree.
+ *
+ * @param {Object} queryParams
+ * @returns {{where: string, params: Array}} where starts with WHERE (WHERE 1=1 when nothing is filtered)
+ */
+function buildResourceFilter(queryParams) {
+  const realm = queryValue(queryParams.realm);
+  const auth = queryValue(queryParams.auth);
+  const ver = queryValue(queryParams.ver);
+  const type = queryValue(queryParams.type);
+  const rt = queryValue(queryParams.rt);
+  const text = queryValue(queryParams.text);
+  const pkg = queryValue(queryParams.pkg);
+  const onlyUsed = queryValue(queryParams.onlyUsed);
+
+  const conditions = [];
+  const params = [];
+
+  if (realm) {
+    conditions.push('AND realm = ?');
+    params.push(realm);
+  }
+
+  if (auth) {
+    conditions.push('AND authority = ?');
+    params.push(auth);
+  }
+
+  // a column name, so only one of the known ones
+  if (VERSION_COLUMNS.includes(ver)) {
+    conditions.push(`AND ${ver} = 1`);
+  }
+
+  switch (type) {
+    case 'cs': // CodeSystem
+      conditions.push("AND ResourceType = 'CodeSystem'");
+      break;
+    case 'rp': // Resource Profiles
+      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
+      if (rt && hasCachedValue('profileResources', rt)) {
+        conditions.push('AND Type = ?');
+        params.push(rt);
+      }
+      break;
+    case 'dp': // Datatype Profiles
+      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
+      if (rt && hasCachedValue('profileTypes', rt)) {
+        conditions.push('AND Type = ?');
+        params.push(rt);
+      }
+      break;
+    case 'lm': // Logical Models
+      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
+      break;
+    case 'ext': // Extensions
+      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
+      if (rt && hasCachedValue('extensionContexts', rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    case 'vs': // ValueSets
+      conditions.push("AND ResourceType = 'ValueSet'");
+      if (rt && hasTerminologySource(rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    case 'cm': // ConceptMaps
+      conditions.push("AND ResourceType = 'ConceptMap'");
+      if (rt && hasTerminologySource(rt)) {
+        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
+        params.push(rt);
+      }
+      break;
+    default:
+      // No specific type selected
+      if (rt && hasCachedValue('resourceTypes', rt)) {
+        conditions.push('AND ResourceType = ?');
+        params.push(rt);
+      }
+      break;
+  }
+
+  // Text search: one FTS phrase, so the text is searched for as written (a " in it is doubled,
+  // which is how a phrase holds one, so it can't end the phrase and add query syntax)
+  if (text) {
+    const ftsText = text.replace(/"/g, '""');
+    if (type === 'cs') {
+      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
+                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
+      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
+    } else {
+      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
+      params.push(`{Description Narrative} : "${ftsText}"`);
+    }
+  }
+
+  // Package filter - packageId#version containing the text, as written (% and _ are not wildcards)
+  if (pkg) {
+    conditions.push("AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || '#' || Version) LIKE ? ESCAPE '\\')");
+    params.push(`%${pkg.replace(/[\\%_]/g, c => '\\' + c)}%`);
+  }
+
+  if (onlyUsed === 'true') {
+    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
+  }
+
+  return { where: ['WHERE 1=1', ...conditions].join(' '), params };
+}
+
+function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
+  const { where, params } = buildResourceFilter(queryParams);
+  const query = `
       SELECT
           ResourceKey, ResourceType, Type, Kind, Description, PackageKey,
           Realm, Authority, R2, R2B, R3, R4, R4B, R5, R6,
@@ -109,246 +253,14 @@ function buildSecureResourceQuery(queryParams, offset = 0, limit = 50) {
           Supplements, Details, FMM, WG, StandardsStatus, Web,
           (SELECT COUNT(*) FROM DependencyList WHERE TargetKey = Resources.ResourceKey) AS UsageCount
       FROM Resources
-      WHERE 1=1
-  `;
-
-  const conditions = [];
-  const params = [];
-
-  // Realm filter
-  if (realm && realm !== '') {
-    conditions.push('AND realm = ?');
-    params.push(realm);
-  }
-
-  // Authority filter
-  if (auth && auth !== '') {
-    conditions.push('AND authority = ?');
-    params.push(auth);
-  }
-
-  // Version filter
-  if (ver) {
-    switch (ver) {
-      case 'R2':
-        conditions.push('AND R2 = 1');
-        break;
-      case 'R2B':
-        conditions.push('AND R2B = 1');
-        break;
-      case 'R3':
-        conditions.push('AND R3 = 1');
-        break;
-      case 'R4':
-        conditions.push('AND R4 = 1');
-        break;
-      case 'R4B':
-        conditions.push('AND R4B = 1');
-        break;
-      case 'R5':
-        conditions.push('AND R5 = 1');
-        break;
-      case 'R6':
-        conditions.push('AND R6 = 1');
-        break;
-    }
-  }
-
-  // Type-specific filters
-  switch (type) {
-    case 'cs': // CodeSystem
-      conditions.push("AND ResourceType = 'CodeSystem'");
-      break;
-
-    case 'rp': // Resource Profiles
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-
-    case 'dp': // Datatype Profiles
-      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-
-    case 'lm': // Logical Models
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
-      break;
-
-    case 'ext': // Extensions
-      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    case 'vs': // ValueSets
-      conditions.push("AND ResourceType = 'ValueSet'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    case 'cm': // ConceptMaps
-      conditions.push("AND ResourceType = 'ConceptMap'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-
-    default:
-      // No specific type selected
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        conditions.push('AND ResourceType = ?');
-        params.push(rt);
-      }
-      break;
-  }
-
-  // Text search filter
-  if (text && text !== '') {
-    const ftsText = text.replace(/"/g, '""');
-    if (type === 'cs') {
-      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
-                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
-      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
-    } else {
-      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
-      params.push(`{Description Narrative} : "${ftsText}"`);
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    conditions.push('AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || \'#\' || Version) LIKE ?)');
-    params.push(`%${pkg}%`);
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
-  }
-
-  // Build final query
-  const fullQuery = baseQuery + ' ' + conditions.join(' ') + ' ORDER BY ResourceType, Type, Description LIMIT ? OFFSET ?';
-  params.push(limit, offset);
-
-  return { query: fullQuery, params };
+      ${where}
+      ORDER BY ResourceType, Type, Description LIMIT ? OFFSET ?`;
+  return { query, params: [...params, limit, offset] };
 }
 
 function buildSecureResourceCountQuery(queryParams) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
-
-  let baseQuery = 'SELECT COUNT(*) as total FROM Resources WHERE 1=1';
-  const conditions = [];
-  const params = [];
-
-  // Same conditions as main query but for counting
-  if (realm && realm !== '') {
-    conditions.push('AND realm = ?');
-    params.push(realm);
-  }
-
-  if (auth && auth !== '') {
-    conditions.push('AND authority = ?');
-    params.push(auth);
-  }
-
-  if (ver) {
-    switch (ver) {
-      case 'R2': conditions.push('AND R2 = 1'); break;
-      case 'R2B': conditions.push('AND R2B = 1'); break;
-      case 'R3': conditions.push('AND R3 = 1'); break;
-      case 'R4': conditions.push('AND R4 = 1'); break;
-      case 'R4B': conditions.push('AND R4B = 1'); break;
-      case 'R5': conditions.push('AND R5 = 1'); break;
-      case 'R6': conditions.push('AND R6 = 1'); break;
-    }
-  }
-
-  switch (type) {
-    case 'cs':
-      conditions.push("AND ResourceType = 'CodeSystem'");
-      break;
-    case 'rp':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'resource'");
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-    case 'dp':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND (kind = 'complex-type' OR kind = 'primitive-type')");
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        conditions.push('AND Type = ?');
-        params.push(rt);
-      }
-      break;
-    case 'lm':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND kind = 'logical'");
-      break;
-    case 'ext':
-      conditions.push("AND ResourceType = 'StructureDefinition' AND Type = 'Extension'");
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 2 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    case 'vs':
-      conditions.push("AND ResourceType = 'ValueSet'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    case 'cm':
-      conditions.push("AND ResourceType = 'ConceptMap'");
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM Categories WHERE Mode = 1 AND Code = ?)');
-        params.push(rt);
-      }
-      break;
-    default:
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        conditions.push('AND ResourceType = ?');
-        params.push(rt);
-      }
-      break;
-  }
-
-  if (text && text !== '') {
-    const ftsText = text.replace(/"/g, '""');
-    if (type === 'cs') {
-      conditions.push(`AND (ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)
-                    OR ResourceKey IN (SELECT ResourceKey FROM CodeSystemFTS WHERE CodeSystemFTS MATCH ?))`);
-      params.push(`{Description Narrative} : "${ftsText}"`, `{Display Definition} : "${ftsText}"`);
-    } else {
-      conditions.push('AND ResourceKey IN (SELECT ResourceKey FROM ResourceFTS WHERE ResourceFTS MATCH ?)');
-      params.push(`{Description Narrative} : "${ftsText}"`);
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    conditions.push('AND PackageKey IN (SELECT PackageKey FROM Packages WHERE (Id || \'#\' || Version) LIKE ?)');
-    params.push(`%${pkg}%`);
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    conditions.push('AND EXISTS (SELECT 1 FROM DependencyList WHERE TargetKey = Resources.ResourceKey)');
-  }
-
-  const fullQuery = baseQuery + ' ' + conditions.join(' ');
-  return { query: fullQuery, params };
+  const { where, params } = buildResourceFilter(queryParams);
+  return { query: `SELECT COUNT(*) as total FROM Resources ${where}`, params };
 }
 
 // Template Functions
@@ -397,8 +309,7 @@ async function gatherPageStatistics() {
       downloadDate: downloadDate,
       totalResources: tableCounts.resources || 0,
       totalPackages: tableCounts.packages || 0,
-      processingTime: processingTime,
-      version: getMetadata('fhir-version') || '4.0.1'
+      processingTime: processingTime
     };
 
   } catch (error) {
@@ -411,8 +322,7 @@ async function gatherPageStatistics() {
       downloadDate: 'Error',
       totalResources: 0,
       totalPackages: 0,
-      processingTime: processingTime,
-      version: '4.0.1'
+      processingTime: processingTime
     };
   }
 }
@@ -463,141 +373,6 @@ function buildContentHtml(contentData) {
   return html;
 }
 
-// SQL Filter Building Functions
-
-function sqlEscapeString(str) {
-  if (!str) return '';
-  // Escape single quotes for SQL
-  return str.replace(/'/g, "''");
-}
-
-function buildSqlFilter(queryParams) {
-  const { realm, auth, ver, type, rt, text, pkg, onlyUsed } = queryParams;
-  let filter = '';
-
-  // Realm filter
-  if (realm && realm !== '') {
-    filter += ` and realm = '${sqlEscapeString(realm)}'`;
-  }
-
-  // Authority filter
-  if (auth && auth !== '') {
-    filter += ` and authority = '${sqlEscapeString(auth)}'`;
-  }
-
-  // Version filter - check specific version columns
-  if (ver) {
-    switch (ver) {
-      case 'R2':
-        filter += ' and R2 = 1';
-        break;
-      case 'R2B':
-        filter += ' and R2B = 1';
-        break;
-      case 'R3':
-        filter += ' and R3 = 1';
-        break;
-      case 'R4':
-        filter += ' and R4 = 1';
-        break;
-      case 'R4B':
-        filter += ' and R4B = 1';
-        break;
-      case 'R5':
-        filter += ' and R5 = 1';
-        break;
-      case 'R6':
-        filter += ' and R6 = 1';
-        break;
-    }
-  }
-
-  // Type-specific filters
-  switch (type) {
-    case 'cs': // CodeSystem
-      filter += " and ResourceType = 'CodeSystem'";
-      break;
-
-    case 'rp': // Resource Profiles
-      filter += " and ResourceType = 'StructureDefinition' and kind = 'resource'";
-      if (rt && rt !== '' && hasCachedValue('profileResources', rt)) {
-        filter += ` and Type = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-
-    case 'dp': // Datatype Profiles
-      filter += " and ResourceType = 'StructureDefinition' and (kind = 'complex-type' or kind = 'primitive-type')";
-      if (rt && rt !== '' && hasCachedValue('profileTypes', rt)) {
-        filter += ` and Type = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-
-    case 'lm': // Logical Models
-      filter += " and ResourceType = 'StructureDefinition' and kind = 'logical'";
-      break;
-
-    case 'ext': // Extensions
-      filter += " and ResourceType = 'StructureDefinition' and (Type = 'Extension')";
-      if (rt && rt !== '' && hasCachedValue('extensionContexts', rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 2 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    case 'vs': // ValueSets
-      filter += " and ResourceType = 'ValueSet'";
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 1 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    case 'cm': // ConceptMaps
-      filter += " and ResourceType = 'ConceptMap'";
-      if (rt && rt !== '' && hasTerminologySource(rt)) {
-        filter += ` and ResourceKey in (Select ResourceKey from Categories where Mode = 1 and Code = '${sqlEscapeString(rt)}')`;
-      }
-      break;
-
-    default:
-      // No specific type selected - handle rt parameter for general resource filtering
-      if (rt && rt !== '' && hasCachedValue('resourceTypes', rt)) {
-        filter += ` and ResourceType = '${sqlEscapeString(rt)}'`;
-      }
-      break;
-  }
-
-  // Text search filter
-  if (text && text !== '') {
-    const escapedText = sqlEscapeString(text);
-    if (type === 'cs') {
-      // Special handling for CodeSystems - search both resource and CodeSystem-specific fields
-      filter += ` and (ResourceKey in (select ResourceKey from ResourceFTS where Description match '"${escapedText}"' or Narrative match '"${escapedText}"') ` +
-        `or ResourceKey in (select ResourceKey from CodeSystemFTS where Display match '"${escapedText}"' or Definition match '"${escapedText}"'))`;
-    } else {
-      // Standard resource text search
-      filter += ` and ResourceKey in (select ResourceKey from ResourceFTS where Description match '"${escapedText}"' or Narrative match '"${escapedText}"')`;
-    }
-  }
-
-  // Package filter - matches packageId#version containing the search string
-  if (pkg && pkg !== '') {
-    const escapedPkg = sqlEscapeString(pkg);
-    filter += ` and PackageKey in (select PackageKey from Packages where (Id || '#' || Version) like '%${escapedPkg}%')`;
-  }
-
-  // Only used filter
-  if (onlyUsed === 'true') {
-    filter += ` and exists (select 1 from DependencyList where TargetKey = Resources.ResourceKey)`;
-  }
-
-  // Convert to proper WHERE clause
-  if (filter !== '') {
-    // Remove the first " and " and prepend "WHERE "
-    filter = 'WHERE ' + filter.substring(4);
-  }
-
-  return filter;
-}
-
 // Helper function to check if a terminology source exists
 // This is a placeholder - you might need to implement this based on your data
 function hasTerminologySource(sourceCode) {
@@ -606,82 +381,74 @@ function hasTerminologySource(sourceCode) {
   return hasCachedValue('txSources', sourceCode);
 }
 
-function buildResourceListQuery(queryParams, offset = 0, limit = 50) {
-  const whereClause = buildSqlFilter(queryParams);
-
-  // Build the complete SQL query
-  let sql = `
-      SELECT
-          ResourceKey,
-          ResourceType,
-          Type,
-          Kind,
-          Description,
-          PackageKey,
-          Realm,
-          Authority,
-          R2, R2B, R3, R4, R4B, R5, R6,
-          Id,
-          Url,
-          Version,
-          Status,
-          Date,
-          Name,
-          Title,
-          Content,
-          Supplements,
-          Details,
-          FMM,
-          WG,
-          StandardsStatus,
-          Web,
-          (SELECT COUNT(*) FROM DependencyList WHERE TargetKey = Resources.ResourceKey) AS UsageCount
-      FROM Resources
-          ${whereClause}
-      ORDER BY ResourceType, Type, Description
-          LIMIT ${limit} OFFSET ${offset}
-  `;
-
-  return sql.trim();
-}
-
 // Resource List Table Functions
 
-function buildPaginationControls(count, offset, baseUrl, queryParams) {
-  if (count <= 200) {
-    return ''; // No pagination needed
+// Start / Prev / Next links for a list of count rows shown PAGE_SIZE at a time from offset.
+// urlFor(offset) gives the link to the page starting at offset. Nothing when it fits on one page
+function buildPager(count, offset, urlFor) {
+  if (count <= PAGE_SIZE) {
+    return '';
   }
 
   let html = '<p>';
-
-  // Start link
-  if (offset > 200) {
-    const startParams = { ...queryParams };
-    delete startParams.offset; // Remove offset to go to start
-    const startUrl = buildPaginationUrl(baseUrl, startParams);
-    html += `<a href="${startUrl}">Start</a> `;
+  if (offset > PAGE_SIZE) {
+    html += `<a href="${escape(urlFor(0))}">Start</a> `;
   }
-
-  // Prev link
-  if (offset >= 200) {
-    const prevParams = { ...queryParams, offset: (offset - 200).toString() };
-    const prevUrl = buildPaginationUrl(baseUrl, prevParams);
-    html += `<a href="${prevUrl}">Prev</a> `;
+  if (offset >= PAGE_SIZE) {
+    html += `<a href="${escape(urlFor(offset - PAGE_SIZE))}">Prev</a> `;
   }
-
-  // Current range
-  const endRange = Math.min(offset + 200, count);
-  html += `<b>Rows ${offset} - ${endRange}</b>`;
-
-  // Next link (only if there are more results)
-  if (offset + 200 < count) {
-    const nextParams = { ...queryParams, offset: (offset + 200).toString() };
-    const nextUrl = buildPaginationUrl(baseUrl, nextParams);
-    html += ` <a href="${nextUrl}">Next</a>`;
+  html += `<b>Rows ${offset} - ${Math.min(offset + PAGE_SIZE, count)} of ${count.toLocaleString()}</b>`;
+  if (offset + PAGE_SIZE < count) {
+    html += ` <a href="${escape(urlFor(offset + PAGE_SIZE))}">Next</a>`;
   }
-
   html += '</p>';
   return html;
+}
+
+function buildPaginationControls(count, offset, baseUrl, queryParams) {
+  return buildPager(count, offset, o => {
+    const params = { ...queryParams, offset: o ? o.toString() : '' };
+    return buildPaginationUrl(baseUrl, params);
+  });
+}
+
+// An offset from the request: a whole number, 0 or more
+function parseOffset(value) {
+  const n = parseInt(Array.isArray(value) ? value[0] : value, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// The Link header (RFC 8288) for a paged JSON or CSV list: first, prev, next and last pages.
+// Empty when it all fits on one page
+function buildPageLinks(count, offset, urlFor) {
+  if (count <= PAGE_SIZE && offset === 0) {
+    return '';
+  }
+  const links = [`<${urlFor(0)}>; rel="first"`];
+  if (offset > 0) {
+    links.push(`<${urlFor(Math.max(0, offset - PAGE_SIZE))}>; rel="prev"`);
+  }
+  if (offset + PAGE_SIZE < count) {
+    links.push(`<${urlFor(offset + PAGE_SIZE)}>; rel="next"`);
+  }
+  const last = count > 0 ? Math.floor((count - 1) / PAGE_SIZE) * PAGE_SIZE : 0;
+  links.push(`<${urlFor(last)}>; rel="last"`);
+  return links.join(', ');
+}
+
+// How many resources the list's filter matches
+function countResources(queryParams) {
+  const { query, params } = buildSecureResourceCountQuery(queryParams);
+  return new Promise((resolve, reject) => {
+    if (!xigDb) {
+      resolve(0);
+      return;
+    }
+    xigDb.get(query, params, guarded(reject, (err, row) => {
+      if (err) reject(err);
+      else resolve(row ? row.total : 0);
+    }));
+  });
 }
 
 function buildPaginationUrl(baseUrl, params) {
@@ -748,7 +515,7 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
     parts.push(buildPaginationControls(resourceCount, offset, '/xig', queryParams));
 
     // Get resource data with pagination
-    const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, 200);
+    const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, PAGE_SIZE);
 
     // Add SQL query as HTML comment for debugging/transparency
     const escapedQuery = resourceQuery
@@ -823,10 +590,10 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
     parts.push('</tr>');
 
     const resourceRows = await new Promise((resolve, reject) => {
-      xigDb.all(resourceQuery, qp, (err, rows) => {
+      xigDb.all(resourceQuery, qp, guarded(reject, (err, rows) => {
         if (err) reject(err);
         else resolve(rows || []);
-      });
+      }));
     });
 
     // Determine resource type prefix for links
@@ -966,18 +733,18 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
   }
 }
 
-async function fetchResourceRows(queryParams, offset = 0, limit = 200) {
+async function fetchResourceRows(queryParams, offset = 0, limit = PAGE_SIZE) {
   const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, limit);
   return new Promise((resolve, reject) => {
-    xigDb.all(resourceQuery, qp, (err, rows) => {
+    xigDb.all(resourceQuery, qp, guarded(reject, (err, rows) => {
       if (err) reject(err);
       else resolve(rows || []);
-    });
+    }));
   });
 }
 
 function rowToObject(row, queryParams) {
-  const { ver, realm, auth, type, rt } = queryParams;
+  const { type } = queryParams;
   const packageObj = getPackage(row.PackageKey);
 
   const obj = {
@@ -1028,13 +795,15 @@ function rowToObject(row, queryParams) {
   return obj;
 }
 
-async function buildResourceJson(queryParams) {
+// One page (PAGE_SIZE rows from offset) of the list as JSON
+async function buildResourceJson(queryParams, offset = 0) {
   if (!xigDb) return [];
-  const rows = await fetchResourceRows(queryParams, 0, 1000000);
+  const rows = await fetchResourceRows(queryParams, offset, PAGE_SIZE);
   return rows.map(row => rowToObject(row, queryParams));
 }
 
-async function buildResourceCsv(queryParams) {
+// One page (PAGE_SIZE rows from offset) of the list as CSV
+async function buildResourceCsv(queryParams, offset = 0) {
   if (!xigDb) return '';
   const { type, ver, realm, auth, rt } = queryParams;
 
@@ -1062,7 +831,7 @@ async function buildResourceCsv(queryParams) {
       ? `"${s.replace(/"/g, '""')}"` : s;
   };
 
-  const rows = await fetchResourceRows(queryParams, 0, 1000000);
+  const rows = await fetchResourceRows(queryParams, offset, PAGE_SIZE);
   const lines = [headers.join(',')];
 
   for (const row of rows) {
@@ -1093,7 +862,7 @@ async function buildResourceCsv(queryParams) {
 
 async function buildSummaryStats(queryParams, baseUrl) {
   const { ver, auth, realm } = queryParams;
-  const currentFilter = buildSqlFilter(queryParams);
+  const { where, params } = buildResourceFilter(queryParams);
   let html = '';
 
   if (!xigDb) {
@@ -1110,18 +879,16 @@ async function buildSummaryStats(queryParams, baseUrl) {
       const versions = getCachedSet('versions');
       for (const version of versions) {
         try {
-          let sql;
-          if (currentFilter === '') {
-            sql = `SELECT COUNT(*) as count FROM Resources WHERE ${version} = 1`;
-          } else {
-            sql = `SELECT COUNT(*) as count FROM Resources ${currentFilter} AND ${version} = 1`;
+          if (!VERSION_COLUMNS.includes(version)) {
+            continue; // a column name, so only one of the known ones
           }
+          const sql = `SELECT COUNT(*) as count FROM Resources ${where} AND ${version} = 1`;
 
           const count = await new Promise((resolve, reject) => {
-            xigDb.get(sql, [], (err, row) => {
+            xigDb.get(sql, params, guarded(reject, (err, row) => {
               if (err) reject(err);
               else resolve(row ? row.count : 0);
-            });
+            }));
           });
 
           const linkUrl = buildVersionLinkUrl(baseUrl, queryParams, version);
@@ -1138,18 +905,13 @@ async function buildSummaryStats(queryParams, baseUrl) {
       html += '<p><strong>By Authority</strong></p>';
       html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
 
-      let sql;
-      if (currentFilter === '') {
-        sql = 'SELECT Authority, COUNT(*) as count FROM Resources GROUP BY Authority ORDER BY Authority';
-      } else {
-        sql = `SELECT Authority, COUNT(*) as count FROM Resources ${currentFilter} GROUP BY Authority ORDER BY Authority`;
-      }
+      const sql = `SELECT Authority, COUNT(*) as count FROM Resources ${where} GROUP BY Authority ORDER BY Authority`;
 
       const authorityResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        });
+        }));
       });
 
       authorityResults.forEach(row => {
@@ -1171,18 +933,13 @@ async function buildSummaryStats(queryParams, baseUrl) {
       html += '<p><strong>By Realm</strong></p>';
       html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
 
-      let sql;
-      if (currentFilter === '') {
-        sql = 'SELECT Realm, COUNT(*) as count FROM Resources GROUP BY Realm ORDER BY Realm';
-      } else {
-        sql = `SELECT Realm, COUNT(*) as count FROM Resources ${currentFilter} GROUP BY Realm ORDER BY Realm`;
-      }
+      const sql = `SELECT Realm, COUNT(*) as count FROM Resources ${where} GROUP BY Realm ORDER BY Realm`;
 
       const realmResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, [], (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) reject(err);
           else resolve(rows || []);
-        });
+        }));
       });
 
       var c = 0;
@@ -1720,6 +1477,11 @@ function downloadFile(url, destination, maxRedirects = 5) {
               }
             }
 
+            // never be redirected off https
+            if (new URL(redirectUrl).protocol !== 'https:') {
+              reject(Object.assign(new Error(`Refused a redirect to ${redirectUrl}: the database is only downloaded over https`), { downloadMeta }));
+              return;
+            }
             attemptDownload(redirectUrl, redirectCount + 1);
             return;
           }
@@ -1820,7 +1582,7 @@ function validateDatabaseFile(filePath) {
       }
 
       // Try a simple query to ensure the database is accessible
-      testDb.get("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1", (err) => {
+      testDb.get("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1", guarded(reject, (err) => {
         testDb.close();
 
         if (err) {
@@ -1828,7 +1590,7 @@ function validateDatabaseFile(filePath) {
         } else {
           resolve();
         }
-      });
+      }));
     });
   });
 }
@@ -1856,13 +1618,13 @@ async function loadConfigCache() {
     // Helper function for simple queries
     const executeQuery = (sql, params = []) => {
       return new Promise((resolve, reject) => {
-        xigDb.all(sql, params, (err, rows) => {
+        xigDb.all(sql, params, guarded(reject, (err, rows) => {
           if (err) {
             reject(err);
           } else {
             resolve(rows);
           }
-        });
+        }));
       });
     };
 
@@ -2008,25 +1770,28 @@ function initializeDatabase() {
       return;
     }
 
-    xigDb = new sqlite3.Database(XIG_DB_PATH, sqlite3.OPEN_READONLY, async (err) => {
-      if (err) {
-        xigLog.error(`Failed to open XIG database: ${err.message}`);
-        reject(err);
-      } else {
-
-        try {
-          await loadConfigCache();
-        } catch (cacheError) {
-          xigLog.warn(`Failed to load config cache: ${cacheError.message}`);
-        }
-
-        resolve();
+    // Several connections (library/sqlite-pool.js): one runs one query at a time, and a crawler
+    // paging deep into the lists queued every XIG request behind its slow pages (npm.fhir.org)
+    SqlitePool.open(XIG_DB_PATH, { size: xigSettings.connections }).then(async (pool) => {
+      xigDb = pool;
+      try {
+        await loadConfigCache();
+      } catch (cacheError) {
+        xigLog.warn(`Failed to load config cache: ${cacheError.message}`);
       }
+      resolve();
+    }, (err) => {
+      xigLog.error(`Failed to open XIG database: ${err.message}`);
+      reject(err);
     });
   });
 }
 
-async function updateXigDatabase() {
+/**
+ * Download the database afresh and swap it in.
+ * @param trigger - 'cron' (the daily schedule), 'startup' (no database yet) or 'manual'
+ */
+async function updateXigDatabase(trigger = 'manual') {
   if (updateInProgress) {
     xigLog.warn('Update already in progress, skipping');
     return;
@@ -2035,7 +1800,7 @@ async function updateXigDatabase() {
   updateInProgress = true;
   const entry = {
     timestamp: new Date(),
-    trigger: new Error().stack.includes('cron') ? 'cron' : 'manual',
+    trigger: trigger,
     status: 'started',
     sourceUrl: XIG_DB_URL,
     error: null,
@@ -2062,14 +1827,14 @@ async function updateXigDatabase() {
     entry.status = 'validated';
 
     if (xigDb) {
-      await new Promise((resolve) => {
-        xigDb.close((err) => {
+      await new Promise((resolve, reject) => {
+        xigDb.close(guarded(reject, (err) => {
           if (err) {
             xigLog.warn(`Warning: Error closing existing database: ${err.message}`);
           }
           xigDb = null;
           resolve();
-        });
+        }));
       });
     }
 
@@ -2105,6 +1870,17 @@ async function updateXigDatabase() {
   }
 }
 
+// One log line for a finished request: what was asked, the status, how long it took and how big
+// the response was. The xig module serves most of the server's traffic, so this is how its slow
+// or huge requests are found
+function describeRequest(req, res, ms) {
+  const url = (req.originalUrl || req.url || '').substring(0, 300);
+  const length = res.getHeader('Content-Length');
+  const size = length !== undefined ? `${length}b` : '-';
+  const gone = res.writableFinished ? '' : ' (client gone)';
+  return `${req.method} ${url} ${res.statusCode} ${ms}ms ${size}${gone}`;
+}
+
 // Request tracking middleware
 function trackRequest(req, res, next) {
   requestStats.total++;
@@ -2123,49 +1899,42 @@ function trackRequest(req, res, next) {
     }
   }
 
+  const start = Date.now();
+  res.once('close', () => xigLog.info(describeRequest(req, res, Date.now() - start)));
+
   next();
 }
 
 router.use(trackRequest);
 
 // Statistics functions
+// The table counts shown on every page. They only change when a new database is swapped in, so
+// they are counted once per database (a promise, so concurrent first requests share the count)
+let tableCountCache = { db: null, counts: null };
+
 function getDatabaseTableCounts() {
-  return new Promise((resolve) => {
-    if (!xigDb) {
-      resolve({ packages: 0, resources: 0 });
-      return;
-    }
-
-    const counts = {};
-    let completedQueries = 0;
-    const totalQueries = 2;
-
-    xigDb.get('SELECT COUNT(*) as count FROM Packages', [], (err, row) => {
-      if (err) {
-        counts.packages = 0;
-      } else {
-        counts.packages = row.count;
-      }
-
-      completedQueries++;
-      if (completedQueries === totalQueries) {
-        resolve(counts);
-      }
+  if (!xigDb) {
+    return Promise.resolve({ packages: 0, resources: 0 });
+  }
+  if (tableCountCache.db !== xigDb) {
+    const db = xigDb;
+    let failed = false;
+    const count = (table) => new Promise((resolve) => {
+      db.get(`SELECT COUNT(*) as count FROM ${table}`, [], (err, row) => {
+        failed = failed || Boolean(err) || !row;
+        resolve(err || !row ? 0 : row.count);
+      });
     });
-
-    xigDb.get('SELECT COUNT(*) as count FROM Resources', [], (err, row) => {
-      if (err) {
-        counts.resources = 0;
-      } else {
-        counts.resources = row.count;
-      }
-
-      completedQueries++;
-      if (completedQueries === totalQueries) {
-        resolve(counts);
-      }
-    });
-  });
+    const counts = Promise.all([count('Packages'), count('Resources')])
+      .then(([packages, resources]) => {
+        if (failed && tableCountCache.counts === counts) {
+          tableCountCache = { db: null, counts: null }; // count again next time
+        }
+        return { packages, resources };
+      });
+    tableCountCache = { db, counts };
+  }
+  return tableCountCache.counts;
 }
 
 function getRequestStats() {
@@ -2203,6 +1972,23 @@ function getDatabaseAgeInfo() {
       ageInDays === 1 ? '1 day ago' :
         `${ageInDays} days ago`
   };
+}
+
+// The form on /xig/stats that starts an update (POST /xig/update), for the server's administrators
+function buildUpdateForm(req, res) {
+  const user = auth.currentUser(req);
+  if (!user || !user.isAdmin) {
+    return '<p class="text-muted">The server\'s administrators can start an update of the database from here.</p>';
+  }
+  let html = '<h4>Update the database now</h4>';
+  html += '<form method="POST" action="/xig/update" class="mb-4">';
+  html += `<input type="hidden" name="_csrf" value="${escape(res.locals._csrf || '')}"/>`;
+  html += '<p>Downloads the current database from fhir.org (about 3 GB) and switches to it. ';
+  html += updateInProgress ? '<strong>An update is running now.</strong>' : 'It takes several minutes.';
+  html += '</p>';
+  html += '<button type="submit" class="btn btn-primary">Start the update</button>';
+  html += '</form>';
+  return html;
 }
 
 function buildStatsTable(statsData) {
@@ -2369,7 +2155,7 @@ function getDatabaseInfo() {
       return;
     }
 
-    xigDb.get("SELECT COUNT(*) as tableCount FROM sqlite_master WHERE type='table'", (err, row) => {
+    xigDb.get("SELECT COUNT(*) as tableCount FROM sqlite_master WHERE type='table'", guarded(reject, (err, row) => {
       if (err) {
         reject(err);
       } else {
@@ -2380,7 +2166,7 @@ function getDatabaseInfo() {
           fileSize: fs.existsSync(XIG_DB_PATH) ? fs.statSync(XIG_DB_PATH).size : 0
         });
       }
-    });
+    }));
   });
 }
 
@@ -2431,31 +2217,47 @@ router.get('/', async (req, res) => {
       const title = 'FHIR Resources';
 
       // Parse query parameters
+      // Each a string: a repeated parameter (?text=a&text=b) arrives as an array, which
+      // the filters and SQL builders would fail on. Capped in length
+      const qp = (name, dflt = '') => {
+        let v = req.query[name];
+        if (Array.isArray(v)) {
+          v = v[0];
+        }
+        return typeof v === 'string' && v !== '' ? v.substring(0, 200) : dflt;
+      };
       const queryParams = {
-        ver: req.query.ver || '',
-        auth: req.query.auth || '',
-        realm: req.query.realm || '',
-        type: req.query.type || '',
-        rt: req.query.rt || '',
-        text: req.query.text || '',
-        pkg: req.query.pkg || '',
-        onlyUsed: req.query.onlyUsed || '',
-        offset: req.query.offset || '0'
+        ver: qp('ver'),
+        auth: qp('auth'),
+        realm: qp('realm'),
+        type: qp('type'),
+        rt: qp('rt'),
+        text: qp('text'),
+        pkg: qp('pkg'),
+        onlyUsed: qp('onlyUsed'),
+        offset: qp('offset', '0')
       };
 
       // Parse offset for pagination
-      const offset = parseInt(queryParams.offset) || 0;
+      const offset = parseOffset(queryParams.offset);
 
       // ── Format negotiation ──────────────────────────────────────
       const fmt = getRequestedFormat(req);
 
-      if (fmt === 'json') {
-        const data = await buildResourceJson(queryParams, offset);
-        res.setHeader('Content-Type', 'application/json');
-        return res.send(JSON.stringify(data, null, 2));
-      }
-
-      if (fmt === 'csv') {
+      if (fmt === 'json' || fmt === 'csv') {
+        // One page at a time; the headers say how many there are and where the other pages are
+        const total = await countResources(queryParams);
+        res.setHeader('X-Total-Count', String(total));
+        const links = buildPageLinks(total, offset, o => buildPaginationUrl('/xig',
+          { ...queryParams, _fmt: req.query._fmt === fmt ? fmt : '', offset: o ? o.toString() : '' }));
+        if (links) {
+          res.setHeader('Link', links);
+        }
+        if (fmt === 'json') {
+          const data = await buildResourceJson(queryParams, offset);
+          res.setHeader('Content-Type', 'application/json');
+          return res.send(JSON.stringify(data, null, 2));
+        }
         const csv = await buildResourceCsv(queryParams, offset);
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', 'attachment; filename="xig-resources.csv"');
@@ -2476,13 +2278,13 @@ router.get('/', async (req, res) => {
         if (xigDb) {
           const {query: countQuery, params: countParams} = buildSecureResourceCountQuery(queryParams);
           resourceCount = await new Promise((resolve, reject) => {
-            xigDb.get(countQuery, countParams, (err, row) => {
+            xigDb.get(countQuery, countParams, guarded(reject, (err, row) => {
               if (err) {
                 reject(err);
               } else {
                 resolve(row ? row.total : 0);
               }
-            });
+            }));
           });
         }
       } catch (error) {
@@ -2542,8 +2344,164 @@ router.get('/', async (req, res) => {
   }
 });
 
+// ---- Sitemap ----
+//
+// Every resource page, for crawlers: /xig/sitemap.xml is a sitemap index naming the files
+// /xig/sitemap-1.xml.gz, /xig/sitemap-2.xml.gz ..., SITEMAP_SIZE resource pages each (the
+// protocol's most; 282,291 resources in 2026-11 makes six). Crawlers find the resource pages here
+// rather than by paging through the lists, which robots.txt can then keep them out of: on
+// npm.fhir.org they were paging through every combination of the list filters, 40,000 database-
+// heavy pages in a few hours (2026-11).
+//
+// A file holds the resources from one key to the next boundary (the key at each SITEMAP_SIZE-th
+// place, found once). Built when first asked for, gzipped, and kept until the database is replaced
+// (the nightly update), for at most SITEMAP_BASES public addresses (the URLs in a sitemap are
+// absolute: from xig.baseUrl, else the request's own address).
+const SITEMAP_SIZE = 50000;
+const SITEMAP_BASES = 2;
+let sitemapSize = SITEMAP_SIZE; // smaller in the tests
+let sitemapCache = { db: null, boundaries: null, files: new Map() };
+
+function sitemapState() {
+  if (sitemapCache.db !== xigDb) {
+    sitemapCache = { db: xigDb, boundaries: null, files: new Map() };
+  }
+  return sitemapCache;
+}
+
+function xmlEscape(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' })[c]);
+}
+
+// the public address the sitemap's URLs start with
+function sitemapBase(req) {
+  const configured = xigSettings && typeof xigSettings.baseUrl === 'string' ? xigSettings.baseUrl : '';
+  const base = configured || `${req.protocol}://${req.get('host')}`;
+  // without the trailing /s: one scan back from the end. Not with /\/+$/, which on a Host header
+  // of many /s takes time in the square of their number (CodeQL js/polynomial-redos)
+  let end = base.length;
+  while (end > 0 && base[end - 1] === '/') {
+    end--;
+  }
+  return base.substring(0, end);
+}
+
+// the first key of each sitemap file: the key at place 0, SITEMAP_SIZE, 2 * SITEMAP_SIZE ...
+function sitemapBoundaries() {
+  const state = sitemapState();
+  if (!state.boundaries) {
+    state.boundaries = (async () => {
+      const keys = [];
+      for (let place = 0; ; place += sitemapSize) {
+        const row = await dbGet('SELECT ResourceKey FROM Resources ORDER BY ResourceKey LIMIT 1 OFFSET ?', [place]);
+        if (!row) {
+          return keys;
+        }
+        keys.push(row.ResourceKey);
+      }
+    })();
+    state.boundaries.catch(() => {
+      if (sitemapCache === state) {
+        state.boundaries = null; // try again next time
+      }
+    });
+  }
+  return state.boundaries;
+}
+
+// a file of the sitemap, built once (per address) and kept: {body, type}
+function sitemapFile(name, base, build) {
+  const state = sitemapState();
+  const key = base + ' ' + name;
+  let entry = state.files.get(key);
+  if (!entry) {
+    entry = build();
+    const bases = new Set([...state.files.keys()].map(k => k.split(' ')[0]));
+    if (bases.has(base) || bases.size < SITEMAP_BASES) {
+      state.files.set(key, entry);
+      entry.catch(() => state.files.delete(key));
+    }
+  }
+  return entry;
+}
+
+async function buildSitemapIndex(base) {
+  const boundaries = await sitemapBoundaries();
+  const parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'];
+  for (let n = 1; n <= boundaries.length; n++) {
+    parts.push(`<sitemap><loc>${xmlEscape(`${base}/xig/sitemap-${n}.xml.gz`)}</loc></sitemap>\n`);
+  }
+  parts.push('</sitemapindex>\n');
+  return { body: parts.join(''), type: 'application/xml' };
+}
+
+async function buildSitemapPart(base, n) {
+  const boundaries = await sitemapBoundaries();
+  if (n < 1 || n > boundaries.length) {
+    return null;
+  }
+  const from = boundaries[n - 1];
+  const to = n < boundaries.length ? boundaries[n] : null;
+  const rows = await dbAll(`SELECT r.ResourceType, r.Id, p.PID FROM Resources r JOIN Packages p ON p.PackageKey = r.PackageKey
+      WHERE r.ResourceKey >= ?${to === null ? '' : ' AND r.ResourceKey < ?'} ORDER BY r.ResourceKey`, to === null ? [from] : [from, to]);
+  const parts = ['<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'];
+  for (const row of rows) {
+    if (!row.PID || !row.ResourceType || !row.Id) {
+      continue;
+    }
+    // as the lists link to it (buildResourceTable)
+    const url = `${base}/xig/resource/${encodeURIComponent(row.PID.replace(/#/g, '|'))}/${encodeURIComponent(row.ResourceType)}/${encodeURIComponent(row.Id)}`;
+    parts.push(`<url><loc>${xmlEscape(url)}</loc></url>\n`);
+  }
+  parts.push('</urlset>\n');
+  const body = await new Promise((resolve, reject) => zlib.gzip(parts.join(''), (err, out) => err ? reject(err) : resolve(out)));
+  return { body, type: 'application/gzip' };
+}
+
+async function sendSitemap(res, file) {
+  if (!xigDb) {
+    res.status(503).type('text/plain').send('The XIG database is not available');
+    return;
+  }
+  const result = await file;
+  if (!result) {
+    res.status(404).type('text/plain').send('No such sitemap file');
+    return;
+  }
+  res.setHeader('Content-Type', result.type);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.send(result.body);
+}
+
+router.get('/sitemap.xml', async (req, res) => {
+  const start = Date.now();
+  try {
+    const base = sitemapBase(req);
+    await sendSitemap(res, xigDb ? sitemapFile('index', base, () => buildSitemapIndex(base)) : null);
+  } catch (error) {
+    xigLog.error(`Error building the sitemap index: ${error.message}`);
+    res.status(500).type('text/plain').send('Unable to build the sitemap');
+  } finally {
+    globalStats?.countRequest('sitemap', Date.now() - start);
+  }
+});
+
+router.get(/^\/sitemap-(\d+)\.xml\.gz$/, async (req, res) => {
+  const start = Date.now();
+  try {
+    const base = sitemapBase(req);
+    const n = Number(req.params[0]);
+    await sendSitemap(res, xigDb ? sitemapFile(String(n), base, () => buildSitemapPart(base, n)) : null);
+  } catch (error) {
+    xigLog.error(`Error building sitemap file ${req.params[0]}: ${error.message}`);
+    res.status(500).type('text/plain').send('Unable to build the sitemap');
+  } finally {
+    globalStats?.countRequest('sitemap', Date.now() - start);
+  }
+});
+
 // Stats endpoint
-router.get('/stats', async (req, res) => {
+router.get('/stats', ...auth.web, async (req, res) => {
   const start = Date.now();
   try {
 
@@ -2602,7 +2560,7 @@ router.get('/stats', async (req, res) => {
         introContent += `</div>`;
       }
 
-      const fullContent = introContent + content;
+      const fullContent = introContent + content + buildUpdateForm(req, res);
 
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
@@ -2649,10 +2607,10 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
       `;
 
       const resourceData = await new Promise((resolve, reject) => {
-        xigDb.get(resourceQuery, [packageObj.PackageKey, resourceType, resourceId], (err, row) => {
+        xigDb.get(resourceQuery, [packageObj.PackageKey, resourceType, resourceId], guarded(reject, (err, row) => {
           if (err) reject(err);
           else resolve(row);
-        });
+        }));
       });
 
       if (!resourceData) {
@@ -2660,8 +2618,19 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
           `<div class="alert alert-danger">Unknown Resource: ${escape(resourceType)}/${escape(resourceId)} in package ${escape(packagePid)}</div>`));
       }
 
+      const fmt = getRequestedFormat(req);
+      if (fmt === 'json') {
+        await sendResourceJson(req, res, resourceData);
+        return;
+      }
+      if (fmt === 'csv') {
+        res.status(406).type('text/plain').send('A resource is available as HTML or JSON, not CSV');
+        return;
+      }
+
       // Build the resource detail page
-      const content = await buildResourceDetailPage(packageObj, resourceData, req.secure);
+      const paging = { path: req.originalUrl.split('?')[0], query: req.query };
+      const content = await buildResourceDetailPage(packageObj, resourceData, paging);
       const title = `${resourceType}/${resourceId}`;
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
@@ -2679,6 +2648,24 @@ router.get('/resource/:packagePid/:resourceType/:resourceId', async (req, res) =
   }
 });
 
+// The resource as stored: the JSON from the package. Sent still gzipped when the client takes that,
+// so nothing is parsed or even decompressed here
+async function sendResourceJson(req, res, resourceData) {
+  const blob = await loadResourceBlob(resourceData.ResourceKey);
+  if (!blob) {
+    res.status(404).type('text/plain').send('No content is available for this resource');
+    return;
+  }
+  res.setHeader('Content-Type', 'application/fhir+json');
+  res.setHeader('Vary', 'Accept, Accept-Encoding');
+  if (gzipSize(blob) >= 0 && req.acceptsEncodings('gzip')) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.send(blob);
+  } else {
+    res.send(await gunzipAsync(blob));
+  }
+}
+
 // Helper function to get package by PID
 function getPackageByPid(pid) {
   if (!configCache.loaded || !configCache.maps.packagesById) {
@@ -2693,7 +2680,8 @@ function getPackageByPid(pid) {
 }
 
 // Main function to build resource detail page content
-async function buildResourceDetailPage(packageObj, resourceData, secure = false) {
+// paging: {path, query} - the page's path and query, for the links that page its lists
+async function buildResourceDetailPage(packageObj, resourceData, paging = {}) {
   let html = '';
 
   try {
@@ -2701,13 +2689,10 @@ async function buildResourceDetailPage(packageObj, resourceData, secure = false)
     html += await buildResourceMetadataTable(packageObj, resourceData);
 
     // Build dependencies sections
-    html += await buildResourceDependencies(resourceData, secure);
+    html += await buildResourceDependencies(resourceData, paging);
 
-    // Build narrative section (if available)
-    html += await buildResourceNarrative(resourceData.ResourceKey, packageObj);
-
-    // Build source section
-    html += await buildResourceSource(resourceData.ResourceKey);
+    // Build narrative and source sections
+    html += await buildResourceContent(resourceData.ResourceKey, packageObj, (paging.path || '') + '?_fmt=json');
 
   } catch (error) {
     xigLog.error(`Error building resource detail content: ${error.message}`);
@@ -2785,58 +2770,89 @@ async function buildResourceMetadataTable(packageObj, resourceData) {
 }
 
 // Build resources that use this resource (dependencies pointing TO this resource)
-async function buildResourceDependencies(resourceData, secure = false) {
-  let html = '<hr/><h3>Resources that use this resource</h3>';
+// The resource page's paged lists: the anchor each is shown under, and the request parameter
+// that gives its offset
+const RESOURCE_LISTS = {
+  usedBy: 'usedByOffset',
+  uses: 'usesOffset',
+  examples: 'examplesOffset'
+};
+
+function dbGet(sql, params) {
+  return new Promise((resolve, reject) => {
+    xigDb.get(sql, params, guarded(reject, (err, row) => err ? reject(err) : resolve(row)));
+  });
+}
+
+function dbAll(sql, params) {
+  return new Promise((resolve, reject) => {
+    xigDb.all(sql, params, guarded(reject, (err, rows) => err ? reject(err) : resolve(rows || [])));
+  });
+}
+
+// One page of a list: how many rows there are, and the PAGE_SIZE of them from offset.
+// fromWhere is the query's FROM and WHERE; orderBy must give a stable order for paging
+async function fetchPage(columns, fromWhere, orderBy, params, offset) {
+  const total = (await dbGet(`SELECT COUNT(*) AS total ${fromWhere}`, params)).total;
+  const rows = total > offset
+    ? await dbAll(`SELECT ${columns} ${fromWhere} ORDER BY ${orderBy} LIMIT ? OFFSET ?`, [...params, PAGE_SIZE, offset])
+    : [];
+  return { total, rows };
+}
+
+// The link to the resource page with one of its lists at offset, keeping the others where they are.
+// paging: {path, query} - the page's path (as requested, so already encoded) and its query
+function resourceListUrl(paging, list, offset) {
+  const params = {};
+  for (const name of Object.values(RESOURCE_LISTS)) {
+    const value = parseOffset(paging.query ? paging.query[name] : undefined);
+    if (value) {
+      params[name] = value.toString();
+    }
+  }
+  params[RESOURCE_LISTS[list]] = offset ? offset.toString() : '';
+  return buildPaginationUrl(paging.path || '', params) + '#' + list;
+}
+
+function resourceListOffset(paging, list) {
+  return parseOffset(paging.query ? paging.query[RESOURCE_LISTS[list]] : undefined);
+}
+
+const DEPENDENCY_COLUMNS = 'Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title';
+const DEPENDENCY_ORDER = 'Resources.ResourceType, Resources.ResourceKey';
+
+// One of the two dependency lists, a page at a time. from is the DependencyList column that is this
+// resource, to the one that is the resource listed
+async function buildDependencySection(list, heading, from, to, resourceData, paging) {
+  let html = `<hr/><h3 id="${list}">${heading}</h3>`;
+  const offset = resourceListOffset(paging, list);
+  const { total, rows } = await fetchPage(DEPENDENCY_COLUMNS,
+    `FROM DependencyList, Resources, Packages
+     WHERE DependencyList.${from} = ?
+       AND DependencyList.${to} = Resources.ResourceKey
+       AND Resources.PackageKey = Packages.PackageKey`,
+    DEPENDENCY_ORDER, [resourceData.ResourceKey], offset);
+
+  if (total === 0) {
+    return html + '<p style="color: #808080">No resources found</p>';
+  }
+  const pager = buildPager(total, offset, o => resourceListUrl(paging, list, o));
+  html += pager;
+  html += rows.length > 0 ? buildDependencyTable(rows) : '<p style="color: #808080">No resources on this page</p>';
+  if (rows.length > 20) {
+    html += pager;
+  }
+  return html;
+}
+
+async function buildResourceDependencies(resourceData, paging = {}) {
+  let html = '';
 
   try {
-    const dependenciesQuery = `
-        SELECT Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title
-        FROM DependencyList, Resources, Packages
-        WHERE DependencyList.TargetKey = ?
-          AND DependencyList.SourceKey = Resources.ResourceKey
-          AND Resources.PackageKey = Packages.PackageKey
-        ORDER BY ResourceType
-    `;
-
-    const dependencies = await new Promise((resolve, reject) => {
-      xigDb.all(dependenciesQuery, [resourceData.ResourceKey], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-
-    if (dependencies.length === 0) {
-      html += '<p style="color: #808080">No resources found</p>';
-    } else {
-      html += buildDependencyTable(dependencies, secure);
-    }
-
-    // Build resources that this resource uses (dependencies FROM this resource)
-    html += '<hr/><h3>Resources that this resource uses</h3>';
-
-    const usesQuery = `
-        SELECT Packages.PID, Resources.ResourceType, Resources.Id, Resources.Url, Resources.Web, Resources.Name, Resources.Title
-        FROM DependencyList, Resources, Packages
-        WHERE DependencyList.SourceKey = ?
-          AND DependencyList.TargetKey = Resources.ResourceKey
-          AND Resources.PackageKey = Packages.PackageKey
-        ORDER BY ResourceType
-    `;
-
-    const uses = await new Promise((resolve, reject) => {
-      xigDb.all(usesQuery, [resourceData.ResourceKey], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-
-    if (uses.length === 0) {
-      html += '<p style="color: #808080">No resources found</p>';
-    } else {
-      html += buildDependencyTable(uses, secure);
-    }
+    html += await buildDependencySection('usedBy', 'Resources that use this resource', 'TargetKey', 'SourceKey', resourceData, paging);
+    html += await buildDependencySection('uses', 'Resources that this resource uses', 'SourceKey', 'TargetKey', resourceData, paging);
     if (resourceData && resourceData.ResourceType === 'StructureDefinition' && resourceData.Type === 'Extension') {
-      html += await buildExtensionExamplesSection(resourceData.Url);
+      html += await buildExtensionExamplesSection(resourceData.Url, paging);
     }
   } catch (error) {
     html += `<div class="alert alert-warning">Error loading dependencies: ${escape(error.message)}</div>`;
@@ -2844,8 +2860,9 @@ async function buildResourceDependencies(resourceData, secure = false) {
 
   return html;
 }
-async function buildExtensionExamplesSection(resourceUrl) {
-  let html = '<hr/><h3>Examples of Use for Extension</h3>';
+
+async function buildExtensionExamplesSection(resourceUrl, paging = {}) {
+  let html = '<hr/><h3 id="examples">Examples of Use for Extension</h3>';
 
   try {
     if (!xigDb) {
@@ -2853,42 +2870,37 @@ async function buildExtensionExamplesSection(resourceUrl) {
       return html;
     }
 
-    // Query to find extension examples using the resource URL
-    const extensionExamplesQuery = `
-        SELECT eu.Url, eu.Name, eu.Version
-        FROM ExtensionDefns ed
-                 JOIN ExtensionUsages eusage ON ed.ExtensionDefnKey = eusage.ExtensionDefnKey
-                 JOIN ExtensionUsers eu ON eusage.ExtensionUserKey = eu.ExtensionUserKey
-        WHERE ed.Url = ?
-        ORDER BY eu.Name
-    `;
+    const offset = resourceListOffset(paging, 'examples');
+    const { total, rows } = await fetchPage('eu.Url, eu.Name, eu.Version',
+      `FROM ExtensionDefns ed
+         JOIN ExtensionUsages eusage ON ed.ExtensionDefnKey = eusage.ExtensionDefnKey
+         JOIN ExtensionUsers eu ON eusage.ExtensionUserKey = eu.ExtensionUserKey
+       WHERE ed.Url = ?`,
+      'eu.Name, eu.ExtensionUserKey', [resourceUrl], offset);
 
-    const extensionExamples = await new Promise((resolve, reject) => {
-      xigDb.all(extensionExamplesQuery, [resourceUrl], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
-
-    if (extensionExamples.length === 0) {
+    if (total === 0) {
       html += '<p style="color: #808080">No extension usage examples found</p>';
     } else {
+      const pager = buildPager(total, offset, o => resourceListUrl(paging, 'examples', o));
+      html += pager;
       html += '<table class="table table-bordered table-striped">';
       html += '<thead><tr><th>Resource</th><th>Version</th></tr></thead>';
       html += '<tbody>';
 
-      extensionExamples.forEach(example => {
-        const versionMap = { 1: 'R2', 2: 'R2B', 3: 'R3', 4: 'R4', 5: 'R4B', 6: 'R5' };
+      const versionMap = { 1: 'R2', 2: 'R2B', 3: 'R3', 4: 'R4', 5: 'R4B', 6: 'R5' };
+      for (const example of rows) {
         const versionName = example.Version ? (versionMap[example.Version] || example.Version.toString()) : '';
-
         html += '<tr>';
         html += `<td><a href="${escape(example.Url || '')}">${escape(example.Name || '')}</a></td>`;
         html += `<td>${escape(versionName)}</td>`;
         html += '</tr>';
-      });
+      }
 
       html += '</tbody>';
       html += '</table>';
+      if (rows.length > 20) {
+        html += pager;
+      }
     }
 
   } catch (error) {
@@ -2951,120 +2963,92 @@ function buildDependencyTable(dependencies) {
   return html;
 }
 
-// Build narrative section (simplified - full implementation would need BLOB decompression)
-async function buildResourceNarrative(resourceKey, packageObj) {
-  let html = '';
+// The resource's stored JSON, still gzipped, or null
+async function loadResourceBlob(resourceKey) {
+  const row = await dbGet('SELECT Json FROM Contents WHERE ResourceKey = ?', [resourceKey]);
+  return row && row.Json ? row.Json : null;
+}
 
-  try {
-    html += '<hr/><h3>Narrative</h3>';
-
-    if (!xigDb) {
-      html += '<p style="color: #808080"><em>Database not available</em></p>';
-      return html;
-    }
-
-    // Get the BLOB data from Contents table
-    const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
-
-    const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!blobData || !blobData.Json) {
-      html += '<p style="color: #808080"><em>No content data available</em></p>';
-      return html;
-    }
-
-    // Decompress the GZIP data
-    const decompressedData = await new Promise((resolve, reject) => {
-      zlib.gunzip(blobData.Json, (err, result) => {
-        if (err) reject(err);
-        else resolve(result);
-      });
-    });
-
-    // Parse as JSON
-    const jsonData = JSON.parse(decompressedData.toString('utf8'));
-
-    // Extract narrative from text.div
-    if (jsonData.text && jsonData.text.div) {
-      let narrativeDiv = jsonData.text.div;
-
-      // Fix narrative links to be relative to the package canonical base
-      if (packageObj && packageObj.Web) {
-        const baseUrl = packageObj.Web.substring(0, packageObj.Web.lastIndexOf('/'));
-        narrativeDiv = fixNarrative(narrativeDiv, baseUrl);
-      }
-
-      html += '<p style="color: maroon">Note: links and images are rebased to the (stated) source</p>';
-      html += narrativeDiv;
-    } else {
-      html += '<p style="color: #808080"><em>No narrative content found in resource</em></p>';
-    }
-
-  } catch (error) {
-    xigLog.error(`Error loading narrative: ${error.message}`);
-    html += `<div class="alert alert-warning">Error loading narrative: ${escape(error.message)}</div>`;
+// The uncompressed size of gzipped data, from its trailer (the size mod 2^32, which is
+// plenty for resources); -1 when it isn't gzip
+function gzipSize(blob) {
+  if (!Buffer.isBuffer(blob) || blob.length < 18 || blob[0] !== 0x1f || blob[1] !== 0x8b) {
+    return -1;
   }
+  return blob.readUInt32LE(blob.length - 4);
+}
 
+function gunzipAsync(blob) {
+  return new Promise((resolve, reject) => {
+    zlib.gunzip(blob, (err, result) => err ? reject(err) : resolve(result));
+  });
+}
+
+function formatMB(bytes) {
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+function buildResourceNarrative(jsonData, packageObj) {
+  let html = '<hr/><h3>Narrative</h3>';
+  if (jsonData.text && typeof jsonData.text.div === 'string' && jsonData.text.div) {
+    // whoever published the package wrote it: not shown if it has active content (script,
+    // event handlers, forms...), and otherwise shown as its parsed tree written out again, never
+    // the string as it is (an unterminated tag would swallow the rest of the page)
+    const active = checkNarrative(jsonData.text.div);
+    if (active) {
+      return html + `<p style="color: maroon">The narrative is not shown: ${escape(active)}</p>`;
+    }
+    let narrativeDiv = parse5.serialize(parse5.parseFragment(jsonData.text.div));
+
+    // Fix narrative links to be relative to the package canonical base
+    if (packageObj && packageObj.Web) {
+      const baseUrl = packageObj.Web.substring(0, packageObj.Web.lastIndexOf('/'));
+      narrativeDiv = fixNarrative(narrativeDiv, baseUrl);
+    }
+
+    html += '<p style="color: maroon">Note: links and images are rebased to the (stated) source</p>';
+    html += narrativeDiv;
+  } else {
+    html += '<p style="color: #808080"><em>No narrative content found in resource</em></p>';
+  }
   return html;
 }
 
-// Build source section (simplified - full implementation would need BLOB decompression)
-async function buildResourceSource(resourceKey) {
-  let html = '';
-
-  try {
-    html += '<hr/><h3>Source1</h3>';
-
-    if (!xigDb) {
-      html += '<p style="color: #808080"><em>Database not available</em></p>';
-      return html;
-    }
-
-    // Get the BLOB data from Contents table
-    const contentsQuery = 'SELECT Json FROM Contents WHERE ResourceKey = ?';
-
-    const blobData = await new Promise((resolve, reject) => {
-      xigDb.get(contentsQuery, [resourceKey], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
-
-    if (!blobData || !blobData.Json) {
-      html += '<p style="color: #808080"><em>No content data available</em></p>';
-      return html;
-    }
-
-    // Decompress the GZIP data
-    const decompressedData = await new Promise((resolve, reject) => {
-      zlib.gunzip(blobData.Json, (err, result) => {
-        if (err) reject(err);
-        else resolve(result);
-      });
-    });
-
-    // Parse and format as JSON
-    const jsonData = JSON.parse(decompressedData.toString('utf8'));
-    if (jsonData.text && jsonData.text.div) {
-      jsonData.text.div = "<!-- snip (see above) -->";
-    }
-    const formattedJson = JSON.stringify(jsonData, null, 2);
-
-    html += '<pre>';
-    html += escape(formattedJson);
-    html += '</pre>';
-
-  } catch (error) {
-    xigLog.error(`Error loading source: ${error.message}`);
-    html += `<div class="alert alert-warning">Error loading source: ${escape(error.message)}</div>`;
+function buildResourceSource(jsonData) {
+  let html = '<hr/><h3>Source</h3>';
+  const source = { ...jsonData };
+  if (source.text && source.text.div) {
+    source.text = { ...source.text, div: '<!-- snip (see above) -->' };
   }
-
+  html += '<pre>';
+  html += escape(JSON.stringify(source, null, 2));
+  html += '</pre>';
   return html;
+}
+
+// The narrative and source sections. The content is read and parsed once, and not at all
+// when it is too big to show (it is then only offered as JSON, from jsonUrl)
+async function buildResourceContent(resourceKey, packageObj, jsonUrl) {
+  try {
+    if (!xigDb) {
+      return '<hr/><h3>Narrative</h3><p style="color: #808080"><em>Database not available</em></p>';
+    }
+    const blob = await loadResourceBlob(resourceKey);
+    if (!blob) {
+      return '<hr/><h3>Narrative</h3><p style="color: #808080"><em>No content data available</em></p>';
+    }
+    const size = gzipSize(blob);
+    if (size > MAX_INLINE_RESOURCE) {
+      return '<hr/><h3>Narrative and Source</h3>'
+        + `<p style="color: #808080"><em>This resource is too big to show here (${formatMB(size)}). `
+        + `<a href="${escape(jsonUrl)}">Get it as JSON</a>.</em></p>`;
+    }
+    const jsonData = JSON.parse((await gunzipAsync(blob)).toString('utf8'));
+    return buildResourceNarrative(jsonData, packageObj) + buildResourceSource(jsonData);
+  } catch (error) {
+    xigLog.error(`Error loading resource content: ${error.message}`);
+    return `<hr/><div class="alert alert-warning">Error loading resource content: ${escape(error.message)}</div>`;
+  }
 }
 
 function fixNarrative(narrativeHtml, baseUrl) {
@@ -3073,11 +3057,13 @@ function fixNarrative(narrativeHtml, baseUrl) {
   }
 
   try {
+    // (the base is the package's own claim: it goes into an attribute, so it is escaped)
+    const base = escape(baseUrl);
     // Fix relative image sources (but not http/https/data: URLs)
-    let fixed = narrativeHtml.replace(/src="(?!http|https|data:|#)([^"]+)"/g, `src="${baseUrl}/$1"`);
+    let fixed = narrativeHtml.replace(/src="(?!http|https|data:|#)([^"]+)"/g, (m, rel) => `src="${base}/${rel}"`);
 
     // Fix relative links (but not http/https/data:/mailto:/# URLs)
-    fixed = fixed.replace(/href="(?!http|https|data:|mailto:|#)([^"]+)"/g, `href="${baseUrl}/$1"`);
+    fixed = fixed.replace(/href="(?!http|https|data:|mailto:|#)([^"]+)"/g, (m, rel) => `href="${base}/${rel}"`);
 
     return fixed;
   } catch (error) {
@@ -3127,9 +3113,74 @@ router.get('/cache', async (req, res) => {
   }
 });
 
-router.post('/update', async (req, res) => {
+// POST /xig/update re-downloads the database (about 3 GB): for the server's administrators.
+// From the form on /xig/stats, logged in (with the CSRF token); from software, with an
+// administrator's API token (Authorization: Bearer).
+//
+// The form gets a page back straight away, while the update runs on (it takes minutes);
+// /xig/stats shows how it went. Other callers wait for the update and get JSON.
+function updatePage(res, status, alert, message) {
+  const content = `<div class="alert alert-${alert}">${escape(message)}</div><p><a href="/xig/stats">Back to the status page</a></p>`;
+  res.status(status).setHeader('Content-Type', 'text/html');
+  res.send(renderPage('Update the XIG database', content));
+}
+
+// run a list of middleware in turn
+function inTurn(list) {
+  return (req, res, next) => {
+    let i = 0;
+    const step = (err) => {
+      if (err) {
+        return next(err);
+      }
+      const mw = list[i++];
+      if (!mw) {
+        return next();
+      }
+      try {
+        mw(req, res, step);
+      } catch (e) {
+        next(e);
+      }
+    };
+    step();
+  };
+}
+
+const updateFromForm = inTurn([auth.sameOrigin, auth.session, express.urlencoded({ extended: false, limit: '2kb' }), auth.csrf,
+  auth.requirePage(u => u.isAdmin, (req, res, status, message) => updatePage(res, status, 'danger', message))]);
+const updateFromApi = auth.requireApi(p => p.isAdmin, (req, res, status, message) => {
+  if (status === 401) {
+    res.setHeader('WWW-Authenticate', 'Bearer');
+  }
+  res.status(status).json({ status: 'ERROR', error: (status === 401 ? 'unauthorized: ' : 'forbidden: ') + message });
+});
+
+router.post('/update', rateLimit(auth.credentialLimits()), (req, res, next) => {
+  if (!req.is('application/x-www-form-urlencoded')) {
+    return updateFromApi(req, res, next);
+  }
+  updateFromForm(req, res, (err) => {
+    if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+      return updatePage(res, 403, 'danger', 'The form has expired or did not come from this site - reload the status page and try again');
+    }
+    next(err);
+  });
+}, async (req, res) => {
+  const fromForm = !!req.is('application/x-www-form-urlencoded');
   try {
-    xigLog.info('Manual update triggered via API');
+    if (fromForm) {
+      if (updateInProgress) {
+        updatePage(res, 200, 'info', 'An update is already running. The status page shows how it is going.');
+        return;
+      }
+      xigLog.info(`Manual update started from the status page by ${req.user.login}`);
+      updateXigDatabase().catch((err) => xigLog.error('XIG database update failed: ' + err.message));
+      updatePage(res, 202, 'success', 'The update has started. It takes several minutes; the status page shows how it is going.');
+      return;
+    }
+
+    xigLog.info(`Manual update started via the API by ${req.user.login}`);
     await updateXigDatabase();
     res.json({
       status: 'SUCCESS',
@@ -3145,10 +3196,16 @@ router.post('/update', async (req, res) => {
 });
 
 let globalStats;
+let xigSettings = {};
+// The xig section of the config (initializeXigModule; tests set it directly)
+function setXigSettings(xigConfig) {
+  xigSettings = xigConfig || {};
+}
 // Initialize the XIG module
 async function initializeXigModule(stats, xigConfig) {
   try {
     globalStats = stats;
+    setXigSettings(xigConfig);
     loadTemplate();
 
     await initializeDatabase();
@@ -3156,18 +3213,18 @@ async function initializeXigModule(stats, xigConfig) {
     if (!fs.existsSync(XIG_DB_PATH)) {
       xigLog.info('No existing XIG database found, triggering initial download');
       setTimeout(() => {
-        updateXigDatabase();
+        updateXigDatabase('startup').catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       }, 5000);
     }
 
     if (globalStats) {
-      globalStats.addTask('XIG Download', describeCron('0 2 * * *'));
+      globalStats.addTask('XIG Download', describeCron(UPDATE_CRON));
     }
     // Check if auto-update is enabled
     // Note: This assumes we're called only when XIG is enabled
     if (xigConfig?.autoUpdate !== false) {
-      cron.schedule('0 2 * * *', () => {
-        updateXigDatabase();
+      cron.schedule(UPDATE_CRON, () => {
+        updateXigDatabase('cron').catch((err) => xigLog.error('XIG database update failed: ' + err.message));
       });
     }
 
@@ -3178,17 +3235,145 @@ async function initializeXigModule(stats, xigConfig) {
 }
 
 // Graceful shutdown
+/**
+ * The times (ms, local 02:00) the scheduled update was due in (since, now]
+ */
+function scheduledUpdatesBetween(since, now) {
+  const result = [];
+  const d = new Date(since);
+  d.setHours(UPDATE_HOUR, 0, 0, 0);
+  if (d.getTime() <= since) {
+    d.setDate(d.getDate() + 1);
+  }
+  while (d.getTime() <= now) {
+    result.push(d.getTime());
+    d.setDate(d.getDate() + 1);
+  }
+  return result;
+}
+
+/**
+ * The sentences about database updates in the period (since, now] for the daily report:
+ * affirms the scheduled update happened, or says that it failed or did not run.
+ *
+ * @param history - update attempts, newest first (getUpdateHistory())
+ * @param autoUpdate - false if scheduled updates are turned off
+ * @param dbModified - when the database file in use was written (ms), or null if there isn't one
+ */
+function describeUpdates(history, {since, now, autoUpdate = true, dbModified = null}) {
+  const {localDateTime, formatSpan, formatBytes} = require('../library/daily-report');
+  // just the time of day, unless it's more than a day before the report
+  const time = (t) => now - t <= 24 * 60 * 60 * 1000 ? localDateTime(t).substring(11) : localDateTime(t);
+  const at = (e) => (e.timestamp instanceof Date ? e.timestamp : new Date(e.timestamp)).getTime();
+  const detail = (e) => {
+    const bits = [];
+    if (e.downloadMeta && e.downloadMeta.downloadedBytes) {
+      bits.push(formatBytes(e.downloadMeta.downloadedBytes));
+    }
+    if (e.durationMs != null) {
+      bits.push(`took ${formatSpan(e.durationMs)}`);
+    }
+    return bits.length ? ` (${bits.join(', ')})` : '';
+  };
+
+  const sentences = [];
+  const attempts = (history || []).filter(e => at(e) > since && at(e) <= now).sort((a, b) => at(a) - at(b));
+  const scheduled = attempts.filter(e => e.trigger === 'cron');
+  const others = attempts.filter(e => e.trigger !== 'cron');
+  let updated = attempts.some(e => e.status === 'success');
+
+  if (autoUpdate === false) {
+    sentences.push('Scheduled database updates are turned off.');
+  } else {
+    const due = scheduledUpdatesBetween(since, now);
+    for (const e of scheduled) {
+      if (e.status === 'success') {
+        sentences.push(`The database was updated on schedule at ${time(at(e))}${detail(e)}.`);
+      } else if (e.status === 'failed') {
+        sentences.push(`The scheduled database update at ${time(at(e))} failed${e.error ? ': ' + e.error : ''}.`);
+      } else {
+        sentences.push(`The scheduled database update that started at ${time(at(e))} has not finished.`);
+      }
+    }
+    if (scheduled.length === 0 && due.length > 0) {
+      const last = due[due.length - 1];
+      if (dbModified != null && dbModified >= due[0] && dbModified <= now) {
+        // the record went with a restart, but the file shows it happened
+        sentences.push(`The database was updated at ${time(dbModified)}.`);
+        updated = true;
+      } else {
+        sentences.push(`The database was not updated on schedule: no update ran at ${time(last)} (was the server running then?).`);
+      }
+    }
+    if (scheduled.length > 0 && scheduled.length < due.length) {
+      sentences.push(`${due.length - scheduled.length} of the ${due.length} scheduled updates in this period did not run.`);
+    }
+    if (scheduled.length === 0 && due.length === 0 && attempts.length === 0) {
+      sentences.push('No database update was due in this period.');
+    }
+  }
+  for (const e of others) {
+    const how = e.trigger === 'startup' ? 'initial download' : 'manual update';
+    if (e.status === 'success') {
+      sentences.push(`A ${how} at ${time(at(e))} succeeded${detail(e)}.`);
+    } else if (e.status === 'failed') {
+      sentences.push(`A ${how} at ${time(at(e))} failed${e.error ? ': ' + e.error : ''}.`);
+    } else {
+      sentences.push(`A ${how} started at ${time(at(e))} has not finished.`);
+    }
+  }
+  if (!updated) {
+    if (dbModified == null) {
+      sentences.push('There is no database file.');
+    } else {
+      sentences.push(`The database in use was downloaded ${localDateTime(dbModified)} (${formatSpan(now - dbModified)} ago).`);
+    }
+  }
+  return sentences;
+}
+
+/**
+ * The paragraph for the server's daily report: pages served, whether the database
+ * was updated on schedule (it's downloaded afresh each day), and whether it can be read.
+ */
+async function dailyReport({since, now}) {
+  const {plural} = require('../library/daily-report');
+  const sentences = [];
+  if (globalStats) {
+    const counts = globalStats.countsSince(since, now);
+    sentences.push(`${plural(counts.total, 'page')} ${counts.total === 1 ? 'was' : 'were'} served.`);
+  }
+  const age = getDatabaseAgeInfo();
+  sentences.push(...describeUpdates(getUpdateHistory(), {
+    since, now,
+    autoUpdate: xigSettings?.autoUpdate !== false,
+    dbModified: age.lastDownloaded ? age.lastDownloaded.getTime() : null
+  }));
+  if (!xigDb) {
+    sentences.push('The database is not open: it could not be accessed.');
+  } else {
+    try {
+      const row = await new Promise((resolve, reject) =>
+        xigDb.get('SELECT COUNT(*) AS n FROM Resources', [], guarded(reject, (err, row) => err ? reject(err) : resolve(row))));
+      sentences.push(`The database holds ${plural(row.n, 'resource')}.`);
+    } catch (e) {
+      sentences.push(`The database could not be accessed: ${e.message}.`);
+    }
+  }
+  return sentences.join(' ');
+}
+
 function shutdown() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     if (xigDb) {
-      xigDb.close((err) => {
+      xigDb.close(guarded(reject, (err) => {
         if (err) {
           xigLog.error(`Error closing XIG database: ${err.message}`);
         } else {
           xigLog.error('XIG database connection closed');
         }
         resolve();
-      });
+      }));
     } else {
       resolve();
     }
@@ -3198,9 +3383,13 @@ function shutdown() {
 // Export everything
 module.exports = {
   router,
+  SITEMAP_SIZE,
+  setSitemapSizeForTests: (n) => { sitemapSize = n; sitemapCache = { db: null, boundaries: null, files: new Map() }; },
+  setXigSettings,
   updateXigDatabase,
   getDatabaseInfo,
   shutdown,
+  dailyReport,
   initializeXigModule,
 
   // Cache functions
@@ -3257,10 +3446,9 @@ module.exports = {
   buildRealmLinkUrl,
 
   // SQL filter functions
-  buildSqlFilter,
-  buildResourceListQuery,
+  buildResourceFilter,
+  buildSecureResourceQuery,
   buildSecureResourceCountQuery,
-  sqlEscapeString,
   hasTerminologySource,
   gatherPageStatistics,
 
@@ -3271,7 +3459,23 @@ module.exports = {
   buildStatsTable,
   getUpdateHistory,
   getLastUpdateAttempt,
+  describeUpdates,
+  scheduledUpdatesBetween,
+
+  // Paging, and the request log
+  PAGE_SIZE,
+  MAX_INLINE_RESOURCE,
+  buildPager,
+  buildPageLinks,
+  parseOffset,
+  describeRequest,
+  gzipSize,
+  buildResourceContent,
+  sendResourceJson,
 
   // Event emitter
-  cacheEmitter
+  cacheEmitter,
+
+  // Tests only: use this database (and its counts) without downloading one
+  setDatabaseForTests: (db) => { xigDb = db; }
 };

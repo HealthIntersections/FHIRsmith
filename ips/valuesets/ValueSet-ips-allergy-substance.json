@@ -1,0 +1,37 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-allergy-substance",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-allergy-substance",
+  "name": "IpsAllergySubstance",
+  "title": "Allergy substances (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "The substance of an allergic reaction: SNOMED CT International descendants of 105590001 |Substance| and 373873005 |Pharmaceutical / biologic product|.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "105590001"
+          }
+        ]
+      },
+      {
+        "system": "http://snomed.info/sct",
+        "version": "http://snomed.info/sct/900000000000207008",
+        "filter": [
+          {
+            "property": "concept",
+            "op": "is-a",
+            "value": "373873005"
+          }
+        ]
+      }
+    ]
+  }
+}

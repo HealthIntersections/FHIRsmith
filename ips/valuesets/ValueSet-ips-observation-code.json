@@ -1,0 +1,18 @@
+{
+  "resourceType": "ValueSet",
+  "id": "ips-observation-code",
+  "url": "http://healthintersections.com.au/fhirsmith/ValueSet/ips-observation-code",
+  "name": "IpsObservationCode",
+  "title": "Observation codes (IPS international exchange)",
+  "status": "active",
+  "experimental": false,
+  "publisher": "Health Intersections",
+  "description": "Any LOINC code.",
+  "compose": {
+    "include": [
+      {
+        "system": "http://loinc.org"
+      }
+    ]
+  }
+}

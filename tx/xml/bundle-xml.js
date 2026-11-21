@@ -118,6 +118,7 @@ class BundleXML extends FhirXmlBase {
 
     const indent = '  '.repeat(indentLevel);
     const resourceType = resource.resourceType;
+    this.checkElementName(resourceType);
 
     // For known resource types, delegate to their specific converters
     // For unknown types, render generically

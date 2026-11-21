@@ -939,7 +939,10 @@ class Registry {
   }
 
   register(handler) {
-    this.handlers.set(handler.code, handler);
+    // Key on getCode() — the interface every handler implements. Some handlers
+    // (CelsiusHandler/FahrenheitHandler) override getCode() without setting a
+    // `.code` field, so keying on `.code` would register them under `undefined`.
+    this.handlers.set(handler.getCode(), handler);
   }
 }
 

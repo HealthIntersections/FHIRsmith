@@ -295,8 +295,8 @@ textarea {
   line-height: inherit;
 }
 a {
-  color: #428bca;
-  text-decoration: none;
+  color: #1f4465;
+  text-decoration: underline;
 }
 a:hover,
 a:focus {
@@ -349,19 +349,19 @@ cite {
   font-style: normal;
 }
 .text-muted {
-  color: #999999;
+  color: #727272;
 }
 .text-primary {
-  color: #428bca;
+  color: #2c6597;
 }
 .text-warning {
-  color: #c09853;
+  color: #92681e;
 }
 .text-danger {
   color: #b94a48;
 }
 .text-success {
-  color: #468847;
+  color: #356735;
 }
 .text-info {
   color: #3a87ad;
@@ -1463,7 +1463,7 @@ fieldset[disabled] .btn-default.active {
 }
 .btn-primary {
   color: #ffffff;
-  background-color: #428bca;
+  background-color: #2c618f;
   border-color: #428bca;
 }
 .btn-primary:hover,
@@ -2853,7 +2853,7 @@ button.close {
 }
 .pagination > .active > a,
 .pagination > .active > span {
-  color: #999999;
+  color: #565656;
   cursor: default;
 }
 .pagination > .disabled > span,
@@ -3310,7 +3310,7 @@ button.close {
 .alert {
   padding: 10px 35px 10px 15px;
   margin-bottom: 20px;
-  color: #c09853;
+  color: #872929;
   background-color: #fcf8e3;
   border: 1px solid #fbeed5;
   border-radius: 4px;
@@ -3344,9 +3344,9 @@ button.close {
   color: #356635;
 }
 .alert-danger {
-  background-color: #f2dede;
+  background-color: #fcebeb;
   border-color: #eed3d7;
-  color: #b94a48;
+  color: #6c2322;
 }
 .alert-danger hr {
   border-top-color: #e6c1c7;
@@ -3355,9 +3355,9 @@ button.close {
   color: #953b39;
 }
 .alert-info {
-  background-color: #d9edf7;
+  background-color: #fff7e6;
   border-color: #bce8f1;
-  color: #3a87ad;
+  color: #2a6785;
 }
 .alert-info hr {
   border-top-color: #a6e1ec;
@@ -3445,7 +3445,7 @@ a.thumbnail:focus {
   text-align: center;
   white-space: nowrap;
   vertical-align: baseline;
-  background-color: #999999;
+  background-color: #6f6f6f;
   border-radius: .25em;
 }
 .label[href]:hover,
@@ -3494,7 +3494,7 @@ a.thumbnail:focus {
   vertical-align: baseline;
   white-space: nowrap;
   text-align: center;
-  background-color: #999999;
+  background-color: #6d6d6d;
   border-radius: 10px;
 }
 .badge:empty {
@@ -5300,3 +5300,35 @@ p {
 .affix {
   position: fixed;
 }
+
+/* FHIRsmith: button classes from later Bootstraps that pages use (btn-secondary, btn-outline-*),
+   which this Bootstrap 3 doesn't have. Without these, .btn:hover's white text was all that
+   applied, and such a button vanished when the mouse was over it */
+.btn-secondary {
+  color: #ffffff;
+  background-color: #6c757d;
+  border-color: #6c757d;
+}
+.btn-secondary:hover,
+.btn-secondary:focus,
+.btn-secondary:active,
+.btn-secondary.active {
+  color: #ffffff;
+  background-color: #5a6268;
+  border-color: #545b62;
+}
+.btn-outline-secondary,
+.btn-outline-dark,
+.btn-outline-primary,
+.btn-outline-danger {
+  background-color: #ffffff;
+}
+.btn-outline-secondary { color: #474949; border-color: #6c757d; }
+.btn-outline-dark { color: #222222; border-color: #222222; }
+.btn-outline-primary { color: #2c618f; border-color: #2c618f; }
+.btn-outline-danger { color: #c9302c; border-color: #d9534f; }
+.btn-outline-secondary:hover, .btn-outline-secondary:focus, .btn-outline-secondary:active { color: #ffffff; background-color: #6c757d; border-color: #6c757d; }
+.btn-outline-dark:hover, .btn-outline-dark:focus, .btn-outline-dark:active { color: #ffffff; background-color: #222222; border-color: #222222; }
+.btn-outline-primary:hover, .btn-outline-primary:focus, .btn-outline-primary:active { color: #ffffff; background-color: #2c618f; border-color: #2c618f; }
+.btn-outline-danger:hover, .btn-outline-danger:focus, .btn-outline-danger:active { color: #ffffff; background-color: #d9534f; border-color: #d9534f; }
+.btn-sm { padding: 4px 10px; font-size: 13px; }

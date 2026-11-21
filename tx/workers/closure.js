@@ -1,32 +1,660 @@
 //
-// Closure Worker - Handles ConceptMap $closure operation
+// Closure Worker - Handles the $closure operation
 //
-// GET /ConceptMap/$closure?{params}
-// POST /ConceptMap/$closure
+// POST [base]/$closure
+//
+// $closure is defined on ConceptMap (OperationDefinition ConceptMap-closure) but is a
+// SYSTEM-level operation: system=true, type=false, instance=false in R3, R4 and R5.
+// So it lives at [base]/$closure, not [base]/ConceptMap/$closure (issue #100).
+//
+// A closure table is state held on the server between calls, and between client
+// sessions, so it only exists when the administrator has turned it on and said where
+// it is kept (modules.tx.closure - see ClosureStore). Without that, every request gets
+// a not-supported OperationOutcome.
+//
+// The calls:
+//   name (+ reset, + configuration)   initialise the table. It is an error if the table
+//                                      already exists, unless reset = true, which wipes it
+//   name + concept(s)                  add concepts; returns the entries they produce
+//   name + version                     resync; returns every entry added after version
+//   name + dispose = true              the client has finished with the table, so it is
+//                                      deleted. Not in the specification: the client is
+//                                      just telling the server it can let the table go.
+//                                      Disposing of a table that doesn't exist is fine
+//                                      (it may already have been pruned). It can't be
+//                                      combined with anything else
+//
+// The configuration is fixed when the table is initialised, and replayed on every later
+// call: tx-resource (the code systems it is built over, which the client does not send
+// again), useSupplement, system-version, check-system-version, force-system-version.
+//
+// Closure is stable across sessions, so it never uses a client's terminology cache: the
+// X-Cache-Id header is ignored here.
+//
+// Access: the table name is the only thing that identifies a table, so anyone who knows a
+// name can read, add to, or reset that table. On a public server, require UUID names
+// (requireUuidNames) so that a name is effectively a secret held by the client that made it.
+//
+// Shared (server.cluster.sharedClosure): other processes answer $closure on the same tables.
+// The per-table lock still orders this process's calls, but a write may find the table has
+// moved on since it was read: then nothing is written, and the call is worked out again
+// from the table as it is now (see add, and the header of closure-store.js). After
+// writeRetries such goes, the call gets the same 429 as a busy queue. The code lookups and
+// subsumption tests done before are remembered for the retries, so a retry costs reads.
+//
+// Cost: everything a client can make this do is bounded (see LIMITS) - the tables, the
+// concepts and entries in a table, what one call can add, what a table's configuration
+// can store, and how many calls can queue for one table and for how long. The work itself
+// yields (checkAndYield) and runs against the operation's compute deadline; the storage
+// is synchronous, so reads that can be large are paged and writes are capped.
 //
 
-class ClosureWorker {
+const { TerminologyWorker, Unknown_Code_in_VersionSCT, SCTVersion } = require('./worker');
+const { TxParameters } = require('../params');
+const { Issue, OperationOutcome, buildOperationOutcome, outcomeFromError } = require('../library/operation-outcome');
+const { debugLog } = require('../operation-context');
+const { NARROWER, EQUIVALENT } = require('../closure/closure-store');
+const { VersionUtilities } = require('../../library/version-utilities');
+
+// parameters that configure a table, and so are only accepted when it is initialised
+const CONFIG_PARAMS = ['tx-resource', 'useSupplement', 'system-version', 'check-system-version', 'force-system-version'];
+
+const UUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Defaults for modules.tx.closure.<name>. Absent = the default; 0 = no limit.
+const LIMITS = {
+  maxTables: 1000,
+  maxConceptsPerTable: 10000,
+  maxConceptsPerRequest: 1000,
+  maxEntriesPerTable: 250000,
+  maxEntriesPerRequest: 50000,
+  maxConfigSize: 5 * 1024 * 1024,  // bytes of stored configuration (mostly tx-resource)
+  maxQueue: 10,                     // calls queued on one table, counting the running one
+  lockTimeout: 60                   // seconds a call will wait for its table
+};
+
+const RESYNC_PAGE = 2000; // rows read from the store at a time
+
+// shared: how many times an add is worked out again when another process changed the table
+// first, and the most it waits (with jitter) before a retry
+const WRITE_RETRIES = 10;
+const RETRY_WAIT_MS = 50;
+
+class ClosureWorker extends TerminologyWorker {
   /**
-   * Handle a $closure request
-   * @param {express.Request} req - Express request (with txProvider attached)
-   * @param {express.Response} res - Express response
-   * @param {Object} log - Logger instance
+   * @param {OperationContext} opContext - Operation context
+   * @param {Logger} log - Logger instance
+   * @param {Provider} provider - Provider for code systems and resources
+   * @param {LanguageDefinitions} languages - Language definitions
+   * @param {I18nSupport} i18n - Internationalization support
+   * @param {ClosureStore|null} store - where closure tables are kept; null = not supported
+   * @param {Object} [config] - modules.tx.closure
    */
-  static handle(req, res) {
-    const params = req.method === 'POST' ? req.body : req.query;
+  constructor(opContext, log, provider, languages, i18n, store = null, config = {}) {
+    super(opContext, log, provider, languages, i18n);
+    this.store = store;
+    this.closureConfig = config || {};
+  }
 
-    this.log.debug('ConceptMap $closure with params:', params);
+  opName() {
+    return 'closure';
+  }
 
-    // TODO: Implement closure logic using provider
-    res.status(501).json({
-      resourceType: 'OperationOutcome',
-      issue: [{
-        severity: 'error',
-        code: 'not-supported',
-        diagnostics: 'ConceptMap $closure operation not yet implemented'
-      }]
+  // Not a value-set operation; the base class requires this to be implemented.
+  vsHandle() {
+    return null;
+  }
+
+  /**
+   * The configured value of a limit, or its default. 0 means no limit (Infinity).
+   */
+  limit(name) {
+    const v = this.closureConfig[name];
+    const n = (v === undefined || v === null) ? LIMITS[name] : Number(v);
+    return (!Number.isFinite(n) || n <= 0) ? Infinity : n;
+  }
+
+  /**
+   * Express entry point for [base]/$closure (GET and POST).
+   * @param {express.Request} req - Express request
+   * @param {express.Response} res - Express response
+   */
+  async handle(req, res) {
+    try {
+      if (!this.store) {
+        return res.status(501).json(buildOperationOutcome('error', 'not-supported',
+          this.i18n.translate('CLOSURE_NOT_SUPPORTED', this.opContext.langs, []), 'not-supported'));
+      }
+      // $closure changes state on the server (affectsState = true), so GET isn't allowed
+      if (req.method !== 'POST') {
+        throw this.closureIssue('invalid', 'CLOSURE_POST_ONLY', [], 'invalid-data', 405);
+      }
+      const params = this.buildParameters(req);
+      const fhirVersion = req.txEndpoint ? req.txEndpoint.fhirVersion : '5.0';
+      const cm = await this.closure(params, fhirVersion);
+      return res.status(200).json(cm);
+    } catch (error) {
+      this.log.error(error);
+      debugLog(error);
+      req.logInfo = this.usedSources.join('|') + ' - error' + (error.msgId ? ' ' + error.msgId : '');
+      if (error instanceof Issue) {
+        const oo = new OperationOutcome();
+        oo.addIssue(error);
+        return res.status(error.statusCode || 500).json(oo.jsonObj);
+      }
+      return res.status(error.statusCode || 500).json(outcomeFromError(error));
+    }
+  }
+
+  /**
+   * Do the operation. Everything after the request checks happens with the table locked,
+   * so two calls on the same table can't interleave - each one reads the table, works out
+   * what's new (which awaits, and yields), and writes, before the next starts.
+   *
+   * @param {Object} params - Parameters resource
+   * @param {string} fhirVersion - the endpoint's FHIR version, for the response
+   * @returns {Object} ConceptMap
+   */
+  async closure(params, fhirVersion) {
+    // never the client's terminology cache - see the header comment
+    this.opContext.cacheId = null;
+    const list = (params.parameter || []).filter(p => p.name !== 'cache-id');
+
+    const name = this.readName(list);
+    const concepts = [];
+    const config = [];
+    let versionParam = null;
+    let reset = false;
+    let dispose = false;
+    const ignored = [];
+    for (const p of list) {
+      if (p.name === 'concept') {
+        concepts.push(p);
+      } else if (CONFIG_PARAMS.includes(p.name)) {
+        config.push(p);
+      } else if (p.name === 'version') {
+        versionParam = p;
+      } else if (p.name === 'reset') {
+        reset = p.valueBoolean === true || p.valueString === 'true';
+      } else if (p.name === 'dispose') {
+        dispose = p.valueBoolean === true || p.valueString === 'true';
+      } else if (p.name !== 'name') {
+        // Ignored, as everywhere else in the server: a request carries parameters that
+        // are not for the operation in hand. The tx-ecosystem runner, for one, adds a
+        // 'uuid' to every request from its default profile
+        ignored.push(p.name);
+      }
+    }
+    if (ignored.length > 0) {
+      this.log.debug(`$closure: ignored parameter(s) ${ignored.map(safeText).join(', ')}`);
+    }
+    if (dispose) {
+      if (concepts.length > 0 || versionParam || reset || config.length > 0) {
+        throw this.closureIssue('invalid', 'CLOSURE_DISPOSE_NOT_ALONE', [], 'invalid-data', 400);
+      }
+      return await this.lockTable(name, async () => {
+        if (this.store.dropTable(name)) {
+          this.log.info(`closure table '${name}' disposed`);
+        }
+        return await this.buildConceptMap(name, 0, [], fhirVersion);
+      });
+    }
+    if (concepts.length > 0 && versionParam) {
+      throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_AND_VERSION', [], 'invalid-data', 400);
+    }
+    const maxRequest = this.limit('maxConceptsPerRequest');
+    if (concepts.length > maxRequest) {
+      throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_REQUEST_CONCEPTS', [String(maxRequest)], 'too-costly', 422);
+    }
+    // checked here, before anything waits for the table
+    let configSize = 0;
+    for (const p of config) {
+      configSize += JSON.stringify(p).length;
+    }
+    const maxConfig = this.limit('maxConfigSize');
+    if (configSize > maxConfig) {
+      throw this.closureIssue('too-costly', 'CLOSURE_CONFIG_TOO_LARGE', [String(maxConfig)], 'too-costly', 422);
+    }
+
+    return await this.lockTable(name, async () => {
+      const initialise = reset || (concepts.length === 0 && !versionParam);
+      let table = this.store.getTable(name);
+
+      if (initialise) {
+        if (versionParam) {
+          throw this.closureIssue('invalid', 'CLOSURE_RESET_AND_VERSION', [], 'invalid-data', 400);
+        }
+        if (table && !reset) {
+          throw this.closureIssue('duplicate', 'CLOSURE_TABLE_EXISTS', [name], 'business-rule', 409);
+        }
+        const max = this.limit('maxTables');
+        if (!table && this.store.tableCount() >= max) {
+          throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
+        }
+        if (this.store.shared) {
+          // the checks above again, in the same transaction as the write
+          const made = this.store.createTableChecked(name, config, { reset, maxTables: max });
+          if (made.refused === 'exists') {
+            throw this.closureIssue('duplicate', 'CLOSURE_TABLE_EXISTS', [name], 'business-rule', 409);
+          }
+          if (made.refused === 'limit') {
+            throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_TABLES', [String(max)], 'too-costly', 422);
+          }
+          table = made.table;
+        } else {
+          table = this.store.createTable(name, config);
+        }
+        this.log.info(`closure table '${name}' ${reset ? 'reset' : 'created'}`);
+        if (concepts.length === 0) {
+          return await this.buildConceptMap(name, table.version, [], fhirVersion);
+        }
+      } else {
+        if (!table) {
+          throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+        }
+        if (config.length > 0) {
+          throw this.closureIssue('invalid', 'CLOSURE_CONFIG_NOT_ALLOWED', [config[0].name], 'invalid-data', 400);
+        }
+      }
+
+      if (versionParam) {
+        return await this.resync(table, name, versionParam, fhirVersion);
+      }
+      return await this.add(table, name, concepts, fhirVersion);
     });
+  }
+
+  /**
+   * Take the table's lock, with a bounded queue and a bounded wait. The wait goes through
+   * OperationContext.waitFor: it isn't charged to the compute deadline (the call isn't
+   * computing), and a client that has gone away stops waiting.
+   */
+  async lockTable(name, fn) {
+    const maxQueue = this.limit('maxQueue');
+    const timeout = this.limit('lockTimeout');
+    try {
+      return await this.store.withLock(name, fn, {
+        maxQueue: maxQueue === Infinity ? 0 : maxQueue,
+        timeoutMs: timeout === Infinity ? 0 : timeout * 1000,
+        waitFor: p => this.opContext.waitFor(p, 'closure-lock')
+      });
+    } catch (error) {
+      if (error.closureBusy) {
+        throw this.closureIssue('too-costly', 'CLOSURE_TABLE_BUSY', [name], 'too-costly', 429);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The table name: required, no whitespace or control characters, at most 64 characters
+   * - and a UUID, if the administrator has said so (tx.fhir.org does, so names chosen by
+   * different clients can't collide, and can't be guessed).
+   */
+  readName(list) {
+    const p = list.find(x => x.name === 'name');
+    const name = p ? this.getParameterValue(p) : null;
+    if (typeof name !== 'string' || name.length === 0) {
+      throw this.closureIssue('required', 'CLOSURE_NAME_REQUIRED', [], 'invalid-data', 400);
+    }
+    if (/[\s\p{Cc}]/u.test(name) || name.length > 64) {
+      throw this.closureIssue('invalid', 'CLOSURE_NAME_INVALID', [safeText(name)], 'invalid-data', 400);
+    }
+    if (this.closureConfig.requireUuidNames && !UUID.test(name)) {
+      throw this.closureIssue('invalid', 'CLOSURE_NAME_NOT_UUID', [name], 'invalid-data', 400);
+    }
+    return name;
+  }
+
+  /**
+   * Resync: every entry added after the nominated version, at the table's current version.
+   * The table can be large, so it is read a page at a time, yielding in between.
+   */
+  async resync(table, name, versionParam, fhirVersion) {
+    const raw = this.getParameterValue(versionParam);
+    const v = typeof raw === 'number' ? raw : (/^\d{1,15}$/.test(String(raw)) ? parseInt(raw, 10) : NaN);
+    if (!Number.isInteger(v) || v < 0 || v > table.version) {
+      throw this.closureIssue('invalid', 'CLOSURE_VERSION_INVALID', [safeText(raw), name, String(table.version)], 'invalid-data', 400);
+    }
+    this.store.touch(table.id);
+    const entries = [];
+    let after = 0;
+    for (;;) {
+      await this.checkAndYield('closure-resync');
+      const page = this.store.shared
+        ? this.store.entriesPage(table.id, v, after, RESYNC_PAGE, table.version)
+        : this.store.entriesPage(table.id, v, after, RESYNC_PAGE);
+      for (const r of page) {
+        entries.push({
+          source: { system: r.source_system, code: r.source_code, display: r.source_display },
+          target: { system: r.target_system, code: r.target_code, display: r.target_display },
+          relationship: r.relationship
+        });
+      }
+      if (page.length < RESYNC_PAGE) {
+        break;
+      }
+      after = page[page.length - 1].rowid;
+    }
+    if (this.store.shared) {
+      // Reset/dispose deletes the old pages. Never return a truncated snapshot, or
+      // entries from a replacement, as though they belonged to the version we read.
+      const current = this.store.getTable(name);
+      if (!current) {
+        throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+      }
+      if (current.id !== table.id) {
+        throw this.closureIssue('conflict', 'CLOSURE_TABLE_CHANGED', [name], 'business-rule', 409);
+      }
+    }
+    return await this.buildConceptMap(name, table.version, entries, fhirVersion);
+  }
+
+  /**
+   * Add concepts. Each new concept is compared with every concept of the same code system
+   * already in the table (and with the ones added before it in this call), in both
+   * directions. Nothing is written until every concept has been checked: an unknown code
+   * system or code, or going over a limit, fails the whole call.
+   */
+  async add(table, name, conceptParams, fhirVersion) {
+    if (this.store.shared) {
+      return await this.addShared(table, name, conceptParams, fhirVersion);
+    }
+    const { fresh, entries, out } = await this.workOutAdd(table, name, conceptParams, null);
+    const version = this.store.recordAdd(table, fresh, entries);
+    return await this.addResult(name, version, fresh, entries, out, fhirVersion);
+  }
+
+  /**
+   * Shared: add, with the write checked against the table as it was read
+   * (recordAddChecked). If another process changed the table first, nothing was written:
+   * read the table again and work the add out again, up to writeRetries times, waiting a
+   * little (with jitter) in between; then 429, as for a busy queue. A table that is gone
+   * by then is unknown (404), as it would be to a call that came after the one that
+   * dropped it.
+   */
+  async addShared(table, name, conceptParams, fhirVersion) {
+    const configured = this.closureConfig.writeRetries;
+    const retries = Number.isInteger(configured) && configured >= 0 ? configured : WRITE_RETRIES;
+    let memo = null;
+    for (let attempt = 0; ; attempt++) {
+      if (!memo || memo.tableId !== table.id) {
+        // what's remembered holds for one table's configuration: a reset starts again
+        memo = { tableId: table.id, providers: new Map(), codes: new Map(), subsumes: new Map() };
+      }
+      const { fresh, entries, out } = await this.workOutAdd(table, name, conceptParams, memo);
+      let version = null;
+      try {
+        version = this.store.recordAddChecked(table, fresh, entries);
+      } catch (error) {
+        // the busy timeout ran out: another process held the write lock throughout
+        if (!String(error.code || '').startsWith('SQLITE_BUSY')) {
+          throw error;
+        }
+      }
+      if (version !== null) {
+        return await this.addResult(name, version, fresh, entries, out, fhirVersion);
+      }
+      if (attempt >= retries) {
+        this.log.info(`closure table '${name}': changed by another process on each of ${attempt + 1} tries; answering busy`);
+        throw this.closureIssue('too-costly', 'CLOSURE_TABLE_BUSY', [name], 'too-costly', 429);
+      }
+      this.log.info(`closure table '${name}': changed by another process since it was read; working the add out again (retry ${attempt + 1} of ${retries})`);
+      const wait = Math.random() * Math.min(RETRY_WAIT_MS, 5 * 2 ** attempt);
+      await this.opContext.waitFor(new Promise(resolve => setTimeout(resolve, wait)), 'closure-retry');
+      table = this.store.getTable(name);
+      if (!table) {
+        throw this.closureIssue('not-found', 'CLOSURE_TABLE_UNKNOWN', [name], 'not-found', 404);
+      }
+    }
+  }
+
+  /**
+   * Work out what adding the concepts to the table, as read, would write: the new
+   * concepts and the entries they make. Writes nothing.
+   * @param {Object} memo - shared only (else null): code lookups and subsumption tests
+   *   already done for this table, kept across retries
+   * @returns {{fresh: Array, entries: Array, out: Array}}
+   */
+  async workOutAdd(table, name, conceptParams, memo) {
+    // replay the table's configuration: its code systems, and its version rules
+    const stored = { resourceType: 'Parameters', parameter: this.store.getParams(table.id) };
+    await this.setupAdditionalResources(stored);
+    const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
+    txp.readParams(stored);
+
+    const existing = this.store.getConcepts(table.id);
+    const known = new Set();
+    for (const c of existing) {
+      known.add(c.system + '|' + c.code);
+    }
+    const providers = memo ? memo.providers : new Map();
+    const fresh = [];
+
+    for (const p of conceptParams) {
+      await this.checkAndYield('closure-add');
+      const coding = p.valueCoding;
+      if (!coding || typeof coding.system !== 'string' || typeof coding.code !== 'string' || !coding.system || !coding.code) {
+        throw this.closureIssue('invalid', 'CLOSURE_CONCEPT_INVALID', [], 'invalid-data', 400);
+      }
+      let cs = providers.get(coding.system);
+      if (!cs) {
+        cs = await this.findCodeSystem(coding.system, coding.version || '', txp, ['complete'], null, false, true);
+        this.seeSourceProvider(cs, coding.system);
+        providers.set(coding.system, cs);
+      }
+      const memoKey = memo ? coding.system + '|' + (coding.version || '') + '|' + coding.code : null;
+      let found = memo ? memo.codes.get(memoKey) : null;
+      if (!found) {
+        const loc = await cs.locate(coding.code);
+        if (!loc || !loc.context) {
+          throw this.unknownCodeIssue(cs, coding.code, loc ? loc.message : null, txp);
+        }
+        // the code system's own spelling of the code, so a case-insensitive code system
+        // doesn't end up with the same concept in the table twice
+        found = { context: loc.context, code: (await cs.code(loc.context)) || coding.code };
+        if (memo) {
+          memo.codes.set(memoKey, found);
+        }
+      }
+      const code = found.code;
+      const key = coding.system + '|' + code;
+      if (known.has(key)) {
+        continue;
+      }
+      known.add(key);
+      if (found.display === undefined) {
+        found.display = await cs.display(found.context);
+      }
+      // ref: how the store refers to it until it has an id (see ClosureStore.recordAdd)
+      fresh.push({ key, ref: key, system: coding.system, code, display: found.display, cs });
+    }
+
+    const maxConcepts = this.limit('maxConceptsPerTable');
+    if (fresh.length > 0 && existing.length + fresh.length > maxConcepts) {
+      throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_CONCEPTS', [name, String(maxConcepts)], 'too-costly', 422);
+    }
+
+    // work out the entries: each new concept against everything before it. The number of
+    // entries is capped as it grows - a client-supplied code system can be shaped so that
+    // nearly every pair is related - so the write below is always bounded
+    const maxEntries = Math.min(this.limit('maxEntriesPerRequest'),
+      this.limit('maxEntriesPerTable') - (fresh.length > 0 ? this.store.entryCount(table.id) : 0));
+    const entries = [];
+    const out = [];
+    const before = existing.map(c => ({ key: c.system + '|' + c.code, ref: c.id, system: c.system, code: c.code, display: c.display }));
+    // Where the provider can list a code's ancestors (CodeSystemProvider.ancestorsOf), a pair
+    // is related from the two ancestor sets, which costs one provider call per concept rather
+    // than a subsumesTest per pair. Each set is asked for once per call, when first needed,
+    // and only for concepts of a system that has new concepts; a concept the provider has no
+    // set for (null, the default) is compared by subsumesTest, as before. The sets are not
+    // kept between calls, so they always come from the code system as it is now.
+    const ancestorSets = new Map(); // key -> Set of codes, or null
+    const ancestorsOf = async (cs, c) => {
+      if (!ancestorSets.has(c.key)) {
+        await this.checkAndYield('closure-ancestors');
+        ancestorSets.set(c.key, await cs.ancestorsOf(c.code));
+      }
+      return ancestorSets.get(c.key);
+    };
+    for (const n of fresh) {
+      const an = await ancestorsOf(n.cs, n);
+      for (const o of before) {
+        if (o.system !== n.system) {
+          continue;
+        }
+        await this.checkAndYield('closure-subsumes');
+        const ao = an ? await ancestorsOf(n.cs, o) : null;
+        let outcome;
+        if (ao) {
+          // the same outcome subsumesTest gives (see ancestorsOf): n and o are different codes
+          outcome = ao.has(n.code) ? 'subsumes' : an.has(o.code) ? 'subsumed-by' : 'not-subsumed';
+        } else {
+          outcome = memo ? await this.memoSubsumes(memo, n, o) : await n.cs.subsumesTest(n.code, o.code);
+        }
+        let source, target, relationship;
+        if (outcome === 'subsumes') {          // the new concept is the broader one
+          source = o; target = n; relationship = NARROWER;
+        } else if (outcome === 'subsumed-by') { // the new concept is the narrower one
+          source = n; target = o; relationship = NARROWER;
+        } else if (outcome === 'equivalent') {
+          source = n; target = o; relationship = EQUIVALENT;
+        } else {
+          continue;
+        }
+        if (entries.length >= maxEntries) {
+          throw this.closureIssue('too-costly', 'CLOSURE_TOO_MANY_ENTRIES', [name], 'too-costly', 422);
+        }
+        entries.push({ source: source.ref, target: target.ref, relationship });
+        out.push({ source, target, relationship });
+      }
+      before.push(n);
+    }
+
+    return { fresh, entries, out };
+  }
+
+  /** n.cs.subsumesTest(n.code, o.code), remembered in the memo (shared retries). */
+  async memoSubsumes(memo, n, o) {
+    const key = n.system + '|' + n.code + '|' + o.code;
+    if (!memo.subsumes.has(key)) {
+      memo.subsumes.set(key, await n.cs.subsumesTest(n.code, o.code));
+    }
+    return memo.subsumes.get(key);
+  }
+
+  /** The response to an add, once it is written. */
+  async addResult(name, version, fresh, entries, out, fhirVersion) {
+    if (fresh.length > 0) {
+      this.log.info(`closure table '${name}': added ${fresh.length} concept(s), ${entries.length} entr${entries.length === 1 ? 'y' : 'ies'}, now version ${version}`);
+    }
+    return await this.buildConceptMap(name, version, out, fhirVersion);
+  }
+
+  /**
+   * The response: a ConceptMap of the entries, one group per source/target system, sorted
+   * so the same table always reads the same way. For R3/R4 the relationship is also given
+   * as the equivalence the R3/R4 OperationDefinition names ('subsumes' - the target
+   * subsumes the source), which the version transform then keeps in preference to the one
+   * it would work out itself ('wider').
+   *
+   * A resync can hand this a whole table, so it yields as it goes, and never sorts the
+   * entries as one list: elements are sorted within their group (at most one per concept)
+   * and targets within their element.
+   */
+  async buildConceptMap(name, version, entries, fhirVersion) {
+    const legacy = VersionUtilities.isR3Ver(fhirVersion) || VersionUtilities.isR4Ver(fhirVersion);
+    const cm = {
+      resourceType: 'ConceptMap',
+      version: String(version),
+      title: `Closure table ${name}`,
+      status: 'active',
+      experimental: true,
+      date: new Date().toISOString()
+    };
+    const groups = new Map(); // source system -> target system -> source code -> element
+    for (const e of entries) {
+      await this.checkAndYield('closure-response');
+      let bySource = groups.get(e.source.system);
+      if (!bySource) {
+        bySource = new Map();
+        groups.set(e.source.system, bySource);
+      }
+      let g = bySource.get(e.target.system);
+      if (!g) {
+        g = new Map();
+        bySource.set(e.target.system, g);
+      }
+      let el = g.get(e.source.code);
+      if (!el) {
+        el = { code: e.source.code };
+        if (e.source.display) {
+          el.display = e.source.display;
+        }
+        el.target = [];
+        g.set(e.source.code, el);
+      }
+      const t = { code: e.target.code };
+      if (e.target.display) {
+        t.display = e.target.display;
+      }
+      t.relationship = e.relationship;
+      if (legacy) {
+        t.equivalence = e.relationship === EQUIVALENT ? 'equal' : 'subsumes';
+      }
+      el.target.push(t);
+    }
+
+    const byKey = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    const group = [];
+    for (const src of [...groups.keys()].sort(byKey)) {
+      const bySource = groups.get(src);
+      for (const tgt of [...bySource.keys()].sort(byKey)) {
+        const g = bySource.get(tgt);
+        const element = [];
+        for (const code of [...g.keys()].sort(byKey)) {
+          await this.checkAndYield('closure-response');
+          const el = g.get(code);
+          el.target.sort((a, b) => byKey(a.code, b.code));
+          element.push(el);
+        }
+        group.push({ source: src, target: tgt, element });
+      }
+    }
+    if (group.length > 0) {
+      cm.group = group;
+    }
+    return cm;
+  }
+
+  closureIssue(cause, msgId, params, txIssueType, status) {
+    return new Issue('error', cause, null, msgId, this.i18n.translate(msgId, this.opContext.langs, params), txIssueType, status);
+  }
+
+  /**
+   * An unknown code - the same message id and tx-issue-type as $validate-code and $subsumes.
+   */
+  unknownCodeIssue(cs, code, message, txp) {
+    const system = cs.system();
+    const version = cs.version();
+    const msgId = Unknown_Code_in_VersionSCT(system, version);
+    const msg = this.i18n.translate(msgId, txp ? txp.HTTPLanguages : this.opContext.langs, [safeText(code), system, version, SCTVersion(system, version)]);
+    const issue = new Issue('error', 'code-invalid', 'concept', msgId, msg, 'invalid-code', 404);
+    if (message) {
+      issue.withDiagnostics(message);
+    }
+    return issue;
   }
 }
 
+/**
+ * Client-supplied text going into a message (and so into the log): no control characters
+ * - a newline would let a client write lines of its own into the log - and not too long.
+ */
+function safeText(v) {
+  const s = String(v).replace(/\p{Cc}/gu, '?');
+  return s.length > 100 ? s.substring(0, 100) + '...' : s;
+}
+
 module.exports = ClosureWorker;
+module.exports.LIMITS = LIMITS;

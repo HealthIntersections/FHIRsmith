@@ -1,6 +1,6 @@
 const { LanguagePartType, Languages, Language, LanguageDefinitions} = require('../../library/languages');
 const {validateParameter, validateOptionalParameter, validateArrayParameter} = require("../../library/utilities");
-const natural = require('natural');
+const { TextQuery, words, stem, languageOf } = require('./text-match');
 /**
  * Display checking modes for concept designations
  */
@@ -17,71 +17,84 @@ const allowedDesignationExtensions = [
   'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status',
   'http://hl7.org/fhir/StructureDefinition/codesystem-alternate'
 ];
+
 /**
- * Text search filter with stemming support
+ * A text filter ($expand filter=...). The rules are TextQuery's (text-match.js), which every
+ * provider follows: a name matches when it has every word of the filter (the start of one of its
+ * words, or the same stem in the name's language; stop words aside), a code when it starts with
+ * the filter. `query` is the TextQuery, for providers that search an index
  */
 class SearchFilterText {
   constructor(filter) {
     validateOptionalParameter(filter, 'filter', String);
 
     this.filter = filter ? filter.toLowerCase() : null;
-    this.stems = [];
-    this.stemmer = natural.PorterStemmer;
-    if (filter) {
-      this._process();
-    }
+    this.query = new TextQuery(filter || '');
+    // The words of the filter as searched in English, and their stems, index-aligned, sorted
+    // by stem (matches() binary searches them)
+    const found = this.query.tokens('en').map(t => ({ word: t.word, stem: t.stem }));
+    found.sort((a, b) => (a.stem < b.stem ? -1 : (a.stem > b.stem ? 1 : 0)));
+    this.stems = found.map((f) => f.stem);
+    this.words = found.map((f) => f.word);
   }
 
   /**
    * Check if filter is empty
    */
   get isNull() {
-    return this.stems.length === 0;
+    return this.query.isNull;
   }
 
   /**
-   * Check if a value passes the filter
+   * Whether a name (a display or designation, in language lang) passes the filter: it has every
+   * word of the filter (TextQuery.nameMatches). With returnRating, {passes, rating}
+   * (TextQuery.nameRank)
    */
-  passes(value, returnRating = false) {
+  passes(value, returnRating = false, lang = 'en') {
     validateParameter(value, 'value', String);
     validateOptionalParameter(returnRating, 'returnRating', Boolean);
 
-    if (this.null) {
+    if (this.isNull) {
       return returnRating ? {passes: true, rating: 0} : true;
     }
-
-    let rating = 0;
-    let i = 0;
-
-    while (i < value.length) {
-      if (this._isAlphaNumeric(value[i])) {
-        const j = i;
-        while (i < value.length && this._isAlphaNumeric(value[i])) {
-          i++;
-        }
-        const word = value.substring(j, i).toLowerCase();
-        const stemmed = this.stemmer.stem(word);
-
-        if (this._find(stemmed)) {
-          if (returnRating) {
-            rating += value.length / this.stems.length;
-            return {passes: true, rating};
-          } else {
-            return true;
-          }
-        }
-      } else {
-        i++;
-      }
+    if (returnRating) {
+      const rating = this.query.nameRank(value, lang);
+      return { passes: rating > 0, rating };
     }
-
-    return returnRating ? {passes: false, rating: 0} : false;
+    return this.query.nameMatches(value, lang);
   }
 
   /**
-   * Check if designations pass the filter
+   * The same as passes (once, passes needed only one word of the filter)
    */
-  passesDesignations(cds) {
+  passesAll(value, lang = 'en') {
+    return this.passes(value, false, lang);
+  }
+
+  /**
+   * Whether a code passes the filter: it starts with it
+   */
+  passesCode(code) {
+    return this.isNull || this.query.codeMatches(code);
+  }
+
+  /**
+   * The stems of the words of a text, in a language (text-match.js)
+   * @param {string} value
+   * @param {string} [lang]
+   * @returns {string[]}
+   */
+  static stemsOf(value, lang = 'en') {
+    return words(value).map(w => stem(w, lang));
+  }
+
+  /**
+   * Whether any of the designations passes the filter. With a search language (see
+   * CodeSystemProvider.searchLanguage), only designations in that language take part,
+   * compared at the language subtag level; one that doesn't say is in `fallback` (the
+   * code system's language)
+   */
+  passesDesignations(cds, searchLang = null, fallback = 'en') {
     validateOptionalParameter(cds, 'cds', Designations);
 
     if (this.isNull) {
@@ -90,12 +103,24 @@ class SearchFilterText {
 
     if (!cds) return false;
 
+    const wanted = searchLang ? languageOf(searchLang) : null;
     for (const cd of cds.designations) {
-      if (cd.value && this.passes(cd.value)) {
+      if (!cd.value) {
+        continue;
+      }
+      const lang = SearchFilterText.#languageOf(cd.language, fallback);
+      if ((!wanted || lang === wanted) && this.passes(cd.value, false, lang)) {
         return true;
       }
     }
     return false;
+  }
+
+  static #languageOf(lang, fallback) {
+    if (lang && lang.language) {
+      return lang.language;
+    }
+    return languageOf(typeof lang === 'string' ? lang : null, fallback || 'en');
   }
 
   /**
@@ -129,52 +154,6 @@ class SearchFilterText {
     }
 
     return result;
-  }
-
-  // Private methods
-
-  _process() {
-    let i = 0;
-
-    while (i < this.filter.length) {
-      if (this._isAlphaNumeric(this.filter[i])) {
-        const j = i;
-        while (i < this.filter.length && this._isAlphaNumeric(this.filter[i])) {
-          i++;
-        }
-        const word = this.filter.substring(j, i);
-        this.stems.push(this.stemmer.stem(word.toLowerCase()));
-      } else {
-        i++;
-      }
-    }
-
-    this.stems.sort();
-  }
-
-  _isAlphaNumeric(char) {
-    return /[0-9a-zA-Z]/.test(char);
-  }
-
-  _find(stem) {
-    // Binary search
-    let left = 0;
-    let right = this.stems.length - 1;
-
-    while (left <= right) {
-      const mid = Math.floor((left + right) / 2);
-      const midStem = this.stems[mid];
-
-      if (stem.startsWith(midStem)) {
-        return true;
-      } else if (stem < midStem) {
-        right = mid - 1;
-      } else {
-        left = mid + 1;
-      }
-    }
-
-    return false;
   }
 }
 
@@ -214,7 +193,8 @@ const DisplayDifference = {
 const DesignationUse = {
   DISPLAY: {
     system: 'http://terminology.hl7.org/CodeSystem/hl7TermMaintInfra', // http://terminology.hl7.org/CodeSystem/designation-use',
-    code: 'preferredForLanguage' // 'display'
+    code: 'preferredForLanguage', // 'display'
+    display: 'Preferred For Language'
   },
   FSN: {
     system: 'http://snomed.info/sct',
@@ -356,10 +336,7 @@ class Designations {
     designation.status = status;
 
     if (isDisplay) {
-      designation.use = {
-        system: DesignationUse.DISPLAY.system,
-        code: DesignationUse.DISPLAY.code
-      };
+      designation.use = { ...DesignationUse.DISPLAY };
     } else if (use) {
       designation.use = use;
     }
@@ -558,6 +535,19 @@ class Designations {
   }
 
   /**
+   * Note, in the set of supplements to report as used, the supplement a designation came from (if
+   * it came from one). Designations from a supplement carry it as .supplement (see
+   * CodeSystemProvider._listSupplementDesignations); this used to look for .source, which is never
+   * set on a designation, so a supplement that only supplied the chosen display - a global language
+   * pack, typically - was never reported as used.
+   */
+  _reportSupplement(supplements, cd) {
+    if (supplements && cd && cd.supplement && cd.supplement.vurl) {
+      supplements.add(cd.supplement.vurl);
+    }
+  }
+
+  /**
    * Find the preferred designation for given language preferences
    */
   preferredDesignation(langList = null, supplements = null) {
@@ -569,39 +559,29 @@ class Designations {
       // No language list, prefer base designations
       for (const cd of this.designations) {
         if (this._isPreferred(cd) && cd.isActive()) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this.isDisplay(cd) && cd.isActive()) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this.isDisplay(cd)) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
       for (const cd of this.designations) {
         if (this._isPreferred(cd)) {
-          if (supplements && cd.source) {
-            supplements.add(cd.source);
-          }
+          this._reportSupplement(supplements, cd);
           return cd;
         }
       }
-      if (supplements && this.designations[0].source) {
-        supplements.add(this.designations[0].source);
-      }
+      this._reportSupplement(supplements, this.designations[0]);
       return this.designations[0];
     }
 
@@ -610,38 +590,42 @@ class Designations {
 
       const matchTypes = [LangMatchType.FULL, LangMatchType.LANG_REGION, LangMatchType.LANG];
 
-      for (const matchType of matchTypes) {
-        for (const cd of this.designations) {
-          if (this._langMatches(lang, cd.language, matchType) && this.isDisplay(cd)) {
-            if (supplements && cd.source) {
-              supplements.add(cd.source);
+      for (const activeOnly of [true, false]) {
+        for (const matchType of matchTypes) {
+          // _isPreferred before isDisplay, matching the no-language branch above.
+          // The two sets differ only where a provider's own isDisplay() accepts a
+          // designation that isn't a preferred term - today that is the SNOMED FSN,
+          // which isDisplay() accepts and _isPreferred() deliberately does not. Testing
+          // isDisplay first made a request for a language whose concept has both an FSN
+          // and a preferred synonym display the "(disorder)"-suffixed FSN, purely
+          // because the FSN was emitted first.
+          for (const cd of this.designations) {
+            if (this._langMatches(lang, cd.language, matchType) && this._isPreferred(cd) && (!activeOnly || cd.isActive())) {
+              this._reportSupplement(supplements, cd);
+              return cd;
             }
-            return cd;
           }
-        }
-        for (const cd of this.designations) {
-          if (this._langMatches(lang, cd.language, matchType) && this._isPreferred(cd)) {
-            if (supplements && cd.source) {
-              supplements.add(cd.source);
+          for (const cd of this.designations) {
+            if (this._langMatches(lang, cd.language, matchType) && this.isDisplay(cd) && (!activeOnly || cd.isActive())) {
+              this._reportSupplement(supplements, cd);
+              return cd;
             }
-            return cd;
           }
-        }
-        for (const cd of this.designations) {
-          if (this._langMatches(lang, cd.language, matchType)) {
-            if (supplements && cd.source) {
-              supplements.add(cd.source);
+          for (const cd of this.designations) {
+            if (this._langMatches(lang, cd.language, matchType) && (!activeOnly || cd.isActive())) {
+              this._reportSupplement(supplements, cd);
+              return cd;
             }
-            return cd;
           }
         }
       }
     }
     for (const cd of this.designations) {
-      if (!cd.language && this.isDisplay(cd)) {
-        if (supplements && cd.source) {
-          supplements.add(cd.source);
-        }
+      if (!cd.language && this.isDisplay(cd) && cd.isActive()) {
+        this._reportSupplement(supplements, cd);
+        return cd;
+      } if (!cd.language && this.isDisplay(cd)) {
+        this._reportSupplement(supplements, cd);
         return cd;
       }
     }

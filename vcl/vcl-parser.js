@@ -309,10 +309,15 @@ class VCLLexer {
   }
 }
 
+// How deep brackets may nest. The parser recurses once per bracket, so without a bound a hostile
+// expression is a RangeError (stack overflow) rather than a parse error. Real VCL nests a few levels.
+const MAX_VCL_DEPTH = 100;
+
 class VCLParserClass {
   constructor(tokens, fhirFactory = null) {
     this.tokens = tokens;
     this.pos = 0;
+    this.depth = 0;
     this.fhirFactory = fhirFactory;
     this.valueSet = this.createValueSet();
   }
@@ -477,6 +482,9 @@ class VCLParserClass {
 
     if (this.current().type === TokenType.OPEN) {
       this.consume(TokenType.OPEN);
+      if (++this.depth > MAX_VCL_DEPTH) {
+        throw new VCLParseException(`The expression nests more than ${MAX_VCL_DEPTH} levels deep`, this.current().position);
+      }
 
       // Check for nested system URI
       if (this.current().type === TokenType.OPEN && this.peek().type === TokenType.URI) {
@@ -494,6 +502,7 @@ class VCLParserClass {
 
       // This should fail for unmatched parentheses
       this.consume(TokenType.CLOSE);
+      this.depth--;
     } else {
       this.parseSimpleExpr(systemUri, isExclusion);
     }
@@ -834,6 +843,10 @@ class VCLParserClass {
       const tokenType = this.current().type;
 
       switch (tokenType) {
+        case TokenType.EOF:
+          // current() answers EOF forever once the tokens run out, so without this an
+          // unterminated "{" looped here until the terms array overflowed
+          throw new VCLParseException("Expected '}' to close the filter list", this.current().position);
         case TokenType.LCRLY:
           depth++;
           break;
@@ -1035,6 +1048,7 @@ if (typeof module !== 'undefined' && module.exports) {
     splitSystemUri,
     isVCLCompatible,
     VCLParseException,
+    MAX_VCL_DEPTH,
     TokenType,
     FilterOperator,
     // Export classes for debugging
@@ -1053,6 +1067,7 @@ if (typeof module !== 'undefined' && module.exports) {
     splitSystemUri,
     isVCLCompatible,
     VCLParseException,
+    MAX_VCL_DEPTH,
     TokenType,
     FilterOperator,
     // Export classes for debugging

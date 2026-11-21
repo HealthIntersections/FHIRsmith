@@ -2,16 +2,46 @@
 // Crawler for gathering server information from terminology servers
 
 const axios = require('axios');
-const { 
-  ServerRegistries, 
-  ServerRegistry, 
-  ServerInformation, 
+const {
+  ServerRegistries,
+  ServerRegistry,
+  ServerInformation,
   ServerVersionInformation,
 } = require('./model');
+const { UptimeHistory } = require('./uptime');
+const { ServerCredentials } = require('../library/server-credentials');
+const { requestDeadline, describeRequestFailure } = require('../library/http-limits');
+const { createGuardedAgents } = require('../library/ssrf-guard');
 const {Extensions} = require("../tx/library/extensions");
 const {debugLog} = require("../tx/operation-context");
 
 const MASTER_URL = 'https://fhir.github.io/ig-registry/tx-servers.json';
+
+/**
+ * Take a request's credential headers off a redirect that goes to another host
+ * (follow-redirects' beforeRedirect: options is the next request's)
+ */
+function dropCredentialsOffHost(options, fetchUrl, credentials) {
+  if (!credentials || Object.keys(credentials).length === 0) {
+    return;
+  }
+  let host;
+  try {
+    host = new URL(fetchUrl).host;
+  } catch {
+    host = null;
+  }
+  const next = options.port ? `${options.hostname}:${options.port}` : options.hostname;
+  if (next === host || options.hostname === host) {
+    return;
+  }
+  const names = new Set(Object.keys(credentials).map(k => k.toLowerCase()));
+  for (const h of Object.keys(options.headers || {})) {
+    if (names.has(h.toLowerCase())) {
+      delete options.headers[h];
+    }
+  }
+}
 
 class RegistryCrawler {
   log;
@@ -22,21 +52,58 @@ class RegistryCrawler {
       masterUrl: config.masterUrl || MASTER_URL,
       userAgent: config.userAgent || 'HealthIntersections/FhirServer',
       crawlInterval: config.crawlInterval || 5 * 60 * 1000, // 5 minutes default
-      apiKeys: config.apiKeys || {} // Map of server URL or code to API key
+      apiKeys: config.apiKeys || {}, // server code -> API key (sent as Api-Key)
+      // server code -> { tokenEndpoint, clientId, clientSecret, scope }: an OAuth2
+      // client_credentials grant; the token is sent as Authorization: Bearer
+      oauth: config.oauth || {},
+      allowPrivateAddresses: config.allowPrivateAddresses || false, // SSRF opt-out for local test servers
+      // the most a server's response can be, once unzipped: the servers are other people's
+      maxResponseBytes: (config.maxResponseMB || 100) * 1024 * 1024,
+      // the longest a request may take, response included (timeout is only the wait for the
+      // response to start): a server that sends its answer a byte at a time can't hold the crawl
+      maxRequestMs: (config.maxRequestSeconds || 120) * 1000,
+      uptimeRetentionDays: config.uptimeRetentionDays,
+      uptimeWindowDays: config.uptimeWindowDays
     };
     this.stats = stats;
 
     this.currentData = new ServerRegistries();
+    // one record per endpoint per scan: whether it answered. Reported on the software page
+    this.uptime = new UptimeHistory({ retentionDays: config.uptimeRetentionDays, windowDays: config.uptimeWindowDays });
+    this.scanTime = null; // when the scan in progress started (ms)
     this.crawlTimer = null;
     this.isCrawling = false;
     this.errors = [];
     this.totalBytes = 0;
     this.log = console;
     this.abortController = null;
+    // API keys and OAuth tokens for the servers that need them (shared with the tx module's
+    // ecosystem resolution: library/server-credentials.js)
+    this.credentials = new ServerCredentials({
+      apiKeys: this.config.apiKeys,
+      oauth: this.config.oauth,
+      timeout: this.config.timeout,
+      userAgent: this.config.userAgent,
+      agents: () => this.guardedAgents(),
+      // (the token request: the same deadline as any other, and stopped when the crawl is)
+      signal: () => requestDeadline(this.config.maxRequestMs, this.abortController?.signal).signal,
+      log: (level, message) => this.addLogEntry(level, message)
+    });
   }
 
   useLog(logv) {
     this.log = logv;
+  }
+
+  // http/https agents that only connect to public addresses: the SSRF guard for outbound
+  // fetches (library/ssrf-guard.js). The registry is crawled from server-supplied "next" links,
+  // so the target host is not trusted. Set config.allowPrivateAddresses = true to disable (e.g.
+  // for local test servers).
+  guardedAgents() {
+    if (!this._guardedAgents) {
+      this._guardedAgents = createGuardedAgents({ allowPrivate: !!this.config.allowPrivateAddresses });
+    }
+    return this._guardedAgents;
   }
 
 
@@ -54,6 +121,7 @@ class RegistryCrawler {
 
     this.isCrawling = true;
     const startTime = new Date();
+    this.scanTime = startTime.getTime();
     this.errors = [];
     this.totalBytes = 0;
     
@@ -74,11 +142,17 @@ class RegistryCrawler {
       }
       
       newData.doco = masterJson.documentation || '';
+      newData.registration = masterJson.registration || '';
+      newData.ecosystemDoco = masterJson['ecosystem-documentation'] || '';
       
       // Process each registry
       const registries = masterJson.registries || [];
       for (const registryConfig of registries) {
         if (this.abortController?.signal.aborted) break;
+        if (this.isDisabled(registryConfig)) {
+          this.addLogEntry('info', ` Registry ${registryConfig.name || registryConfig.code} is disabled - not scanned`, registryConfig.url || '');
+          continue;
+        }
         const registry = await this.processRegistry(registryConfig);
         if (registry) {
           newData.registries.push(registry);
@@ -89,6 +163,7 @@ class RegistryCrawler {
       
       // Update the current data
       this.currentData = newData;
+      this.uptime.retain(this.endpointAddresses(newData), this.scanTime);
     } catch (error) {
       debugLog(error);
       this.addLogEntry('error', 'Exception Scanning:', error);
@@ -139,6 +214,10 @@ class RegistryCrawler {
       const servers = registryJson.servers || [];
       for (const serverConfig of servers) {
         if (this.abortController?.signal.aborted) break;
+        if (this.isDisabled(serverConfig)) {
+          this.addLogEntry('info', `  Server ${serverConfig.name || serverConfig.code} is disabled - not scanned`, registry.address);
+          continue;
+        }
         const server = await this.processServer(serverConfig, registry.address);
         if (server) {
           registry.servers.push(server);
@@ -152,6 +231,16 @@ class RegistryCrawler {
     }
     
     return registry;
+  }
+
+  /**
+   * A registry (in the master file) or server (in a registry file) marked "disabled": true
+   * is left out of the ecosystem without deleting its registration: it isn't read or
+   * scanned, and isn't in the crawl's data, so it is never discovered or resolved to.
+   * Only the JSON value true disables (see the tx ecosystem IG: Disabling)
+   */
+  isDisabled(config) {
+    return config != null && config.disabled === true;
   }
 
   /**
@@ -178,6 +267,20 @@ class RegistryCrawler {
     server.authCSList = (serverConfig.authoritative || []).sort();
     server.authVSList = (serverConfig['authoritative-valuesets'] || []).sort();
     server.usageList = (serverConfig.usage || []).sort();
+    // Content hidden from the ecosystem entirely - also filtered out of the discovered
+    // content lists below, and checked during claim matching (see the tx ecosystem IG)
+    server.exclusions = (serverConfig.exclusions || []).sort();
+    // Language specific authoritative claims: BCP-47 tag -> list of CS masks.
+    // A backwards compatible addition to registry format 1 - see the tx ecosystem IG
+    server.languages = {};
+    if (serverConfig.languages && typeof serverConfig.languages === 'object' && !Array.isArray(serverConfig.languages)) {
+      for (const tag of Object.keys(serverConfig.languages)) {
+        const masks = serverConfig.languages[tag];
+        if (Array.isArray(masks)) {
+          server.languages[tag] = masks.filter(m => typeof m === 'string').sort();
+        }
+      }
+    }
     
     // Process each FHIR version
     const fhirVersions = serverConfig.fhirVersions || [];
@@ -199,7 +302,7 @@ class RegistryCrawler {
     const version = new ServerVersionInformation();
     version.version = versionConfig.version;
     version.address = versionConfig.url;
-    version.security = this.getApiKey(server.code) == null ? "open" : "api-key";
+    version.security = this.getOAuthConfig(server.code) ? "oauth" : this.getApiKey(server.code) == null ? "open" : "api-key";
     
     if (!version.address) {
       this.addLogEntry('error', `No URL for version ${version.version} of ${server.name}`, server.address);
@@ -233,8 +336,9 @@ class RegistryCrawler {
       version.valueSets = [...new Set(version.valueSets)].sort();
       version.lastSuccess = new Date();
       version.lastTat = `${Date.now() - startTime}ms`;
+      this.uptime.record(version.address, true, this.scanTime || startTime);
 
-      this.addLogEntry('info', `  Server ${version.address}: ${version.lastTat} for ${version.codeSystems.length} CodeSystems and ${version.valueSets.length} ValueSets`);
+      this.addLogEntry('info', `  Server ${version.address}: ${version.lastTat} for ${version.codeSystems.length} CodeSystems and ${version.valueSets.length} ValueSets (${version.security})`);
       
     } catch (error) {
       debugLog(error);
@@ -242,9 +346,84 @@ class RegistryCrawler {
       this.addLogEntry('error', `Server ${version.address}: Error after ${elapsed}ms: ${error.message}`);
       version.error = error.message;
       version.lastTat = `${elapsed}ms`;
+      // a scan cut short (the server shutting down) says nothing about the endpoint
+      if (!this.abortController?.signal.aborted) {
+        this.uptime.record(version.address, false, this.scanTime || startTime);
+      }
+      this.carryForwardSoftware(version);
     }
     
     return version;
+  }
+
+  /**
+   * Every endpoint address in a scan's data
+   */
+  endpointAddresses(data) {
+    const result = [];
+    for (const registry of (data && data.registries) || []) {
+      for (const server of registry.servers || []) {
+        for (const version of server.versions || []) {
+          if (version.address) {
+            result.push(version.address);
+          }
+        }
+      }
+    }
+    return result;
+  }
+
+  /**
+   * CapabilityStatement.software.releaseDate, if it means anything. A date within a few
+   * minutes of now is the server's clock, not a release date: FHIRsmith up to 0.14.2 filled
+   * it in with the time of the request, and other software may do the same.
+   */
+  reportedReleaseDate(software, now = Date.now()) {
+    const value = software && software.releaseDate;
+    const t = value ? new Date(value).getTime() : NaN;
+    if (isNaN(t) || Math.abs(now - t) < 10 * 60 * 1000) {
+      return '';
+    }
+    return String(value);
+  }
+
+  /**
+   * A server that can't be reached this time is still running whatever it was running
+   * last time we saw it - keep that, so the software page doesn't lose track of it
+   */
+  carryForwardSoftware(version) {
+    if (version.software && version.software !== 'unknown') {
+      return;
+    }
+    for (const registry of (this.currentData && this.currentData.registries) || []) {
+      for (const server of registry.servers || []) {
+        for (const prev of server.versions || []) {
+          if (prev.address === version.address && prev.software) {
+            version.software = prev.software;
+            version.softwareVersion = prev.softwareVersion || '';
+            version.softwareReleaseDate = prev.softwareReleaseDate || '';
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * The FHIR version a server's CapabilityStatement says it is, if it looks like one (1.0.2,
+   * 4.0.1, 6.0.0-ballot3...), else the default. What a server says is shown on the registry's
+   * pages: anything else is not kept
+   */
+  fhirVersionOf(capability, def, address) {
+    const v = capability ? capability.fhirVersion : undefined;
+    if (v === undefined || v === null || v === '') {
+      return def;
+    }
+    if (typeof v === 'string' && /^\d{1,2}\.\d{1,2}(\.\d{1,3})?(-[A-Za-z0-9.]{1,20})?$/.test(v)) {
+      return v;
+    }
+    this.addLogEntry('warn', `The CapabilityStatement's fhirVersion is not a FHIR version - ${def} assumed`, address);
+    return def;
   }
 
   /**
@@ -253,15 +432,17 @@ class RegistryCrawler {
   async processServerVersionR3(version, server, exclusions) {
     // Get capability statement
     const capabilityUrl = `${version.address}/metadata`;
-    const capability = await this.fetchJson(capabilityUrl, server.name);
+    const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
-    version.version = capability.fhirVersion || '3.0.2';
+    version.version = this.fhirVersionOf(capability, '3.0.2', version.address);
     version.software = capability.software ? capability.software.name : "unknown";
+    version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
+    version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
 
     // Get terminology capabilities (R3 uses Parameters resource)
     try {
       const termCapUrl = `${version.address}/metadata?mode=terminology`;
-      const termCap = await this.fetchJson(termCapUrl, server.name);
+      const termCap = await this.fetchJson(termCapUrl, server.code, version.address);
       
       if (termCap.parameter) {
         termCap.parameter.forEach(param => {
@@ -297,17 +478,19 @@ class RegistryCrawler {
   async processServerVersionR4or5(version, server, defVersion, exclusions) {
     // Get capability statement
     const capabilityUrl = `${version.address}/metadata`;
-    const capability = await this.fetchJson(capabilityUrl, server.code);
+    const capability = await this.fetchJson(capabilityUrl, server.code, version.address);
     
-    version.version = capability.fhirVersion || defVersion;
+    version.version = this.fhirVersionOf(capability, defVersion, version.address);
     version.software = capability.software ? capability.software.name : "unknown";
+    version.softwareVersion = capability.software && capability.software.version ? String(capability.software.version) : '';
+    version.softwareReleaseDate = this.reportedReleaseDate(capability.software);
 
     let set = new Set();
 
     // Get terminology capabilities
     try {
       const termCapUrl = `${version.address}/metadata?mode=terminology`;
-      const termCap = await this.fetchJson(termCapUrl, server.code);
+      const termCap = await this.fetchJson(termCapUrl, server.code, version.address);
       
       if (termCap.codeSystem) {
         termCap.codeSystem.forEach(cs => {
@@ -350,7 +533,7 @@ class RegistryCrawler {
   async fetchValueSets(version, server, exclusions) {
     // Initial search URL
     let count = 0;
-    let searchUrl = `${version.address}/ValueSet?_elements=url,version`+(version.address.includes("fhir.org") ? "&_count=200" : "");
+    let searchUrl = `${version.address}/ValueSet?_elements=url,version&_count=1000`;
     try {
       // Set of URLs to avoid duplicates
       const valueSetUrls = new Set();
@@ -364,7 +547,7 @@ class RegistryCrawler {
 
         if (this.abortController?.signal.aborted) break;
         this.log.debug(`Fetching value sets from ${searchUrl}`);
-        const bundle = await this.fetchJson(searchUrl, server.code);
+        const bundle = await this.fetchJson(searchUrl, server.code, version.address);
 
         // Process entries in this page
         if (bundle.entry) {
@@ -432,32 +615,27 @@ class RegistryCrawler {
 
   /**
    * Fetch JSON from a URL
+   * @param {string} url
+   * @param {string} serverCode - the code the server's credentials (apiKeys, oauth) are under
+   * @param {string} [credentialBase] - the server's own address. When given, credentials are
+   *   sent only to that origin: next links come from the server, and may point anywhere
    */
-  async fetchJson(url, serverName) {
+  async fetchJson(url, serverCode, credentialBase) {
     try {
       // Add timestamp to bypass cache
       const fetchUrl = url.includes('?') 
         ? `${url}&_ts=${Date.now()}`
         : `${url}?_ts=${Date.now()}`;
-      
-      // Get API key if configured
-      const apiKey = this.getApiKey(serverName);
-      const headers = {
-        'Accept': 'application/json, application/fhir+json',
-        'User-Agent': this.config.userAgent
-      };
-      
-      if (apiKey) {
-        headers['Api-Key'] = apiKey;
+
+      const sendCredentials = !credentialBase || this.sameOrigin(url, credentialBase);
+      const useOAuth = sendCredentials && !!this.getOAuthConfig(serverCode);
+
+      let response = await this.getJson(fetchUrl, await this.credentialHeaders(serverCode, sendCredentials, false));
+      if (response.status === 401 && useOAuth) {
+        // the token was revoked or expired early: get a new one, and try once more
+        response = await this.getJson(fetchUrl, await this.credentialHeaders(serverCode, sendCredentials, true));
       }
-      
-      const response = await axios.get(fetchUrl, {
-        timeout: this.config.timeout,
-        headers: headers,
-        signal: this.abortController?.signal,
-        validateStatus: (status) => status < 500 // Don't throw on 4xx
-      });
-      
+
       if (response.status >= 400) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -474,6 +652,12 @@ class RegistryCrawler {
       
     } catch (error) {
       debugLog(error);
+      if (/maxContentLength/.test(error.message)) {
+        throw new Error(`The response from ${url} is more than ${this.config.maxResponseBytes / (1024 * 1024)} MB`);
+      }
+      if (/^no complete response/.test(error.message)) {
+        throw new Error(`No complete response from ${url} within ${this.config.maxRequestMs / 1000} s`);
+      }
       if (error.response) {
         throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
       } else if (error.request) {
@@ -484,16 +668,65 @@ class RegistryCrawler {
     }
   }
 
-  /**
-   * Get API key for a given URL
-   */
-  getApiKey(name) {
-    // Check for exact URL match
-    if (this.config.apiKeys[name]) {
-      return this.config.apiKeys[name];
+  async getJson(fetchUrl, credentials) {
+    const deadline = requestDeadline(this.config.maxRequestMs, this.abortController?.signal);
+    try {
+      return await this.#get(fetchUrl, credentials, deadline.signal);
+    } catch (e) {
+      if (deadline.expired()) {
+        throw new Error(describeRequestFailure(e, { timeoutMs: this.config.maxRequestMs, deadline }), { cause: e });
+      }
+      throw e;
     }
-    
-    return null;
+  }
+
+  async #get(fetchUrl, credentials, signal) {
+    return axios.get(fetchUrl, {
+      timeout: this.config.timeout,
+      headers: Object.assign({
+        'Accept': 'application/json, application/fhir+json',
+        'User-Agent': this.config.userAgent
+      }, credentials),
+      signal,
+      validateStatus: (status) => status < 500, // Don't throw on 4xx
+      // counted as it is unzipped, so a small response that unzips to a lot is stopped too
+      maxContentLength: this.config.maxResponseBytes,
+      httpAgent: this.guardedAgents().httpAgent,
+      httpsAgent: this.guardedAgents().httpsAgent,
+      // a server's credentials go only to it: a redirect to another host goes on without them
+      // (axios drops Authorization there itself, but not Api-Key)
+      beforeRedirect: (options) => dropCredentialsOffHost(options, fetchUrl, credentials)
+    });
+  }
+
+  sameOrigin(url, base) {
+    try {
+      return new URL(url).origin === new URL(base).origin;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * The headers that carry a server's credentials (see ServerCredentials)
+   */
+  async credentialHeaders(serverCode, sendCredentials, renewToken) {
+    if (!sendCredentials) {
+      return {};
+    }
+    return this.credentials.headers(serverCode, renewToken);
+  }
+
+  getApiKey(name) {
+    return this.credentials.getApiKey(name);
+  }
+
+  getOAuthConfig(name) {
+    return this.credentials.getOAuthConfig(name);
+  }
+
+  async getAccessToken(serverCode, renew = false) {
+    return this.credentials.getAccessToken(serverCode, renew);
   }
 
   /**
@@ -567,6 +800,16 @@ class RegistryCrawler {
    */
   saveData() {
     return this.currentData.toJSON();
+  }
+
+  loadUptime(json) {
+    this.uptime = UptimeHistory.fromJSON(json, {
+      retentionDays: this.config.uptimeRetentionDays, windowDays: this.config.uptimeWindowDays
+    });
+  }
+
+  saveUptime() {
+    return this.uptime.toJSON();
   }
 
   /**
@@ -672,3 +915,4 @@ class RegistryCrawler {
 }
 
 module.exports = RegistryCrawler;
+module.exports.dropCredentialsOffHost = dropCredentialsOffHost;

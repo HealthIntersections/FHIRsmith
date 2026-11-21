@@ -127,12 +127,8 @@ class NpmProjectorModule {
    * Set up Express routes
    */
   setupRoutes() {
-    // CORS for browser access
-    this.router.use((req, res, next) => {
-      res.header('Access-Control-Allow-Origin', '*');
-      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
-      next();
-    });
+    // CORS is handled once at the app level (server.js, from config.server.cors).
+    // Do not set Access-Control-* headers here.
 
     // Root - module info
     this.router.get('/', (req, res) => {

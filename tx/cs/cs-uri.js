@@ -162,6 +162,10 @@ class UriServices extends CodeSystemProvider {
     return true;
   }
 
+  canBeExpanded() {
+    return false; // URIs cannot be iterated / enumerated
+  }
+
   // ============================================================================
   // Filtering (not supported for URIs)
   // ============================================================================

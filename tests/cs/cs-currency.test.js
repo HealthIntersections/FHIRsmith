@@ -1,7 +1,7 @@
 const { OperationContext } = require('../../tx/operation-context');
 const { Iso4217FactoryProvider } = require('../../tx/cs/cs-currency');
 const { Languages } = require('../../library/languages');
-const {Designations} = require("../../tx/library/designations");
+const {Designations, SearchFilterText} = require("../../tx/library/designations");
 const {TestUtilities} = require("../test-utilities");
 
 describe('Iso4217Services', () => {
@@ -197,18 +197,20 @@ describe('Iso4217Services', () => {
       expect(await provider.doesFilter('display', 'equals', 'Dollar')).toBe(false);
     });
 
-    test('should throw error for search filter', async () => {
+    test('should search the names (text filter)', async () => {
       const ctxt = await provider.getPrepContext(false);
-      await expect(
-        provider.searchFilter(ctxt, 'dollar', false)
-      ).rejects.toThrow('Text Search is not supported');
+      await provider.searchFilter(ctxt, new SearchFilterText('dollar'), false);
+      const [set] = await provider.executeFilters(ctxt);
+      const codes = set.list.map(c => c.code);
+      expect(codes).toEqual(expect.arrayContaining(['USD', 'AUD', 'CAD']));
+      expect(codes).not.toContain('EUR');
     });
 
     test('should throw error for unsupported filter', async () => {
       const ctxt = await provider.getPrepContext(false);
       await expect(
         provider.filter(ctxt, true, 'symbol', 'equals', '$')
-      ).rejects.toThrow('not supported');
+      ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "symbol equals $" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
@@ -265,8 +267,7 @@ describe('Iso4217Services', () => {
 
     test('should not locate 0-decimal currency in 2-decimal filter', async () => {
       const result = await provider.filterLocate(ctxt, decimalsFilter, 'JPY');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
 
     test('should check if concept is in decimals=2 filter', async () => {
@@ -334,8 +335,7 @@ describe('Iso4217Services', () => {
 
     test('should not locate 2-decimal currency in 0-decimal filter', async () => {
       const result = await provider.filterLocate(ctxt, decimalsFilter, 'USD');
-      expect(typeof result).toBe('string'); // Should be error message
-      expect(result).toContain('not found');
+      expect(result).toBeNull();
     });
   });
 

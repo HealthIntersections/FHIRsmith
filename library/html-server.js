@@ -8,14 +8,28 @@
 const fs = require('fs');
 const path = require('path');
 const escape = require('escape-html');
+const packageJson = require('../package.json');
 
 let sponsorMessage = '';
+
+// The accessibility check panel (config accessibility.checkPanel): a button at the bottom of
+// every page that runs axe-core (WCAG 2.0 A/AA) and FHIRsmith's own structure checks on the page
+// as the browser has it. The scripts are in static/a11y/; a11y-check.js only loads axe-core when
+// the button is pressed.
+const A11Y_PANEL = `
+<div id="fhir-a11y-panel" data-axe="/a11y/axe.min.js" lang="en" style="clear: both; margin: 20px 10px; padding: 8px; border: 1px solid #888888; background-color: #f4f4f4; color: #000000; font-size: 13px; font-family: sans-serif">
+<p style="margin: 0"><b>Accessibility check</b> (checks this page as it is now against WCAG 2.0 A/AA, plus heading structure, reported by HHS 508 checklist item) <button type="button" class="fhir-a11y-run">Check this page</button> <span class="fhir-a11y-status" role="status"></span></p>
+<div class="fhir-a11y-results"></div>
+</div>
+<script type="text/javascript" src="/a11y/a11y-check.js"></script>
+`;
 
 class HtmlServer {
   log;
 
   constructor() {
     this.templates = new Map(); // templateName -> template content
+    this.accessibilityPanel = false;
   }
 
   useLog(logv) {
@@ -24,6 +38,17 @@ class HtmlServer {
 
   setSponsorMessage(msg) {
     sponsorMessage = msg;
+  }
+
+  setAccessibilityPanel(enabled) {
+    this.accessibilityPanel = !!enabled;
+  }
+
+  // put the accessibility check panel at the end of the page body (or the end of the page, if
+  // there's no </body>)
+  addAccessibilityPanel(html) {
+    const i = html.toLowerCase().lastIndexOf('</body>');
+    return i < 0 ? html + A11Y_PANEL : html.slice(0, i) + A11Y_PANEL + html.slice(i);
   }
 
   // Template Management
@@ -60,7 +85,6 @@ class HtmlServer {
     
     // Default options
     const renderOptions = {
-      version: '4.0.1',
       downloadDate: 'Unknown',
       totalResources: 0,
       totalPackages: 0,
@@ -68,30 +92,51 @@ class HtmlServer {
       ...options
     };
     
-    // Perform template replacements
-    let html = template
-      .replace(/\[%title%\]/g, escape(title))
-      .replace(/\[%content%\]/g, content) // Content is assumed to be already-safe HTML
-      .replace(/\[%ver%\]/g, escape(renderOptions.version))
-      .replace(/\[%download-date%\]/g, escape(renderOptions.downloadDate))
-      .replace(/\[%total-resources%\]/g, escape(renderOptions.totalResources.toLocaleString()))
-      .replace(/\[%total-packages%\]/g, escape(renderOptions.totalPackages.toLocaleString()))
-      .replace(/\[%endpoint-path%\]/g, escape(renderOptions.endpointpath))
-      .replace(/\[%fhir-version%\]/g, escape(renderOptions.fhirversion))
-      .replace(/\[%ms%\]/g, escape(renderOptions.processingTime.toString()))
-      .replace(/\[%sponsorMessage%\]/g, sponsorMessage)
-      .replace(/\[%about%\]/g, renderOptions.about || '');
-    
-    // Handle any custom template variables
+    // The placeholders, and what each becomes. Everything is substituted in one pass over
+    // the template, so what goes in - [%content%] above all, which holds what users wrote
+    // (document narratives, say) - is never itself searched for placeholders: a
+    // "[%context-link%]" inside content stays as it is, rather than becoming raw HTML in the
+    // middle of an attribute
+    const values = new Map([
+      ['title', () => escape(title)],
+      ['content', () => content], // Content is assumed to be already-safe HTML
+      // [%ver%] is the FHIRsmith version in every template (it follows the FHIRsmith link)
+      ['ver', () => escape(packageJson.version)],
+      ['download-date', () => escape(renderOptions.downloadDate)],
+      // "last updated 35 minutes ago" / "not yet updated", for the crawler-driven modules
+      ['crawler-status', () => escape(renderOptions.crawlerStatus || 'not yet updated')],
+      ['total-resources', () => escape(renderOptions.totalResources.toLocaleString())],
+      ['total-packages', () => escape(renderOptions.totalPackages.toLocaleString())],
+      ['endpoint-path', () => escape(renderOptions.endpointpath)],
+      ['fhir-version', () => escape(renderOptions.fhirversion)],
+      ['ms', () => escape(renderOptions.processingTime.toString())],
+      ['sponsorMessage', () => sponsorMessage],
+      ['about', () => renderOptions.about || ''],
+      // raw HTML, like [%about%]: the caller decides whether the nav item exists at all
+      ['library-link', () => renderOptions.libraryLink || ''],
+      // raw HTML too: the OpenAPI description, where a template's module has one in some places only
+      ['api-link', () => renderOptions.apiLink || ''],
+      // raw HTML: the packages module's feed check, in the nav bar only when it's enabled
+      ['feed-check-link', () => renderOptions.feedCheckLink || ''],
+      // raw HTML: a link to the current project (or other context) in the nav bar, where the
+      // module has one
+      ['context-link', () => renderOptions.contextLink || ''],
+      ['api-head', () => renderOptions.apiHead || ''],
+      // raw HTML: the right-most item of the top menu, the user's name or Login (library/auth)
+      ['account', () => require('./auth').accountLink()]
+    ]);
+    // a module's own template variables, escaped when they are strings; the standard ones win
     if (options.templateVars) {
       for (const [key, value] of Object.entries(options.templateVars)) {
-        const placeholder = `[%${key}%]`;
-        const escapedValue = typeof value === 'string' ? escape(value) : String(value);
-        html = html.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), escapedValue);
+        if (!values.has(key)) {
+          values.set(key, () => (typeof value === 'string' ? escape(value) : String(value)));
+        }
       }
     }
-    
-    return html;
+    // a placeholder that isn't known is left as it is, as before
+    const html = template.replace(/\[%([^%\]\s]{1,64})%\]/g, (m, name) => (values.has(name) ? values.get(name)() : m));
+
+    return this.accessibilityPanel ? this.addAccessibilityPanel(html) : html;
   }
 
   // Express Response Helper

@@ -11,7 +11,7 @@ const {
 const RegistryCrawler = require('../../registry/crawler');
 const RegistryAPI = require('../../registry/api');
 
-// Create sample test data matching Pascal test scenarios
+// Create sample test data covering the standard registry scenarios
 function createSampleData() {
   const data = new ServerRegistries();
   data.address = 'https://registry.example.org';
@@ -310,7 +310,7 @@ describe('Registry API Tests', () => {
       });
       
       // Should match TX server (both versions) due to wildcard authVSList
-      // Pascal logic: if server is authoritative, ALL its versions are included
+      // if the server is authoritative, ALL its versions are included
       expect(rows).toHaveLength(2);
       expect(rows[0].serverCode).toBe('tx1');
       expect(rows[1].serverCode).toBe('tx1');

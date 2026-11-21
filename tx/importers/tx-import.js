@@ -5,6 +5,7 @@ const chalk = require('chalk');
 const fs = require('fs');
 const path = require('path');
 const { getConfigManager } = require('./tx-import-settings');
+const terminal = require('./terminal');
 
 class TerminologyImportCLI {
   constructor() {
@@ -71,7 +72,7 @@ class TerminologyImportCLI {
   }
 
   discoverAndLoadModules() {
-    console.log("Looking in " + __dirname);
+    terminal.log("Looking in " + __dirname);
 
     const moduleFiles = fs.readdirSync(__dirname)
       .filter(file => file.endsWith('.module.js') && !file.startsWith('_'))
@@ -107,10 +108,10 @@ class TerminologyImportCLI {
         if (this.isValidModule(moduleInstance)) {
           this.registerModule(moduleInstance);
         } else {
-          console.warn(chalk.yellow(`Warning: Invalid module format in ${moduleFile}`));
+          terminal.warn(chalk.yellow(`Warning: Invalid module format in ${moduleFile}`));
         }
       } catch (error) {
-        console.warn(chalk.yellow(`Warning: Failed to load module ${moduleFile}: ${error.message}`));
+        terminal.warn(chalk.yellow(`Warning: Failed to load module ${moduleFile}: ${error.message}`));
       }
     }
   }
@@ -127,7 +128,7 @@ class TerminologyImportCLI {
     const name = module.getName();
 
     if (this.modules.has(name)) {
-      console.warn(chalk.yellow(`Warning: Module ${name} already registered, skipping`));
+      terminal.warn(chalk.yellow(`Warning: Module ${name} already registered, skipping`));
       return;
     }
 
@@ -141,35 +142,35 @@ class TerminologyImportCLI {
     // Let the module register its subcommands
     module.registerCommands(terminologyCommand, this.program.opts());
 
-    console.log(chalk.green(`✓ Loaded ${name} module`));
+    terminal.log(chalk.green(`✓ Loaded ${name} module`));
   }
 
   listTerminologies() {
-    console.log(chalk.blue.bold('🏥 Available Terminology Importers\\n'));
+    terminal.log(chalk.blue.bold('🏥 Available Terminology Importers\\n'));
 
     if (this.modules.size === 0) {
-      console.log(chalk.yellow('No terminology modules found.'));
-      console.log(chalk.gray('Add modules to the ./modules/ directory.'));
+      terminal.log(chalk.yellow('No terminology modules found.'));
+      terminal.log(chalk.gray('Add modules to the ./modules/ directory.'));
       return;
     }
 
     for (const [name, module] of this.modules) {
-      console.log(chalk.cyan(`${name}:`));
-      console.log(`  ${module.getDescription()}`);
+      terminal.log(chalk.cyan(`${name}:`));
+      terminal.log(`  ${module.getDescription()}`);
 
       if (module.getSupportedFormats) {
         const formats = module.getSupportedFormats();
-        console.log(chalk.gray(`  Formats: ${formats.join(', ')}`));
+        terminal.log(chalk.gray(`  Formats: ${formats.join(', ')}`));
       }
 
       if (module.getEstimatedDuration) {
-        console.log(chalk.gray(`  Typical duration: ${module.getEstimatedDuration()}`));
+        terminal.log(chalk.gray(`  Typical duration: ${module.getEstimatedDuration()}`));
       }
 
-      console.log('');
+      terminal.log('');
     }
 
-    console.log(chalk.gray('Use "tx-import <terminology> --help" for specific options'));
+    terminal.log(chalk.gray('Use "tx-import <terminology> --help" for specific options'));
   }
 
   showHelp(commandName) {
@@ -179,27 +180,27 @@ class TerminologyImportCLI {
     }
 
     if (this.modules.has(commandName)) {
-      console.log(chalk.blue.bold(`Help for ${commandName}:\\n`));
+      terminal.log(chalk.blue.bold(`Help for ${commandName}:\\n`));
       this.program.commands
         .find(cmd => cmd.name() === commandName)
         ?.help();
     } else {
-      console.log(chalk.red(`Unknown command: ${commandName}`));
+      terminal.log(chalk.red(`Unknown command: ${commandName}`));
       this.listTerminologies();
     }
   }
 
   showConfigHelp() {
-    console.log(chalk.blue.bold('📁 Configuration Management\\n'));
-    console.log('Available configuration commands:');
-    console.log('  tx-import config:show     Show saved configuration history');
-    console.log('  tx-import config:clear    Clear saved configuration history');
-    console.log('  tx-import config:export   Export configuration to file');
-    console.log('  tx-import config:import   Import configuration from file');
-    console.log('\\nExamples:');
-    console.log('  tx-import config:show --terminology unii');
-    console.log('  tx-import config:clear --terminology loinc');
-    console.log('  tx-import config:export --output my-config.json');
+    terminal.log(chalk.blue.bold('📁 Configuration Management\\n'));
+    terminal.log('Available configuration commands:');
+    terminal.log('  tx-import config:show     Show saved configuration history');
+    terminal.log('  tx-import config:clear    Clear saved configuration history');
+    terminal.log('  tx-import config:export   Export configuration to file');
+    terminal.log('  tx-import config:import   Import configuration from file');
+    terminal.log('\\nExamples:');
+    terminal.log('  tx-import config:show --terminology unii');
+    terminal.log('  tx-import config:clear --terminology loinc');
+    terminal.log('  tx-import config:export --output my-config.json');
   }
 
   showConfig(options) {
@@ -210,30 +211,30 @@ class TerminologyImportCLI {
       const config = configManager.getPreviousConfig(options.terminology);
 
       if (Object.keys(config).length === 0) {
-        console.log(chalk.yellow(`No saved configuration found for ${options.terminology}`));
+        terminal.log(chalk.yellow(`No saved configuration found for ${options.terminology}`));
         return;
       }
 
-      console.log(chalk.blue.bold(`📋 Saved Configuration for ${options.terminology}:\\n`));
+      terminal.log(chalk.blue.bold(`📋 Saved Configuration for ${options.terminology}:\\n`));
 
       if (config.lastUsed) {
-        console.log(`Last used: ${chalk.white(new Date(config.lastUsed).toLocaleString())}`);
+        terminal.log(`Last used: ${chalk.white(new Date(config.lastUsed).toLocaleString())}`);
       }
 
       Object.entries(config).forEach(([key, value]) => {
         if (key !== 'lastUsed' && key !== 'recentSources') {
           if (Array.isArray(value)) {
-            console.log(`  ${key}: ${chalk.white(value.join(', '))}`);
+            terminal.log(`  ${key}: ${chalk.white(value.join(', '))}`);
           } else {
-            console.log(`  ${key}: ${chalk.white(value)}`);
+            terminal.log(`  ${key}: ${chalk.white(value)}`);
           }
         }
       });
 
       if (config.recentSources && config.recentSources.length > 0) {
-        console.log(`\\n  Recent sources:`);
+        terminal.log(`\\n  Recent sources:`);
         config.recentSources.forEach((src, index) => {
-          console.log(`    ${index + 1}. ${chalk.gray(src)}`);
+          terminal.log(`    ${index + 1}. ${chalk.gray(src)}`);
         });
       }
 
@@ -242,24 +243,24 @@ class TerminologyImportCLI {
       const allHistory = configManager.history;
 
       if (Object.keys(allHistory).length === 0) {
-        console.log(chalk.yellow('No saved configurations found'));
+        terminal.log(chalk.yellow('No saved configurations found'));
         return;
       }
 
-      console.log(chalk.blue.bold('📋 All Saved Configurations:\\n'));
+      terminal.log(chalk.blue.bold('📋 All Saved Configurations:\\n'));
 
       Object.entries(allHistory).forEach(([terminology, config]) => {
-        console.log(chalk.cyan(`${terminology}:`));
+        terminal.log(chalk.cyan(`${terminology}:`));
         if (config.lastUsed) {
-          console.log(`  Last used: ${chalk.white(new Date(config.lastUsed).toLocaleString())}`);
+          terminal.log(`  Last used: ${chalk.white(new Date(config.lastUsed).toLocaleString())}`);
         }
         if (config.source) {
-          console.log(`  Source: ${chalk.gray(config.source)}`);
+          terminal.log(`  Source: ${chalk.gray(config.source)}`);
         }
         if (config.version) {
-          console.log(`  Version: ${chalk.gray(config.version)}`);
+          terminal.log(`  Version: ${chalk.gray(config.version)}`);
         }
-        console.log('');
+        terminal.log('');
       });
     }
   }
@@ -278,9 +279,9 @@ class TerminologyImportCLI {
 
       if (confirmed) {
         configManager.clearAllHistory();
-        console.log(chalk.green('✓ All configuration history cleared'));
+        terminal.log(chalk.green('✓ All configuration history cleared'));
       } else {
-        console.log(chalk.yellow('Configuration clear cancelled'));
+        terminal.log(chalk.yellow('Configuration clear cancelled'));
       }
 
     } else if (options.terminology) {
@@ -293,14 +294,14 @@ class TerminologyImportCLI {
 
       if (confirmed) {
         configManager.clearHistory(options.terminology);
-        console.log(chalk.green(`✓ Configuration history cleared for ${options.terminology}`));
+        terminal.log(chalk.green(`✓ Configuration history cleared for ${options.terminology}`));
       } else {
-        console.log(chalk.yellow('Configuration clear cancelled'));
+        terminal.log(chalk.yellow('Configuration clear cancelled'));
       }
 
     } else {
-      console.log(chalk.red('Please specify --terminology <name> or --all'));
-      console.log('Example: tx-import config:clear --terminology unii');
+      terminal.log(chalk.red('Please specify --terminology <name> or --all'));
+      terminal.log('Example: tx-import config:clear --terminology unii');
     }
   }
 
@@ -310,9 +311,9 @@ class TerminologyImportCLI {
 
     try {
       fs.writeFileSync(options.output, JSON.stringify(data, null, 2));
-      console.log(chalk.green(`✓ Configuration exported to ${options.output}`));
+      terminal.log(chalk.green(`✓ Configuration exported to ${options.output}`));
     } catch (error) {
-      console.log(chalk.red(`✗ Export failed: ${error.message}`));
+      terminal.log(chalk.red(`✗ Export failed: ${error.message}`));
     }
   }
 
@@ -333,16 +334,16 @@ class TerminologyImportCLI {
     try {
       const data = JSON.parse(fs.readFileSync(options.input, 'utf8'));
       configManager.importConfig(data);
-      console.log(chalk.green(`✓ Configuration imported from ${options.input}`));
+      terminal.log(chalk.green(`✓ Configuration imported from ${options.input}`));
     } catch (error) {
-      console.log(chalk.red(`✗ Import failed: ${error.message}`));
+      terminal.log(chalk.red(`✗ Import failed: ${error.message}`));
     }
   }
 
   run() {
     // Show logo and loaded modules
-    console.log(chalk.blue.bold('🏥 TX-Import - Medical Terminology Import Tool'));
-    console.log(chalk.gray(`Loaded ${this.modules.size} terminology module(s)\\n`));
+    terminal.log(chalk.blue.bold('🏥 TX-Import - Medical Terminology Import Tool'));
+    terminal.log(chalk.gray(`Loaded ${this.modules.size} terminology module(s)\\n`));
 
     this.program.parse();
   }

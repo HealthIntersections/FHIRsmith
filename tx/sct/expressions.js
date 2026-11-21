@@ -6,8 +6,48 @@
  * Licensed under BSD-3-Clause
  */
 
+const { SnomedConceptList } = require('./structures');
+const { languageCode } = require('./languages');
+
 const MAX_TERM_LENGTH = 1024;
+// The most an expression may be: real ones are a few hundred characters. A bound on the input
+// is a bound on everything done with it - checking it, normalising it, testing subsumption
+const MAX_EXPRESSION_LENGTH = 100000;
+// An SCTID is 6-18 digits
+const MAX_SCTID_LENGTH = 18;
+// The most concept references (focus concepts, attribute names, values) an expression may have.
+// Real ones have tens. Normalising one and testing subsumption costs about a millisecond for
+// each, synchronously, so this keeps the worst case to about half a second
+const MAX_EXPRESSION_CONCEPTS = 500;
+// what peek() returns at the end of the source - not a NUL, which is a character the source can hold
+const EOF = '';
+// How deep concept-definition expansion may go while building a long normal form.
+// Attribute values are themselves expanded, so a chain of definitions can descend a
+// long way; in real data it is a handful of levels.
+const MAX_NORMALISATION_DEPTH = 50;
+// How deep bracketed attribute values may nest in an expression the parser accepts. The parser
+// (and everything that walks the parsed expression) recurses once per level, so without a bound
+// a hostile expression is a RangeError (stack overflow) rather than a parse error.
+const MAX_EXPRESSION_DEPTH = 100;
+
 const NO_REFERENCE = 0xFFFFFFFF;
+
+// MRCM (machine readable concept model) reference sets and metadata concepts.
+// The range constraints in 723562003 are ECL, so they are only checked when an
+// evaluator has been injected (SnomedServices does this - see eclConstraintMatcher).
+const MRCM_ATTRIBUTE_DOMAIN_REFSET = 723561005n;
+const MRCM_ATTRIBUTE_RANGE_REFSET = 723562003n;
+// contentTypeId values that apply when validating a postcoordinated expression.
+// 723594008 (all precoordinated content) and 723593002 (all new precoordinated
+// content) are rules about authoring precoordinated concepts and do not constrain
+// expressions. (723594008 was used here as the postcoordinated type until Oct 2026,
+// which brought the body-structure part-of attributes into the domain rules and
+// dropped |Has ingredient|, and swapped the range used for the attributes that
+// have a precoordinated-specific range.)
+const MRCM_CONTENT_TYPE_ALL = 723596005n;
+const MRCM_CONTENT_TYPE_POSTCOORDINATED = 723595009n;
+// ruleStrengthId value for an optional rule (the other value, 723597001, is mandatory).
+const MRCM_RULE_STRENGTH_OPTIONAL = 723598006n;
 
 // Expression status enumeration
 const SnomedExpressionStatus = {
@@ -24,6 +64,17 @@ class SnomedExpressionBase {
     this.start = 0;
     this.stop = 0;
   }
+}
+
+/**
+ * Whether an attribute value has to be written in brackets: the compositional grammar
+ * only allows a bare conceptReference as an attribute value, so anything with more than
+ * one focus concept, or with refinements of its own, is a bracketed subExpression.
+ */
+function needsBrackets(value) {
+  return !!value && ((value.concepts && value.concepts.length > 1) ||
+    (value.refinements && value.refinements.length > 0) ||
+    (value.refinementGroups && value.refinementGroups.length > 0));
 }
 
 /**
@@ -67,7 +118,7 @@ class SnomedConcept extends SnomedExpressionBase {
     } else if (this.decimal) {
       return '#' + this.decimal;
     } else if (this.literal) {
-      return '"' + this.literal + '"';
+      return '"' + this.literal.replace(/[\\"]/g, c => '\\' + c) + '"';
     }
     return '';
   }
@@ -143,7 +194,9 @@ class SnomedRefinement extends SnomedExpressionBase {
    * Get a string description of this refinement
    */
   describe() {
-    return this.name.describe() + '=' + this.value.describe();
+    // A refined or conjoined value has to be bracketed - see attributeValue() in the parser
+    const v = this.value.describe();
+    return this.name.describe() + '=' + (needsBrackets(this.value) ? '(' + v + ')' : v);
   }
 
   /**
@@ -446,6 +499,10 @@ class SnomedExpressionParser {
   parse(source) {
     this.source = source;
     this.cursor = 0;
+    this.depth = 0;
+    this.conceptCount = 0;
+    this.rule(typeof source === 'string' && source.length <= MAX_EXPRESSION_LENGTH,
+      `The expression is longer than ${MAX_EXPRESSION_LENGTH} characters`);
 
     const result = new SnomedExpression();
     result.start = this.cursor;
@@ -461,10 +518,10 @@ class SnomedExpressionParser {
       this.prefix('<');
     }
 
-    // Parse main expression
-    result.concepts.push(this.concept());
+    // Parse main expression (focus concepts are concepts: a value - #5, "x" - can only be an attribute's)
+    result.concepts.push(this.concept(false));
     while (this.gchar('+')) {
-      result.concepts.push(this.concept());
+      result.concepts.push(this.concept(false));
     }
 
     if (this.gchar(':')) {
@@ -474,7 +531,7 @@ class SnomedExpressionParser {
 
     result.stop = this.cursor;
 
-    this.rule(this.peek() === '\0', 'Found content ("' + this.peekDisp() + '") after end of expression');
+    this.rule(this.peek() === EOF, 'Found content ("' + this.peekDisp() + '") after end of expression');
 
     return result;
   }
@@ -482,12 +539,15 @@ class SnomedExpressionParser {
   /**
    * Parse a concept
    */
-  concept() {
+  concept(allowValue = true) {
     const result = new SnomedConcept();
     result.start = this.cursor;
 
     this.ws();
 
+    if (this.peek() === '#' || this.peek() === '"') {
+      this.rule(allowValue, 'A focus concept must be a concept, not a value ("' + this.peekDisp() + '")');
+    }
     if (this.peek() === '#') {
       result.decimal = this.decimal();
     } else if (this.peek() === '"') {
@@ -519,18 +579,40 @@ class SnomedExpressionParser {
 
   /**
    * Parse refinements for an expression
+   *
+   * The compositional grammar ABNF is
+   *   refinement   = (attributeSet / attributeGroup) *( ws ["," ws] attributeGroup )
+   *   attributeSet = attribute *(ws "," ws attribute)
+   * so a comma is required between the ungrouped attributes of the attribute set, but is
+   * OPTIONAL before an attribute group. Requiring it everywhere rejected the minimal
+   * rendering this parser's own renderer produces (e.g. 249943000:260868000=6934004{...}).
+   *
+   * We stay liberal in what we accept: a group may also be followed by further ungrouped
+   * attributes, which the ABNF does not allow but which this parser has always taken.
    */
   refinements(expr) {
-    let next = true;
-    while (next) {
-      if (this.peek() !== '{') {
-        expr.refinements.push(this.attribute());
-      } else {
+    this.ws();
+
+    let first = true;
+    for (;;) {
+      if (!first) {
+        const mark = this.cursor;
+        const comma = this.gchar(',');
+        this.ws();
+        if (this.peek() !== '{' && !comma) {
+          // neither a separating comma nor a group: the refinements are finished
+          this.cursor = mark;
+          break;
+        }
+      }
+
+      if (this.peek() === '{') {
         expr.refinementGroups.push(this.attributeGroup());
+      } else {
+        expr.refinements.push(this.attribute());
       }
       this.ws();
-      next = this.gchar(',');
-      this.ws();
+      first = false;
     }
   }
 
@@ -582,6 +664,15 @@ class SnomedExpressionParser {
 
     this.ws();
     result.code = this.conceptId();
+    // Resolve the attribute name the same way concept() resolves a focus concept. Without this
+    // the name keeps NO_REFERENCE, and SnomedConcept.matches() then compares by reference on one
+    // side and by code on the other, which makes refinement matching (and so subsumption between
+    // two refined expressions) asymmetric.
+    if (this.conceptList) {
+      const found = this.conceptList.findConcept(result.code);
+      this.rule(found.found, 'Concept "' + result.code + '" not valid');
+      result.reference = found.index;
+    }
     this.ws();
 
     if (this.gchar('|')) {
@@ -598,16 +689,36 @@ class SnomedExpressionParser {
 
   /**
    * Parse an attribute value
+   *
+   * The compositional grammar ABNF is
+   *   attributeValue  = expressionValue / QM stringValue QM / "#" numericValue / booleanValue
+   *   expressionValue = ws ( conceptReference / "(" ws subExpression ws ")" ) ws
+   * so a value that is anything more than a single concept - a refined concept, or a
+   * conjunction - must be in brackets. This parser used to take an unbracketed
+   * sub-expression too (367430006:{405813007=85562004:272741003=24028007}), but that is not
+   * just non-conformant, it is ambiguous: in A:{B=C:D=E,F=G} nothing says whether F=G
+   * refines C or A, and the old parser silently picked C. Other parsers reject it, so we
+   * do too, and the renderer brackets nested values so that what we emit re-parses anywhere.
    */
   attributeValue() {
     this.ws();
 
     if (this.gchar('(')) {
+      this.depth++;
+      this.rule(this.depth <= MAX_EXPRESSION_DEPTH, `The expression nests more than ${MAX_EXPRESSION_DEPTH} levels deep`);
       const result = this.expression();
+      this.ws();
       this.fixed(')');
+      this.depth--;
       return result;
     } else {
-      return this.expression();
+      const result = new SnomedExpression();
+      result.start = this.cursor;
+      result.concepts.push(this.concept());
+      this.rule(this.peek() !== ':' && this.peek() !== '+',
+        'A refined or conjoined attribute value must be enclosed in brackets, e.g. 405813007=(85562004:272741003=24028007) (in "' + this.source + '")');
+      result.stop = this.cursor;
+      return result;
     }
   }
 
@@ -619,10 +730,10 @@ class SnomedExpressionParser {
     result.start = this.cursor;
 
     this.ws();
-    result.concepts.push(this.concept());
+    result.concepts.push(this.concept(false));
 
     while (this.gchar('+')) {
-      result.concepts.push(this.concept());
+      result.concepts.push(this.concept(false));
     }
 
     if (this.gchar(':')) {
@@ -638,13 +749,16 @@ class SnomedExpressionParser {
    * Parse a concept ID (sequence of digits)
    */
   conceptId() {
-    let result = '';
-
+    this.conceptCount++;
+    this.rule(this.conceptCount <= MAX_EXPRESSION_CONCEPTS, `The expression has more than ${MAX_EXPRESSION_CONCEPTS} concepts`);
+    const start = this.cursor;
     while (this.isDigit(this.peek())) {
-      result += this.next();
+      this.next();
+      this.rule(this.cursor - start <= MAX_SCTID_LENGTH, `A concept id has at most ${MAX_SCTID_LENGTH} digits`);
     }
+    const result = this.source.substring(start, this.cursor);
 
-    this.rule(result.length > 0, 'Concept not found (next char = "' + this.peekDisp() + '", in "' + this.source + '")');
+    this.rule(result.length > 0, 'Concept not found (next char = "' + this.peekDisp() + '", in "' + this.source.substring(0, 200) + '")');
     return result;
   }
 
@@ -652,13 +766,17 @@ class SnomedExpressionParser {
    * Parse a decimal number
    */
   decimal() {
-    let result = '';
     this.fixed('#');
-
-    while (this.isDigit(this.peek()) || this.peek() === '.') {
-      result += this.next();
+    const start = this.cursor;
+    if (this.peek() === '-' || this.peek() === '+') {
+      this.next();
     }
-
+    while (this.isDigit(this.peek()) || this.peek() === '.') {
+      this.next();
+    }
+    const result = this.source.substring(start, this.cursor);
+    // numericValue: an integer, or one with a fraction (decimalValue), optionally signed
+    this.rule(/^[-+]?[0-9]+(\.[0-9]+)?$/.test(result), 'Not a valid number: "#' + result + '"');
     return result;
   }
 
@@ -666,13 +784,15 @@ class SnomedExpressionParser {
    * Parse a term (text between | characters)
    */
   term() {
-    let result = '';
-
+    const start = this.cursor;
+    // (an unterminated term used to read on past the end, adding NULs until the string was too
+    // long for V8 - minutes, and 17 GB, holding the event loop: tx.fhir.org, 2026-11-11)
     while (this.peek() !== '|') {
-      result += this.next();
+      this.rule(this.peek() !== EOF, 'Unterminated term (no closing "|")');
+      this.rule(this.cursor - start < MAX_TERM_LENGTH, 'Term too long (more than ' + MAX_TERM_LENGTH + ' characters)');
+      this.next();
     }
-
-    return result;
+    return this.source.substring(start, this.cursor);
   }
 
   /**
@@ -682,16 +802,21 @@ class SnomedExpressionParser {
     let result = '';
     this.fixed('"');
 
-    while (this.peek() !== '"' && this.peek() !== '\0') {
+    while (this.peek() !== '"' && this.peek() !== EOF) {
       if (result.length > MAX_TERM_LENGTH) {
         throw new Error('Constant too long (>' + MAX_TERM_LENGTH + ' chars) at character ' + this.cursor);
+      }
+      // stringValue: a quote or backslash in it is escaped with a backslash
+      if (this.peek() === '\\' && (this.source[this.cursor + 1] === '"' || this.source[this.cursor + 1] === '\\')) {
+        this.next();
       }
       result += this.next();
     }
 
-    if (this.peek() === '\0') {
+    if (this.peek() === EOF) {
       throw new Error('Unterminated Constant at character ' + this.cursor);
     }
+    this.rule(result.length > 0, 'A string value can\'t be empty');
 
     this.fixed('"');
     return result;
@@ -750,7 +875,7 @@ class SnomedExpressionParser {
    */
   peek() {
     if (this.cursor >= this.source.length) {
-      return '\0';
+      return EOF;
     }
     return this.source[this.cursor];
   }
@@ -819,10 +944,19 @@ class MatchingConcept {
  * Provides comprehensive expression processing capabilities
  */
 class SnomedExpressionServices {
+  /**
+   * Where the warnings go. Fetched when first used (importers and tests load this module too);
+   * it was never set, so each of the warnings below threw a TypeError instead
+   */
+  get log() {
+    if (!this._log) {
+      this._log = require('../../library/logger').getInstance().child({ module: 'tx-sct' });
+    }
+    return this._log;
+  }
+
   constructor(snomedStructures, isAIndex) {
     this.strings = snomedStructures.strings;
-    this.words = snomedStructures.words;
-    this.stems = snomedStructures.stems;
     this.refs = snomedStructures.refs;
     this.descriptions = snomedStructures.descriptions;
     this.descriptionIndex = snomedStructures.descriptionIndex;
@@ -927,10 +1061,10 @@ class SnomedExpressionServices {
   /**
    * Parse expression string
    */
-  parseExpression(source) {
+  async parseExpression(source) {
     const parser = new SnomedExpressionParser();
     const result = parser.parse(source);
-    this.checkExpression(result);
+    await this.checkExpression(result);
     return result;
   }
 
@@ -1008,25 +1142,29 @@ class SnomedExpressionServices {
    * Create normal form for a concept
    */
   createNormalForm(reference) {
-    if (this.building) {
-      const exp = new SnomedExpression();
-      this.createDefinedExpression(reference, exp, false);
-      return this.normaliseExpression(exp);
-    } else {
+    if (!this.building) {
       // Read from stored normal form
       const normalFormIndex = this.concepts.getNormalForm(reference);
-      let source;
-
-      if (normalFormIndex === 0) {
-        source = this.getConceptId(reference);
-      } else {
-        source = this.strings.getEntry(normalFormIndex);
+      const stored = normalFormIndex === 0 ? this.getConceptId(reference) : this.strings.getEntry(normalFormIndex);
+      try {
+        const result = new SnomedExpressionParser().parse(stored);
+        // Resolve concept ids to references, but do NOT run checkExpression: the MRCM rules it
+        // applies are the postcoordination ones, and this is a concept's own stored definition -
+        // precoordinated content, authored under MRCM content types that do not apply here. Running
+        // them rejects the normal form of any concept using an attribute that is precoordinated-only
+        // (e.g. 246075003 |Causative agent| on a disorder), which broke subsumption for expressions.
+        this.resolveExpressionReferences(result);
+        return result;
+      } catch (error) {
+        // A stored normal form that isn't one - empty, or naming concepts the cache doesn't have
+        // (the committed test subset has 1,125 of them, e.g. ":{272741003=}") - is built from the
+        // relationships instead, as the import does. Parsing it failed every $subsumes that
+        // needed it, with a 500
       }
-
-      const result = new SnomedExpressionParser().parse(source);
-      this.checkExpression(result);
-      return result;
     }
+    const exp = new SnomedExpression();
+    this.createDefinedExpression(reference, exp, false);
+    return this.normaliseExpression(exp);
   }
 
   /**
@@ -1191,13 +1329,46 @@ class SnomedExpressionServices {
   /**
    * Normalize expression to normal form
    */
-  normaliseExpression(exp) {
+  /**
+   * Expand an expression to its long normal form, ready for structural comparison.
+   *
+   * A fully defined concept is replaced by its definition, because that definition is
+   * both necessary and sufficient. A primitive concept is NOT replaced - its definition
+   * is only necessary, and substituting it would make the expression look equivalent to
+   * things it merely subsumes. But the primitive's defining attributes are still
+   * entailed by it, so they are added alongside the concept rather than discarded:
+   * `4846001 |Anicteric viral hepatitis|` is primitive and carries an inferred
+   * `363698007 |Finding site| = 10200004 |Liver structure|`, so every instance of it
+   * really is a disease with that finding site, and `64572001:{363698007=10200004}`
+   * really does subsume it. Dropping those attributes - which is what this used to do -
+   * lost that answer and reported not-subsumed, which is simply wrong.
+   *
+   * Keeping the concept itself in the focus is what stops the addition being unsound in
+   * the other direction: the primitive stays as an atom that nothing else can match, so
+   * an expression carrying the same attributes is never reported as equivalent to it.
+   *
+   * @param {SnomedExpression} exp
+   * @param {number} [depth] - recursion guard, see MAX_NORMALISATION_DEPTH
+   * @returns {SnomedExpression}
+   */
+  normaliseExpression(exp, depth = 0) {
+    if (depth > MAX_NORMALISATION_DEPTH) {
+      // Expanding attribute values can descend a long way, and truncating silently is
+      // not safe in both directions: dropping conditions from the subsuming side makes
+      // it demand less and so subsume more, which would be a false positive. Fail
+      // instead, and let the caller report that it could not answer.
+      throw new Error(`Could not normalise the expression: it nests more than ${MAX_NORMALISATION_DEPTH}`
+        + ' levels deep once concept definitions are expanded');
+    }
     const work = new SnomedExpression();
 
     // Process concepts
     for (const concept of exp.concepts) {
-      if (concept.reference === NO_REFERENCE || this.isPrimitive(concept.reference)) {
+      if (concept.reference === NO_REFERENCE) {
         work.concepts.push(concept);
+      } else if (this.isPrimitive(concept.reference)) {
+        work.concepts.push(concept);
+        this.addDefiningAttributes(concept.reference, work, depth);
       } else {
         const ex = this.createNormalForm(concept.reference);
         work.merge(ex);
@@ -1209,7 +1380,7 @@ class SnomedExpressionServices {
       const refDst = new SnomedRefinement();
       work.refinements.push(refDst);
       refDst.name = refSrc.name;
-      refDst.value = this.normaliseExpression(refSrc.value);
+      refDst.value = this.normaliseExpression(refSrc.value, depth + 1);
     }
 
     // Process refinement groups
@@ -1221,13 +1392,63 @@ class SnomedExpressionServices {
         const refDst = new SnomedRefinement();
         grpDst.refinements.push(refDst);
         refDst.name = refSrc.name;
-        refDst.value = this.normaliseExpression(refSrc.value);
+        refDst.value = this.normaliseExpression(refSrc.value, depth + 1);
       }
     }
 
     const work2 = work.canonical();
     this.rationaliseExpression(work2);
     return work2.canonical();
+  }
+
+  /**
+   * Add a concept's own defining (non is-a) relationships to an expression, as grouped
+   * and ungrouped refinements with their values normalised.
+   *
+   * Used for primitives, whose attributes are entailed but whose concept must stay in
+   * the focus - see normaliseExpression. The stored normal form cannot be used for this:
+   * it is built by createDefinedExpression, which stops at a primitive too, so the
+   * cached normal form of a primitive is just the concept itself. Reading the
+   * relationships here means existing caches keep working rather than needing a rebuild.
+   *
+   * @param {number} reference - the concept whose attributes to add
+   * @param {SnomedExpression} work - expression to add them to
+   * @param {number} depth - current normalisation depth
+   */
+  addDefiningAttributes(reference, work, depth) {
+    const groups = new Map();
+
+    for (const relIndex of this.getDefiningRelationships(reference)) {
+      const rel = this.relationships.getRelationship(relIndex);
+
+      const ref = new SnomedRefinement();
+      ref.name = new SnomedConcept(rel.relType);
+      ref.name.code = this.getConceptId(rel.relType);
+
+      const value = new SnomedExpression();
+      const target = new SnomedConcept(rel.target);
+      target.code = this.getConceptId(rel.target);
+      value.concepts.push(target);
+      ref.value = this.normaliseExpression(value, depth + 1);
+
+      if (rel.group === 0) {
+        if (!work.hasRefinement(ref)) {
+          work.refinements.push(ref);
+        }
+      } else {
+        const key = rel.group.toString();
+        if (!groups.has(key)) {
+          groups.set(key, new SnomedRefinementGroup());
+        }
+        groups.get(key).refinements.push(ref);
+      }
+    }
+
+    for (const grp of groups.values()) {
+      if (!work.hasRefinementGroup(grp)) {
+        work.refinementGroups.push(grp);
+      }
+    }
   }
 
   /**
@@ -1255,10 +1476,20 @@ class SnomedExpressionServices {
       }
     }
 
-    // Check refinement groups
+    // Check refinement groups. Every group in e1 has to be satisfied by SOME group in e2 - try
+    // them all rather than only the first one whose attribute names line up. Two normalisations
+    // of the same expression can put equivalent groups in a different order, and when several
+    // groups share the same attribute names (e.g. two morphology/site groups on one disorder)
+    // picking the first match and giving up made subsumption depend on that order.
     for (const r of e1.refinementGroups) {
-      const rt = this.findMatchingGroup(r, e2);
-      if (!rt || !this.subsumesGroup(r, rt)) {
+      let ok = false;
+      for (const rt of e2.refinementGroups) {
+        if (this.subsumesGroup(r, rt)) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) {
         return false;
       }
     }
@@ -1444,26 +1675,663 @@ class SnomedExpressionServices {
   }
 
   /**
+   * Resolve every concept id in an expression to its internal reference, without applying any
+   * of the concept model rules. Used for expressions the server generated itself (normal forms),
+   * where the ids are known good and the MRCM postcoordination rules do not apply
+   * @param {SnomedExpression} expression
+   */
+  resolveExpressionReferences(expression) {
+    for (const concept of expression.concepts) {
+      this.checkConcept(concept);
+    }
+    for (const refinement of expression.refinements) {
+      this.checkConcept(refinement.name);
+      this.resolveExpressionReferences(refinement.value);
+    }
+    for (const group of expression.refinementGroups) {
+      for (const refinement of group.refinements) {
+        this.checkConcept(refinement.name);
+        this.resolveExpressionReferences(refinement.value);
+      }
+    }
+  }
+
+  /**
    * Validate expression structure and concept references
    */
-  checkExpression(expression) {
+  async checkExpression(expression) {
     for (const concept of expression.concepts) {
       this.checkConcept(concept);
     }
 
     if (expression.hasRefinements()) {
       for (const refinement of expression.refinements) {
-        this.checkRefinement(refinement);
+        await this.checkRefinement(refinement);
+        this.checkRefinementDomain(expression, refinement);
+        await this.checkRefinementRange(refinement);
       }
+      this.selfGroupRefinements(expression);
     }
 
     if (expression.hasRefinementGroups()) {
       for (const group of expression.refinementGroups) {
         for (const refinement of group.refinements) {
-          this.checkRefinement(refinement);
+          await this.checkRefinement(refinement);
+          this.checkRefinementDomain(expression, refinement);
+          await this.checkRefinementRange(refinement);
         }
       }
     }
+
+    this.checkExpressionCardinality(expression);
+  }
+
+  /**
+   * Check one refinement against the MRCM attribute domain reference set: the
+   * focus concept the attribute is applied to must be in one of the attribute's
+   * domains (see applicableDomainRules for how several rules combine).
+   *
+   * An attribute with no rule in this edition's MRCM is not allowed at all (see
+   * applicableDomainRules). Cardinality (checkExpressionCardinality), grouping
+   * (selfGroupRefinements) and the range constraint (checkRefinementRange, which
+   * needs ECL) are checked elsewhere.
+   *
+   * @param {SnomedExpression} expression - the expression the refinement is on
+   * @param {SnomedRefinement} refinement
+   */
+  checkRefinementDomain(expression, refinement) {
+    const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
+    if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
+      return;
+    }
+    const result = this.applicableDomainRules(expression, attribute);
+    if (result.noDomain) {
+      const attrDesc = this.describeConceptForMessage(attribute);
+      throw new Error(`The SNOMED CT concept model does not define any domain for the attribute ${attrDesc},`
+        + ` so it cannot be used in an expression`);
+    }
+    if (result.failed) {
+      const attrDesc = this.describeConceptForMessage(attribute);
+      const focusDesc = result.focus.map(f => this.describeConceptForMessage(f)).join(' + ');
+      throw new Error(`The SNOMED CT concept model does not allow the attribute ${attrDesc} on ${focusDesc}`
+        + ` (the attribute is only valid ${result.failed})`);
+    }
+  }
+
+  /**
+   * Work out which of an attribute's MRCM domain rules apply to an expression's
+   * focus concept(s), and whether the attribute is allowed there at all.
+   *
+   * An attribute has one domain rule per domain it may be used in, so the
+   * mandatory rules are ALTERNATIVES: |Due to| has one rule for |Clinical finding|
+   * and one for |Event|, and is valid on a concept in either (issue #287 - these
+   * were once ANDed, which rejected |Due to| everywhere).
+   *
+   * Optional rules are RESTRICTIONS layered on top: internationally the only one
+   * is |Laterality| for the lateralizable body structure reference set, which
+   * narrows the mandatory |Anatomical structure| rule, and it is what stops
+   * laterality being applied to a structure that cannot be lateralized. So an
+   * optional rule must also hold wherever a mandatory rule has admitted the
+   * attribute. (An attribute with only optional rules treats them as
+   * alternatives, since there is nothing for them to narrow.)
+   *
+   * The focus may be a conjunction of concepts; the expression is a subtype of
+   * each of them, so a rule holds if it holds for any focus concept.
+   *
+   * @param {SnomedExpression} expression
+   * @param {number} attribute - concept index of the attribute
+   * @returns {{rules: Array, focus: number[], failed: string|null, noDomain?: boolean}} the rules that
+   *   apply (for cardinality and grouping - empty when the attribute is out of
+   *   domain), the focus concepts, and when the attribute is not allowed on this
+   *   focus, a description of the domain(s) it is restricted to (noDomain is set
+   *   when there are none at all)
+   */
+  applicableDomainRules(expression, attribute) {
+    const rules = this.mrcmAttributeDomains().get(attribute);
+    const focus = [];
+    for (const concept of expression.concepts) {
+      if (concept.reference !== undefined && concept.reference !== null && concept.reference !== NO_REFERENCE) {
+        focus.push(concept.reference);
+      }
+    }
+    if (this.mrcmAttributeDomains().size === 0 || focus.length === 0) {
+      // No MRCM in this edition (or nothing to check against), so the domain check is off
+      return { rules: rules || [], focus, failed: null };
+    }
+    if (!rules || rules.length === 0) {
+      // The MRCM attribute domain reference set is the list of attributes that may
+      // be used, and in which domains: an attribute it says nothing about (for
+      // postcoordinated content) is not allowed anywhere. Internationally that is
+      // a handful of concept model attributes that only appear in precoordinated
+      // definitions (|Has definitional manifestation|, |Subject of information|,
+      // the body structure part-of attributes), and it also catches the linkage
+      // concepts that are not concept model attributes at all. This matches
+      // Ontoserver (Oct 2026); before that an attribute with no rule was not checked.
+      return { rules: [], focus, failed: 'nowhere', noDomain: true };
+    }
+
+    const holds = rule => focus.some(f => rule.isRefset
+      ? this.conceptInRefSet(rule.domain, f)
+      : this.subsumes(rule.domain, f));
+    const describe = rule => (rule.isRefset ? 'for concepts in ' : 'in the domain ')
+      + this.describeConceptForMessage(rule.domain);
+
+    const mandatory = rules.filter(rule => !rule.optional);
+    const alternatives = mandatory.length > 0 ? mandatory : rules;
+    const restrictions = mandatory.length > 0 ? rules.filter(rule => rule.optional) : [];
+
+    const matched = alternatives.filter(holds);
+    const failedRestrictions = restrictions.filter(rule => !holds(rule));
+    if (matched.length === 0) {
+      // Name every domain the attribute could have been used in, and any
+      // restriction that also fails: a laterality on a disorder is outside both
+      // the anatomical structure domain and the lateralizable refset, and naming
+      // only one of them misleads.
+      const parts = [alternatives.map(describe).join(', or ')];
+      for (const rule of failedRestrictions) {
+        parts.push(describe(rule));
+      }
+      return { rules: [], focus, failed: parts.join(', and ') };
+    }
+    if (failedRestrictions.length > 0) {
+      return { rules: [], focus, failed: failedRestrictions.map(describe).join(', and ') };
+    }
+    return { rules: matched.concat(restrictions), focus, failed: null };
+  }
+
+  /**
+   * Move each ungrouped refinement whose attribute the MRCM marks as grouped into a
+   * relationship group of its own.
+   *
+   * The MRCM attribute domain reference set carries a `grouped` flag per rule:
+   * `363698007 |Finding site|` is grouped, so the classifiable form of
+   * `40468003:363698007=10200004` is `40468003:{363698007=10200004}`. SNOMED's
+   * postcoordination guide calls the ungrouped spelling Close To User Form and
+   * defines the transformation to the Classifiable Form ("Adding a Self-grouped
+   * Attribute"): each such attribute is placed in a group by itself. That is what
+   * this does, so the ungrouped spelling is accepted (as Ontoserver and Snowstorm
+   * accept it) and everything downstream - cardinality, rendering, the normal form
+   * and so subsumption - sees the grouped form. Until Oct 2026 the ungrouped
+   * spelling was rejected instead.
+   *
+   * Only the rules for the domain(s) the focus concept is in count (see
+   * applicableDomainRules); an attribute that is ungrouped in every applicable
+   * rule, or that has no applicable rule, is left where it is.
+   *
+   * @param {SnomedExpression} expression - an expression with ungrouped refinements,
+   *   whose references have already been resolved and whose domains have been checked
+   */
+  selfGroupRefinements(expression) {
+    const keep = [];
+    for (const refinement of expression.refinements) {
+      const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
+      let grouped = false;
+      if (attribute !== undefined && attribute !== null && attribute !== NO_REFERENCE) {
+        const rules = this.applicableDomainRules(expression, attribute).rules;
+        grouped = rules.some(rule => rule.grouped);
+      }
+      if (grouped) {
+        const group = new SnomedRefinementGroup();
+        group.refinements.push(refinement);
+        expression.refinementGroups.push(group);
+      } else {
+        keep.push(refinement);
+      }
+    }
+    expression.refinements = keep;
+  }
+
+  /**
+   * The inverse of selfGroupRefinements, for rendering an expression for a user: a
+   * group holding a single refinement whose attribute the MRCM never groups (laterality,
+   * say) is written as an ungrouped refinement, which is how the normal form rules put
+   * it. The canonical form groups every refinement (see SnomedExpression.canonical), which
+   * is right for subsumption but reads oddly as output. An attribute with any applicable
+   * grouped rule, or no rule at all, stays in its group.
+   *
+   * @param {SnomedExpression} expression - with its references resolved; modified in place
+   * @returns {SnomedExpression} the same expression
+   */
+  ungroupNeverGroupedRefinements(expression) {
+    const keep = [];
+    for (const group of expression.refinementGroups) {
+      let ungroup = false;
+      if (group.refinements.length === 1) {
+        const attribute = group.refinements[0].name ? group.refinements[0].name.reference : NO_REFERENCE;
+        if (attribute !== undefined && attribute !== null && attribute !== NO_REFERENCE) {
+          const rules = this.applicableDomainRules(expression, attribute).rules;
+          ungroup = rules.length > 0 && rules.every(rule => !rule.grouped);
+        }
+      }
+      if (ungroup) {
+        expression.refinements.push(group.refinements[0]);
+      } else {
+        keep.push(group);
+      }
+    }
+    expression.refinementGroups = keep;
+    return expression;
+  }
+
+  /**
+   * The MRCM attribute domain reference set, indexed by attribute concept.
+   * Built once per edition and cached; an edition with no MRCM yields an empty
+   * map, which turns the domain check off rather than failing.
+   *
+   * @returns {Map<number, Array<{domain: number, isRefset: boolean, grouped: boolean, optional: boolean, max: number, maxInGroup: number}>>}
+   */
+  mrcmAttributeDomains() {
+    if (this._mrcmAttributeDomains) {
+      return this._mrcmAttributeDomains;
+    }
+    const rules = new Map();
+    this._mrcmAttributeDomains = rules;
+
+    const refSet = this.findRefSetByConceptId(MRCM_ATTRIBUTE_DOMAIN_REFSET);
+    if (!refSet) {
+      return rules; // no MRCM in this edition
+    }
+    const contentAll = this.conceptIndexOf(MRCM_CONTENT_TYPE_ALL);
+    const contentPost = this.conceptIndexOf(MRCM_CONTENT_TYPE_POSTCOORDINATED);
+    const strengthOptional = this.conceptIndexOf(MRCM_RULE_STRENGTH_OPTIONAL);
+
+    // Every concept that defines a reference set, so a domain that is itself a
+    // reference set (the lateralizable body structure refset) is tested by
+    // membership rather than subsumption.
+    const refSetConcepts = new Set();
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      refSetConcepts.add(this.refSetIndex.getReferenceSet(i).definition);
+    }
+
+    const members = this.refSetMembers.getMembers(refSet.membersByRef) || [];
+    for (const member of members) {
+      if (member.kind !== 0) {
+        continue; // concept members only
+      }
+      // Additional columns are stored as (value, type) pairs, in file order:
+      // domainId, grouped, attributeCardinality, attributeInGroupCardinality,
+      // ruleStrengthId, contentTypeId.
+      const values = this.refs.getReferences(member.values);
+      if (!values || values.length < 12) {
+        continue;
+      }
+      const domain = values[0];
+      const contentType = values[10];
+      if (contentType !== contentAll && contentType !== contentPost) {
+        continue; // a rule about authoring precoordinated concepts
+      }
+      // The importer stores 0 for a referenced component it could not resolve,
+      // which would otherwise read as a domain of whichever concept sorts first.
+      if (domain === 0) {
+        continue;
+      }
+      let list = rules.get(member.ref);
+      if (!list) {
+        list = [];
+        rules.set(member.ref, list);
+      }
+      list.push({
+        domain: domain,
+        isRefset: refSetConcepts.has(domain),
+        // The grouped column is a plain 0/1 (type 4), not a reference into the string
+        // table like the cardinalities beside it - reading it as one yields garbage.
+        grouped: values[2] === 1,
+        // An optional rule narrows a mandatory one rather than adding a domain
+        // (see applicableDomainRules).
+        optional: values[8] === strengthOptional,
+        // Only the maximums are enforced. A minimum ("1..1") says a concept in
+        // this domain must have the attribute in its own definition; it does not
+        // say a refinement of that concept has to restate it.
+        max: this.parseCardinalityMax(values[4]),          // attributeCardinality
+        maxInGroup: this.parseCardinalityMax(values[6])    // attributeInGroupCardinality
+      });
+    }
+    return rules;
+  }
+
+  /**
+   * Check one refinement's value against the MRCM attribute range: the range is
+   * an ECL constraint, so this only runs when an evaluator has been injected
+   * (`eclConstraintMatcher`, set by SnomedServices, which owns the ECL engine; it is
+   * async, as ECL evaluation is).
+   * A matcher that returns null - an unparseable or unsupported constraint, such
+   * as the concrete-value ranges "dec(>#0..)" - leaves the value unchecked
+   * rather than rejecting it.
+   *
+   * @param {SnomedRefinement} refinement
+   */
+  async checkRefinementRange(refinement) {
+    const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
+    if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
+      return;
+    }
+    const constraint = this.mrcmAttributeRanges().get(attribute);
+    if (!constraint || !refinement.value) {
+      return;
+    }
+
+    // A concrete value range (dec/int/str) is checked here; everything else is
+    // ECL and needs the evaluator the provider injects.
+    const concreteRange = this.parseConcreteRange(constraint);
+    const value = this.concreteValueOf(refinement.value);
+    let ok;
+    if (concreteRange) {
+      ok = this.concreteValueSatisfies(concreteRange, value);
+    } else if (value !== null) {
+      ok = false; // a concrete value where the model wants a concept
+    } else if (!this.eclConstraintMatcher) {
+      return;
+    } else {
+      try {
+        ok = await this.eclConstraintMatcher(constraint, refinement.value);
+      } catch (error) {
+        ok = null; // the evaluator could not decide; do not invent a violation
+      }
+    }
+    // null = could not decide: a constraint naming concepts this edition does not carry.
+    if (ok === false) {
+      const concrete = this.concreteValueOf(refinement.value);
+      const value = concrete !== null ? concrete.text : (refinement.value.concepts || [])
+        .filter(c => c.reference !== undefined && c.reference !== null && c.reference !== NO_REFERENCE)
+        .map(c => this.describeConceptForMessage(c.reference)).join(' + ');
+      throw new Error(`The SNOMED CT concept model does not allow ${value || 'this value'}`
+        + ` as the value of the attribute ${this.describeConceptForMessage(attribute)}`
+        + ` (the value must satisfy "${constraint}")`);
+    }
+  }
+
+  /**
+   * Parse an MRCM concrete value range such as "dec(>#0..)", "int(#1..#10)" or
+   * "str(...)". Returns null for anything that is not one - those are ECL.
+   *
+   * @param {string} constraint
+   * @returns {{type: string, lowOp: string, low: number, highOp: string, high: number}|null}
+   */
+  parseConcreteRange(constraint) {
+    const match = /^\s*(dec|int|str)\s*\((.*)\)\s*$/.exec(constraint || '');
+    if (!match) {
+      return null;
+    }
+    const range = { type: match[1], lowOp: null, low: null, highOp: null, high: null };
+    if (range.type === 'str') {
+      return range; // no ordering on strings; only the type is checked
+    }
+    const parts = /^\s*([<>]=?)?\s*#?(-?\d+(?:\.\d+)?)?\s*\.\.\s*([<>]=?)?\s*#?(-?\d+(?:\.\d+)?)?\s*$/.exec(match[2]);
+    if (!parts) {
+      return range; // bounds we do not understand: the type check still applies
+    }
+    if (parts[2] !== undefined) { range.lowOp = parts[1] || '>='; range.low = parseFloat(parts[2]); }
+    if (parts[4] !== undefined) { range.highOp = parts[3] || '<='; range.high = parseFloat(parts[4]); }
+    return range;
+  }
+
+  /**
+   * The concrete value a refinement value carries, if it is one: SCG writes these
+   * as #500 or "text" rather than as a concept.
+   *
+   * @param {SnomedExpression} expression - a refinement's value
+   * @returns {{number: number|null, string: string|null, text: string}|null}
+   */
+  concreteValueOf(expression) {
+    if (!expression || (expression.refinements || []).length > 0 || (expression.refinementGroups || []).length > 0) {
+      return null;
+    }
+    const concepts = expression.concepts || [];
+    if (concepts.length !== 1) {
+      return null;
+    }
+    const concept = concepts[0];
+    if (concept.decimal !== undefined && concept.decimal !== null && concept.decimal !== '') {
+      return { number: parseFloat(concept.decimal), string: null, text: '#' + concept.decimal };
+    }
+    if (concept.literal !== undefined && concept.literal !== null && concept.literal !== '') {
+      return { number: null, string: concept.literal, text: JSON.stringify(concept.literal) };
+    }
+    return null;
+  }
+
+  /**
+   * @param {Object} range - from parseConcreteRange
+   * @param {Object|null} value - from concreteValueOf
+   * @returns {boolean}
+   */
+  concreteValueSatisfies(range, value) {
+    if (value === null) {
+      return false; // a concept where the model wants a concrete value
+    }
+    if (range.type === 'str') {
+      return value.string !== null;
+    }
+    if (value.number === null || !isFinite(value.number)) {
+      return false;
+    }
+    if (range.type === 'int' && !Number.isInteger(value.number)) {
+      return false;
+    }
+    if (range.low !== null) {
+      if (range.lowOp === '>' && !(value.number > range.low)) return false;
+      if (range.lowOp === '>=' && !(value.number >= range.low)) return false;
+    }
+    if (range.high !== null) {
+      if (range.highOp === '<' && !(value.number < range.high)) return false;
+      if (range.highOp === '<=' && !(value.number <= range.high)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * The MRCM attribute range reference set, indexed by attribute concept, as the
+   * rangeConstraint ECL string.
+   *
+   * Where an attribute has a range specifically for postcoordinated content
+   * (contentTypeId 723595009) that one replaces the general "all content" range
+   * rather than adding to it. After that rule every attribute has exactly one
+   * applicable constraint, so there is no question of ANDing or ORing them.
+   *
+   * @returns {Map<number, string>}
+   */
+  mrcmAttributeRanges() {
+    if (this._mrcmAttributeRanges) {
+      return this._mrcmAttributeRanges;
+    }
+    const ranges = new Map();
+    this._mrcmAttributeRanges = ranges;
+
+    const refSet = this.findRefSetByConceptId(MRCM_ATTRIBUTE_RANGE_REFSET);
+    if (!refSet) {
+      return ranges;
+    }
+    const contentAll = this.conceptIndexOf(MRCM_CONTENT_TYPE_ALL);
+    const contentPost = this.conceptIndexOf(MRCM_CONTENT_TYPE_POSTCOORDINATED);
+    const fromPostRow = new Set();
+
+    const members = this.refSetMembers.getMembers(refSet.membersByRef) || [];
+    for (const member of members) {
+      if (member.kind !== 0) {
+        continue;
+      }
+      // (value, type) pairs: rangeConstraint, attributeRule, ruleStrengthId, contentTypeId
+      const values = this.refs.getReferences(member.values);
+      if (!values || values.length < 8) {
+        continue;
+      }
+      const contentType = values[6];
+      if (contentType !== contentAll && contentType !== contentPost) {
+        continue;
+      }
+      if (ranges.has(member.ref) && fromPostRow.has(member.ref) && contentType !== contentPost) {
+        continue; // keep the postcoordination-specific range
+      }
+      let constraint;
+      try {
+        constraint = this.strings.getEntry(values[0]);
+      } catch (error) {
+        continue;
+      }
+      if (!constraint) {
+        continue;
+      }
+      ranges.set(member.ref, constraint);
+      if (contentType === contentPost) {
+        fromPostRow.add(member.ref);
+      }
+    }
+    return ranges;
+  }
+
+  /**
+   * The upper bound from an MRCM cardinality string such as "0..1", "0..*" or
+   * "0..0". Returns Infinity for "*", and Infinity for anything unparseable, so
+   * a value we do not understand cannot invent a violation.
+   *
+   * @param {number} stringRef - offset of the cardinality string
+   * @returns {number}
+   */
+  parseCardinalityMax(stringRef) {
+    let text;
+    try {
+      text = this.strings.getEntry(stringRef);
+    } catch (error) {
+      return Infinity;
+    }
+    const match = /^\s*\d+\s*\.\.\s*(\d+|\*)\s*$/.exec(text || '');
+    if (!match) {
+      return Infinity;
+    }
+    return match[1] === '*' ? Infinity : parseInt(match[1], 10);
+  }
+
+  /**
+   * Check the MRCM cardinality of the attributes used on one expression:
+   * attributeCardinality caps how often an attribute may appear on the concept
+   * at all, and attributeInGroupCardinality caps how often it may appear within
+   * a single relationship group - a maximum of 0 there is how the MRCM says an
+   * attribute is ungrouped (all 37 ungrouped attributes carry "0..0").
+   *
+   * Only the rules for the domain(s) the focus concept is in count - |Procedure
+   * device| is 0..* in a group on a procedure but 0..1 on an observable, and a
+   * procedure must not get the observable's limit (see applicableDomainRules).
+   * Where several of those rules apply, the tightest maximum wins. Nested value expressions are checked separately, when
+   * checkRefinement recurses into them.
+   *
+   * @param {SnomedExpression} expression
+   */
+  checkExpressionCardinality(expression) {
+    const domains = this.mrcmAttributeDomains();
+    if (domains.size === 0) {
+      return;
+    }
+
+    const groups = expression.hasRefinementGroups() ? expression.refinementGroups : [];
+    const ungrouped = expression.hasRefinements() ? expression.refinements : [];
+
+    const total = new Map();     // attribute -> occurrences anywhere on this expression
+    const count = (refinement, into) => {
+      const attribute = refinement.name ? refinement.name.reference : NO_REFERENCE;
+      if (attribute === undefined || attribute === null || attribute === NO_REFERENCE) {
+        return;
+      }
+      into.set(attribute, (into.get(attribute) || 0) + 1);
+      if (into !== total) {
+        total.set(attribute, (total.get(attribute) || 0) + 1);
+      }
+    };
+
+    for (const refinement of ungrouped) {
+      count(refinement, total);
+    }
+    const perGroup = [];
+    for (const group of groups) {
+      const counts = new Map();
+      for (const refinement of group.refinements) {
+        count(refinement, counts);
+      }
+      perGroup.push(counts);
+    }
+
+    const applicable = new Map();
+    const limit = (attribute, field) => {
+      if (!applicable.has(attribute)) {
+        applicable.set(attribute, this.applicableDomainRules(expression, attribute).rules);
+      }
+      const rules = applicable.get(attribute);
+      if (rules.length === 0) {
+        return Infinity; // no rule, or out of domain (which checkRefinementDomain reports)
+      }
+      return rules.reduce((least, rule) => Math.min(least, rule[field]), Infinity);
+    };
+
+    for (const [attribute, used] of total) {
+      const max = limit(attribute, 'max');
+      if (used > max) {
+        throw new Error(`The SNOMED CT concept model allows the attribute ${this.describeConceptForMessage(attribute)}`
+          + ` at most ${max} time(s) on one concept, but it is used ${used} times`);
+      }
+    }
+    for (const counts of perGroup) {
+      for (const [attribute, used] of counts) {
+        const max = limit(attribute, 'maxInGroup');
+        if (used > max) {
+          if (max === 0) {
+            throw new Error(`The SNOMED CT concept model does not allow the attribute ${this.describeConceptForMessage(attribute)}`
+              + ` to appear in a relationship group`);
+          }
+          throw new Error(`The SNOMED CT concept model allows the attribute ${this.describeConceptForMessage(attribute)}`
+            + ` at most ${max} time(s) in one relationship group, but it is used ${used} times`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Is this concept a member of this reference set? Uses the per-concept list of
+   * reference sets, so it costs a handful of comparisons rather than a scan of
+   * the reference set's members.
+   */
+  conceptInRefSet(refSetConcept, conceptIndex) {
+    try {
+      const concept = this.concepts.getConcept(conceptIndex);
+      if (!concept.refsets) {
+        return false;
+      }
+      const list = this.refs.getReferences(concept.refsets);
+      return !!list && list.includes(refSetConcept);
+    } catch (error) {
+      return false;
+    }
+  }
+
+  findRefSetByConceptId(conceptId) {
+    const index = this.conceptIndexOf(conceptId);
+    if (index === null) {
+      return null;
+    }
+    for (let i = 0; i < this.refSetIndex.count(); i++) {
+      const refSet = this.refSetIndex.getReferenceSet(i);
+      if (refSet.definition === index) {
+        return refSet;
+      }
+    }
+    return null;
+  }
+
+  conceptIndexOf(conceptId) {
+    const result = this.concepts.findConcept(conceptId);
+    return result.found ? result.index : null;
+  }
+
+  /** "11204002 |Structure of porta hepatis|", falling back to the bare id */
+  describeConceptForMessage(reference) {
+    const id = this.getConceptId(reference);
+    try {
+      const displays = this.listDisplayNames(reference, 0);
+      if (displays && displays.length > 0 && displays[0].term) {
+        return `${id} |${displays[0].term}|`;
+      }
+    } catch (error) {
+      // fall through to the bare id
+    }
+    return id;
   }
 
   /**
@@ -1486,17 +2354,21 @@ class SnomedExpressionServices {
       for (const limit of limits) {
         let parentRef = this.concepts.findConcept(limit);
         let descendentsRef = this.concepts.getAllDesc(parentRef.index);
-        const descendants = this.refs.getReferences(descendentsRef);
-        if (descendants && descendants.includes(concept.reference)) {
+        if (this.refs.hasSortedReference(descendentsRef, concept.reference)) {
           ok = true;
           break;
         }
       }
       if (!ok) {
+        const desc = this.describeConceptForMessage(concept.reference);
+        const limitDesc = limits.map(l => {
+          const ix = this.conceptIndexOf(BigInt(l));
+          return ix === null ? l : this.describeConceptForMessage(ix);
+        });
         if (limits.length == 1) {
-          throw new Error(`Concept ${concept.code} is not valid in this context (must be a ${limits[0]})`);
+          throw new Error(`Concept ${desc} is not valid in this context (must be a descendant of ${limitDesc[0]})`);
         } else {
-          throw new Error(`Concept ${concept.code} is not valid in this context (must be a descendent of one of ${limits})`);
+          throw new Error(`Concept ${desc} is not valid in this context (must be a descendant of one of ${limitDesc.join(', ')})`);
         }
       }
     }
@@ -1534,6 +2406,33 @@ class SnomedExpressionServices {
    * List all display names for a concept
    * Equivalent to Pascal ListDisplayNames procedure
    */
+  // Key concept indexes for preferred-term selection (US English is the global
+  // default language reference set). Mirrors the logic in cs-snomed.js so both
+  // display paths agree.
+  _displayConstants() {
+    if (this._dispConst) return this._dispConst;
+    const idx = (id) => { const r = this.concepts.findConcept(id); return r.found ? r.index : -1; };
+    this._dispConst = {
+      usRefset: idx(900000000000509007n),
+      preferred: idx(900000000000548007n),
+      synonym: idx(900000000000013009n)
+    };
+    return this._dispConst;
+  }
+
+  _isPreferredSynonym(description) {
+    const K = this._displayConstants();
+    if (description.kind !== K.synonym) return false;
+    if (!description.valueses) return false;
+    const valueses = this.refs.getReferences(description.valueses);
+    if (!valueses) return false;
+    for (let i = 0; i < valueses.length; i++) {
+      const vals = this.refs.getReferences(valueses[i]); // [acceptabilityIndex, type]
+      if (vals && vals.length > 0 && vals[0] === K.preferred) return true;
+    }
+    return false;
+  }
+
   listDisplayNames(conceptIndex, languageFilter = 0) {
     const designations = [];
 
@@ -1558,7 +2457,7 @@ class SnomedExpressionServices {
             const term = this.strings.getEntry(description.iDesc).trim();
 
             designations.push({
-              isPreferred: i === 0, // First description is considered preferred
+              isPreferred: this._isPreferredSynonym(description), // preferred synonym in US English
               isActive: true,
               languageCode: this.codeForLanguage(description.lang),
               term: term,
@@ -1607,27 +2506,22 @@ class SnomedExpressionServices {
   }
 
   /**
-   * Get language code from internal language index
+   * The language code of a description's language byte (tx/sct/languages.js)
    */
   codeForLanguage(langIndex) {
-    // Simplified mapping - could be enhanced with proper language reference
-    const languageMap = {
-      1: 'en-US',
-      2: 'en-GB',
-      3: 'es',
-      4: 'fr',
-      5: 'de'
-    };
-
-    return languageMap[langIndex] || 'en-US';
+    return languageCode(langIndex) || 'en';
   }
 
   /**
    * Validate refinement
    */
-  checkRefinement(refinement) {
-    this.checkConcept(refinement.name, ['410662002', '106237007']);
-    this.checkExpression(refinement.value);
+  async checkRefinement(refinement) {
+    // Only concept model attributes (410662002) may be used as attributes. The wider
+    // 106237007 |Linkage concept| used to be allowed too, which let in things like
+    // 20401003 |With| and 280452008 |Interpretation| that are not attributes in the
+    // concept model (and could never have an MRCM rule anyway).
+    this.checkConcept(refinement.name, ['410662002']);
+    await this.checkExpression(refinement.value);
   }
 
   /**
@@ -1648,9 +2542,7 @@ class SnomedExpressionServices {
     // In SNOMED CT, primitive concepts are not fully defined by their relationships
     try {
       const concept = this.concepts.getConcept(reference);
-      // Bit 0 typically indicates if concept is primitive (1) or defined (0)
-      // This may vary based on the specific implementation
-      return (concept.flags & 1) !== 0;
+      return (concept.flags & SnomedConceptList.MASK_CONCEPT_PRIMITIVE) !== 0;
     } catch (error) {
       // If we can't read the concept, assume it's primitive for safety
       this.log.warn(`Warning: Could not check primitive status for concept ${reference}: ${error.message}`);
@@ -1720,11 +2612,8 @@ class SnomedExpressionServices {
         return false;
       }
 
-      // Get the array of descendant indices
-      const descendants = this.refs.getReferences(closureRef);
-
-      // Check if b is in the descendants of a
-      return descendants.includes(b);
+      // b is one of a's descendants: the closure is stored sorted (see hasSortedReference)
+      return this.refs.hasSortedReference(closureRef, b);
     } catch (error) {
       // If we can't read closure data, fall back to simple equality check
       this.log.warn(`Warning: Could not check subsumption for ${a} -> ${b}: ${error.message}`);
@@ -1754,10 +2643,13 @@ class SnomedExpressionServices {
         }
       }
 
-      // Grouped refinements
+      // Grouped refinements. The comma between the attribute set and the first group is
+      // optional in the grammar, but we emit it: it is what makes the boundary between the
+      // ungrouped attributes and the first group legible, and it is the safer of the two
+      // spellings to hand to a third-party parser.
       if (expr.hasRefinementGroups()) {
         for (let j = 0; j < expr.refinementGroups.length; j++) {
-          if (j > 0) parts.push(',');
+          if (j > 0 || expr.hasRefinements()) parts.push(',');
           parts.push('{');
 
           for (let i = 0; i < expr.refinementGroups[j].refinements.length; i++) {
@@ -1814,7 +2706,11 @@ class SnomedExpressionServices {
   renderRefinement(parts, expr, option) {
     this.renderConcept(parts, expr.name, option);
     parts.push('=');
+    // a refined or conjoined value must be bracketed, or no conformant parser will read it back
+    const bracket = needsBrackets(expr.value);
+    if (bracket) parts.push('(');
     this.renderExpressionParts(parts, expr.value, option);
+    if (bracket) parts.push(')');
   }
 
   getDisplayName(conceptIdOrReference) {
@@ -1975,10 +2871,9 @@ class SnomedExpressionServicesExtended extends SnomedExpressionServices {
   isPrimitive(reference) {
     try {
       const concept = this.concepts.getConcept(reference);
-      // In SNOMED CT, primitive concepts have the primitive flag set
-      // The definitionStatusId in RF2 determines this:
-      // 900000000000074008 = primitive, 900000000000073002 = fully defined
-      return (concept.flags & 1) !== 0;
+      // definitionStatusId 900000000000074008 (primitive) is recorded at import time as
+      // MASK_CONCEPT_PRIMITIVE in the concept flags byte
+      return (concept.flags & SnomedConceptList.MASK_CONCEPT_PRIMITIVE) !== 0;
     } catch (error) {
       // If we can't read the concept, assume it's primitive for safety
       if (this.building) {
@@ -2092,6 +2987,7 @@ module.exports = {
 
   // Enums and constants
   SnomedServicesRenderOption,
-  SnomedRefinementGroupMatchState
+  SnomedRefinementGroupMatchState,
+  MAX_EXPRESSION_DEPTH
 };
 

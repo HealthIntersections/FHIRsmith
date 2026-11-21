@@ -383,6 +383,7 @@
     <case id="k=1=054" unit="meq/(kg.h)" valid="true"/>
     <case id="k=1=055" unit="osm/L" valid="true"/>
     <case id="k=1=056" unit="pH" valid="true"/>
+    <case id="k=1=056" unit="[pH]" valid="true"/>
     <case id="k=1=057" unit="g/(8.h)" valid="true"/>
     <case id="k=1=058" unit="meq/h" valid="true"/>
     <case id="k=1=059" unit="pA" valid="true"/>

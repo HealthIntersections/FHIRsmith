@@ -1,3 +1,6 @@
+const Logger = require('../../../library/logger');
+const oclLog = Logger.getInstance().child({ module: 'ocl' });
+
 class OCLBackgroundJobQueue {
   static MAX_CONCURRENT = 2;
   static HEARTBEAT_INTERVAL_MS = 30000;
@@ -42,7 +45,7 @@ class OCLBackgroundJobQueue {
       .catch((error) => {
         this.queuedOrRunningKeys.delete(jobKey);
         const message = error && error.message ? error.message : String(error);
-        console.error(`[OCL] Failed to enqueue background job: ${jobType || 'background-job'} ${jobKey}: ${message}`);
+        oclLog.error(`Failed to enqueue background job: ${jobType || 'background-job'} ${jobKey}: ${message}`);
       });
 
     return true;
@@ -125,7 +128,7 @@ class OCLBackgroundJobQueue {
       lines.push(`   progress: ${this.formatProgress(job.getProgress)}`);
     });
 
-    console.log(lines.join('\n'));
+    oclLog.info(lines.join('\n'));
   }
 
   static formatProgress(getProgress) {
@@ -181,7 +184,7 @@ class OCLBackgroundJobQueue {
         .then(() => job.runJob())
         .catch((error) => {
           const message = error && error.message ? error.message : String(error);
-          console.error(`[OCL] Background job failed: ${job.jobType} ${job.jobKey}: ${message}`);
+          oclLog.error(`Background job failed: ${job.jobType} ${job.jobKey}: ${message}`);
         })
         .finally(() => {
           this.activeCount -= 1;

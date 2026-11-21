@@ -12,6 +12,8 @@ const zlib = require('zlib');
 const tar = require('tar');
 const axios = require('axios');
 const { VersionUtilities } = require('../library/version-utilities');
+const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('./package-limits');
+const { EntryNames, pathProblem } = require('./package-names');
 
 const DEFAULT_ROOT_URL = 'https://build.fhir.org';
 const DEFAULT_CI_QUERY_INTERVAL = 1000 * 60 * 60; // 1 hour
@@ -351,6 +353,11 @@ class CIBuildClient {
 
 class PackageManager {
     totalDownloaded = 0;
+    /**
+     * {Set<string>} the package folders (id#version, in the cache folder) that fetch and
+     * fetchUrl have returned - what has been used, for pruning the rest (Library.pruneUnusedCaches)
+     */
+    usedPackages = new Set();
 
     /**
      * @param {string[]} packageServers - Ordered list of package server URLs
@@ -377,6 +384,7 @@ class PackageManager {
         // Check cache first
         const cachedPath = await this.checkCache(packageId, resolvedVersion);
         if (cachedPath) {
+            this.usedPackages.add(cachedPath);
             return cachedPath;
         }
 
@@ -386,6 +394,7 @@ class PackageManager {
         this.totalDownloaded = this.totalDownloaded + packageData.length;
         // Extract to cache
         const extractedPath = await this.extractToCache(packageId, resolvedVersion, packageData);
+        this.usedPackages.add(extractedPath);
 
         return extractedPath;
     }
@@ -520,8 +529,10 @@ class PackageManager {
         const packagePath = path.join(this.cacheFolder, packageName);
 
         try {
-            const stats = await fs.stat(packagePath);
-            if (stats.isDirectory()) {
+            // the folder alone is not enough: a download that failed after the folder was made
+            // leaves an empty one, which must not count as the package
+            const stats = await fs.stat(path.join(packagePath, 'package', 'package.json'));
+            if (stats.isFile()) {
                 return packageName;
             }
         } catch (error) {
@@ -542,6 +553,11 @@ class PackageManager {
 
         if (version == "current") {
             const result = await new CIBuildClient().loadFromCIBuild(packageId);
+            return result.stream;
+        }
+        if (version && version.startsWith('current$')) {
+            // the CI build of a branch
+            const result = await new CIBuildClient().loadFromCIBuild(packageId, version.substring('current$'.length));
             return result.stream;
         }
         for (const server of this.packageServers) {
@@ -627,6 +643,7 @@ class PackageManager {
             }
 
             this.totalDownloaded = this.totalDownloaded + packageData.length;
+            this.usedPackages.add(finalName);
             return finalName;
         } catch (error) {
             console.error(`Error fetching package from URL ${url}: ${error.message}`);
@@ -648,20 +665,79 @@ class PackageManager {
         // Ensure cache folder exists
         await fs.mkdir(this.cacheFolder, { recursive: true });
 
-        // Create package folder
-        await fs.mkdir(packagePath, { recursive: true });
+        // The package is extracted into a folder of its own, and only renamed into place once it
+        // is all there: one that fails part way - a decompression bomb stopped at the limit, or a
+        // broken tarball - leaves nothing that checkCache would take for the package
+        const partial = await fs.mkdtemp(`${packagePath}.partial-`);
+        try {
+            await this.extractTgz(packageName, packageData, partial);
+        } catch (e) {
+            await fs.rm(partial, { recursive: true, force: true });
+            throw e;
+        }
+        try {
+            await fs.rename(partial, packagePath);
+        } catch (e) {
+            if (await this.checkCache(packageId, version)) {
+                // fetched at the same time by something else, which got there first
+                await fs.rm(partial, { recursive: true, force: true });
+            } else {
+                // an empty or broken folder left by an earlier failure
+                await fs.rm(packagePath, { recursive: true, force: true });
+                await fs.rename(partial, packagePath);
+            }
+        }
+        return packageName;
+    }
 
-        // Extract tar.gz
+    /**
+     * Unpacks a .tgz into a folder, refusing a package that unzips to more than
+     * MAX_UNPACKED_BYTES (it stops as soon as it passes that), or that has a name with a ..
+     * segment or two files of the same name (see library/package-names.js)
+     * @param {string} packageName - for the error message
+     * @param {Buffer} packageData - Package tar.gz data
+     * @param {string} folder - where to unpack it
+     * @returns {Promise<void>}
+     */
+    extractTgz(packageName, packageData, folder) {
         return new Promise((resolve, reject) => {
             const gunzip = zlib.createGunzip();
+            const names = new EntryNames();
+            let unpacked = 0;
+            let failed = false;
             const extract = tar.extract({
-                cwd: packagePath,
-                strict: true
+                cwd: folder,
+                strict: true,
+                filter: (entryPath, entry) => {
+                    const problem = failed ? null : pathProblem(entryPath) || (entry.type === 'Directory' ? null : names.add(entryPath));
+                    if (problem) {
+                        fail(new Error(`Package ${packageName}: ${problem}`));
+                    }
+                    return !failed;
+                }
             });
+            const fail = (e) => {
+                if (!failed) {
+                    failed = true;
+                    gunzip.unpipe(extract);
+                    gunzip.destroy();
+                    reject(e);
+                }
+            };
 
-            gunzip.on('error', reject);
-            extract.on('error', reject);
-            extract.on('finish', () => resolve(packageName));
+            gunzip.on('data', (chunk) => {
+                unpacked += chunk.length;
+                if (unpacked > MAX_UNPACKED_BYTES) {
+                    fail(new Error(`Package ${packageName} unzips to more than the limit of ${MAX_UNPACKED_MB} MB`));
+                }
+            });
+            gunzip.on('error', fail);
+            extract.on('error', fail);
+            extract.on('finish', () => {
+                if (!failed) {
+                    resolve();
+                }
+            });
 
             // Create a readable stream from the buffer and pipe through gunzip to tar
             const stream = require('stream');
@@ -823,7 +899,7 @@ class PackageContentLoader {
 
         try {
             const content = await fs.readFile(filePath, 'utf8');
-            return JSON.parse(content);
+            return normalizeVersionedCanonicals(JSON.parse(content));
         } catch (error) {
             throw new Error(`Failed to load file ${entry.filename}: ${error.message}`);
         }
@@ -923,4 +999,42 @@ class PackageContentLoader {
 }
 
 
-module.exports = { PackageManager, PackageContentLoader };
+/**
+ * Some R4-era core package resources bake a version into the canonical url itself:
+ * hl7.fhir.r4.core#4.0.1 publishes the multi-version v2 tables (0006, 0360, 0391)
+ * as e.g. url "http://terminology.hl7.org/CodeSystem/v2-0360|2.7" with version "0360"
+ * (the table number!). The base packages can never be republished, so normalize at
+ * load time: split the pipe into url + version, on the CodeSystems themselves and on
+ * ValueSet compose include/exclude systems that reference them. Without this,
+ * provider.system() never matches the system in a coding, so validation fails -
+ * silently, in the CodeSystem $validate-code case.
+ */
+function normalizeVersionedCanonicals(resource) {
+    if (!resource || typeof resource !== 'object') {
+        return resource;
+    }
+    if (resource.resourceType === 'CodeSystem' || resource.resourceType === 'ValueSet') {
+        if (typeof resource.url === 'string' && resource.url.includes('|')) {
+            const cut = resource.url.indexOf('|');
+            // the url-embedded version wins over the version element (which is "0360" etc)
+            resource.version = resource.url.substring(cut + 1);
+            resource.url = resource.url.substring(0, cut);
+        }
+        if (resource.resourceType === 'ValueSet' && resource.compose) {
+            for (const list of [resource.compose.include, resource.compose.exclude]) {
+                for (const inc of list || []) {
+                    if (typeof inc.system === 'string' && inc.system.includes('|')) {
+                        const cut = inc.system.indexOf('|');
+                        if (!inc.version) {
+                            inc.version = inc.system.substring(cut + 1);
+                        }
+                        inc.system = inc.system.substring(0, cut);
+                    }
+                }
+            }
+        }
+    }
+    return resource;
+}
+
+module.exports = { PackageManager, PackageContentLoader, normalizeVersionedCanonicals };

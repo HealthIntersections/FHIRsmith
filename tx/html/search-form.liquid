@@ -3,22 +3,22 @@
 <form method="get" id="searchForm" action="{{ baseUrl }}/CodeSystem">
 <table class="grid" cellpadding="0" cellspacing="0">
 <tr>
-<td>URL: <input type="text" name="url" size="40"/></td>
-<td>Version: <input type="text" name="version"/></td>
+<td>URL: <input type="text" aria-label="URL" name="url" size="40"/></td>
+<td>Version: <input type="text" aria-label="Version" name="version"/></td>
 </tr>
 <tr>
-<td title="Searches in name, title, description, publisher">Text: <input type="text" name="text"/></td>
-<td>Status: <select name="status" class="form-select"><option value="">(any status)</option>
+<td title="Searches in name, title, description, publisher">Text: <input type="text" aria-label="Text" name="text"/></td>
+<td>Status: <select name="status" aria-label="Status" class="form-select"><option value="">(any status)</option>
 <option value="draft">draft</option><option value="active">active</option>
 <option value="retired">retired</option><option value="unknown">unknown</option></select></td>
 </tr>
 <tr>
-<td>Language: <input type="text" name="lang" size="10"/> (ietf code)</td>
-<td>Source: <select name="source" class="form-select">{{ sourceOptions }}</select></td>
+<td>Language: <input type="text" aria-label="Language" name="lang" size="10"/> (ietf code)</td>
+<td>Source: <select name="source" aria-label="Source" class="form-select">{{ sourceOptions }}</select></td>
 </tr>
 <tr>
-<td title="CodeSystem - for supplements, value sets, and concept maps">System: <input type="text" name="system" size="40"/></td>
-<td>CS Content: <select name="content-mode" class="form-select"><option value="">(any content)</option>
+<td title="CodeSystem - for supplements, value sets, and concept maps">System: <input type="text" aria-label="System" name="system" size="40"/></td>
+<td>CS Content: <select name="content-mode" aria-label="CS Content" class="form-select"><option value="">(any content)</option>
 <option value="not-present">not-present</option><option value="example">example</option>
 <option value="fragment">fragment</option><option value="complete">complete</option>
 <option value="supplement">supplement</option></select></td>
@@ -28,9 +28,9 @@
 <input type="hidden" name="_elements" id="elementsInput" value="url,version,name,title,status,content,date" disabled/>
 
 <button type="submit" class="btn btn-primary">Search:</button>
-<input type="radio" name="mode" value="cs" checked onchange="updateSearchAction('{{ baseUrl }}')"/> CodeSystems
-<input type="radio" name="mode" value="vs" onchange="updateSearchAction('{{ baseUrl }}')"/> ValueSets
-<input type="radio" name="mode" value="cm" onchange="updateSearchAction('{{ baseUrl }}')"/> ConceptMaps
+<input type="radio" name="mode" aria-label="CodeSystems" value="cs" checked onchange="updateSearchAction('{{ baseUrl }}')"/> CodeSystems
+<input type="radio" name="mode" aria-label="ValueSets" value="vs" onchange="updateSearchAction('{{ baseUrl }}')"/> ValueSets
+<input type="radio" name="mode" aria-label="ConceptMaps" value="cm" onchange="updateSearchAction('{{ baseUrl }}')"/> ConceptMaps
 |
 <input type="checkbox" id="summaryTable" onchange="updateSummaryTable()"/> <label for="summaryTable">Summary Table</label>
 </form>
