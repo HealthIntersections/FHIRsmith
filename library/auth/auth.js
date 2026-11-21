@@ -581,6 +581,22 @@ class Auth {
     }
   }
 
+  /**
+   * A page every logged in user has (their keys, say), which the account page lists for them
+   * @param {string} module
+   * @param {{label: string, path: string, description?: string}} page
+   */
+  addAccountPage(module, page) {
+    if (!this.moduleInfo.has(module)) {
+      this.defineModule(module, {});
+    }
+    const info = this.moduleInfo.get(module);
+    info.accountPages = info.accountPages || [];
+    if (!info.accountPages.some(p => p.path === page.path)) {
+      info.accountPages.push(page);
+    }
+  }
+
   /** The users (enabled or not), for modules' pages: [{id, login, name, email}] */
   users() {
     this.requireInitialized();

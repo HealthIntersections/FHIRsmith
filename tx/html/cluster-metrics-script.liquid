@@ -55,18 +55,20 @@
   }
   drawn.forEach((series, i) => legendItem(styles[i], series.label + (series.status === 'ready' ? '' : ' · ' + series.status) +
     (series.restarts ? ' · ' + series.restarts + (series.restarts === 1 ? ' restart' : ' restarts') : '')));
-  if (showTotal || memoryTotal) {
-    legendItem(total, 'Total: ' + [showTotal ? 'requests per minute' : null,
-      showTotal ? (metrics.sharedCache ? 'client concepts (one shared store, counted once)' : 'client concepts') : null,
-      memoryTotal ? (memoryTotal.group ? 'memory (the cgroup\'s private)' : 'memory (the processes\' private, summed)') : null]
-      .filter(Boolean).join(', '));
+  if (showTotal) {
+    legendItem(total, 'The cluster, on every graph but memory: requests per minute summed, turnaround time averaged over the requests, ' +
+      (metrics.sharedCache ? 'client concepts (one shared store, counted once)' : 'client concepts summed') +
+      ', node blocking the worst process\'s' +
+      (memoryTotal ? '; on memory, the Total (' + (memoryTotal.group ? 'the cgroup\'s private' : 'the processes\' private, summed') + ')' : ''));
+  } else if (memoryTotal) {
+    legendItem(total, 'Total: memory (' + (memoryTotal.group ? 'the cgroup\'s private' : 'the processes\' private, summed') + ')');
   }
   if (rejectAt) legendItem(threshold, 'Memory guard refuses above ' + (rejectAt / 2 ** 30).toFixed(1) + ' GB' +
     (metrics.total.local ? (metrics.total.group ? ' (the cgroup, every process)' : ' (this process)')
       : metrics.total.group ? ' (the cgroup)' : ' (each process)'));
   if (metrics.series.length > drawn.length) {
     legendItems.push(document.createTextNode((metrics.series.length - drawn.length) +
-      ' more workers are not drawn individually; the Total includes them.'));
+      ' more workers are not drawn individually on the memory graph; the Total and the cluster lines include them.'));
   }
   function placeLegend() {
     const legend = document.getElementById('serverMetricsLegend');
@@ -82,29 +84,56 @@
   // (at least a minute, so a new cluster's first samples don't make an axis of one instant)
   const minTime = Math.min(earliest, latest - 60000);
 
-  // The cluster's total of a field: every process's samples summed per sample interval,
-  // counted from the earliest sample (the processes start, and so sample, seconds apart).
-  // once: the processes all report the same figure (the shared client cache), so it is taken
-  // once (the largest, the latest seen) rather than summed
-  function totalOf(field, once = false) {
+  // The cluster's figure for a field, per sample interval, counted from the earliest sample
+  // (the processes start, and so sample, seconds apart). how:
+  //   sum  - the processes' figures added (requests per minute, client concepts)
+  //   once - the processes all report the same figure (the shared client cache): the largest
+  //   max  - the worst process's (node blocking)
+  //   mean - averaged over the requests: each process's figure weighted by its requests per
+  //          minute, or plainly averaged where none of them had any (turnaround time)
+  function clusterOf(field, how) {
     const interval = metrics.series.map(series => series.intervalMs).find(ms => ms > 0) || 600000;
     const points = metrics.series.flatMap(series => series.history.filter(point => Number.isFinite(point[field])));
     const start = points.reduce((start, point) => Math.min(start, point.time), Infinity);
-    const sums = new Map();
-    const counts = new Map();
+    const buckets = new Map();
     for (const point of points) {
       const x = start + Math.round((point.time - start) / interval) * interval;
-      sums.set(x, once ? Math.max(sums.get(x) || 0, point[field]) : (sums.get(x) || 0) + point[field]);
-      counts.set(x, (counts.get(x) || 0) + 1);
+      const b = buckets.get(x) || { sum:0, max:-Infinity, weighted:0, weight:0, count:0, refused:0 };
+      const weight = Number.isFinite(point.rpm) && point.rpm > 0 ? point.rpm : 0;
+      b.sum += point[field];
+      b.max = Math.max(b.max, point[field]);
+      b.weighted += point[field] * weight;
+      b.weight += weight;
+      b.count++;
+      if (point.refused > 0) b.refused += point.refused;
+      buckets.set(x, b);
     }
-    const rows = [...sums].sort((a, b) => a[0] - b[0]);
+    const rows = [...buckets].sort((a, b) => a[0] - b[0]);
     // the newest interval, while some processes have yet to send their sample for it, would
     // show a fall that isn't there: left off until they have
-    while (rows.length > 1 && counts.get(rows[rows.length - 1][0]) < counts.get(rows[rows.length - 2][0])) rows.pop();
-    return rows.map(([x, y]) => ({ x, y }));
+    while (rows.length > 1 && rows[rows.length - 1][1].count < rows[rows.length - 2][1].count) rows.pop();
+    return rows.map(([x, b]) => ({ x, refused:b.refused,
+      y:how === 'sum' ? b.sum : how === 'once' || how === 'max' ? b.max
+        : b.weight > 0 ? b.weighted / b.weight : b.sum / b.count }));
   }
   const totalLine = data => ({ label:'Total', data, borderColor:total.color, backgroundColor:total.color,
     borderWidth:3, pointRadius:0, pointHitRadius:5, fill:false, tension:0, spanGaps:false });
+  // the cluster's one line, on the graphs that don't split by process
+  const clusterLine = data => ({ label:'Cluster', data, borderColor:total.color, backgroundColor:total.color,
+    borderWidth:2, pointStyle:'circle', pointBackgroundColor:total.color, pointRadius:1.5, pointHitRadius:5, pointHoverRadius:4,
+    fill:false, tension:0, spanGaps:false });
+  // how each graph that shows the cluster as one line combines the processes
+  const combined = { rpm:'sum', tat:'mean', clientConcepts:metrics.sharedCache ? 'once' : 'sum', block:'max', blockMax:'max' };
+  // and their titles say so
+  if (showTotal) {
+    const titles = { requestChartTitle:'Requests per Minute (all processes)', tatChartTitle:'Turnaround Time (mean, all processes)',
+      clientCacheChartTitle:'Client Cache (all processes)', blockChartTitle:'Node Blocking (mean, worst process)',
+      blockMaxChartTitle:'Node Blocking (max, worst process)' };
+    for (const [id, text] of Object.entries(titles)) {
+      const title = document.getElementById(id);
+      if (title) title.textContent = text;
+    }
+  }
 
   // A hatched interval means at least one memory-pressure 503 was counted in it, not that
   // the guard refused all through it. Overlapping intervals of different processes merge.
@@ -191,6 +220,11 @@
   function chart(id, field, unit, divisor = 1, pointRadius = 1.5) {
     const canvas = document.getElementById(id);
     if (!canvas) return;
+    // in a cluster, all but memory (and the external requests) are the cluster's one line
+    if (showTotal && combined[field]) {
+      createChart(canvas, field, unit, [clusterLine(clusterOf(field, combined[field]).map(p => ({ ...p, y:p.y / divisor })))]);
+      return;
+    }
     const datasets = drawn.map((series, i) => ({
       label:series.label,
       data:series.history.map(point => ({ x:point.time, y:Number.isFinite(point[field]) ? point[field] / divisor : null,
@@ -200,8 +234,6 @@
       pointHitRadius:5, pointHoverRadius:4, borderWidth:1.5,
       fill:false, tension:0, spanGaps:false
     }));
-    if (field === 'rpm' && showTotal) datasets.push(totalLine(totalOf('rpm')));
-    if (field === 'clientConcepts' && showTotal) datasets.push(totalLine(totalOf('clientConcepts', metrics.sharedCache)));
     if (field === 'anon' && memoryTotal) {
       datasets.push(totalLine(memoryTotal.history.map(point => ({ x:point.time, y:Number.isFinite(point.anon) ? point.anon / divisor : null }))));
     }
@@ -210,6 +242,9 @@
         borderColor:threshold.color, backgroundColor:threshold.color, borderDash:threshold.dash, borderWidth:threshold.width,
         pointRadius:0, pointHitRadius:5, fill:false, tension:0 });
     }
+    createChart(canvas, field, unit, datasets);
+  }
+  function createChart(canvas, field, unit, datasets) {
     new Chart(canvas, {
       type:'line',
       data:{ datasets },

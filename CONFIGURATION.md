@@ -263,6 +263,20 @@ An administrator's password is set from a link: *Forgotten your password?* on th
 (emailed, so `email` must be configured), or `node server.js --password-link you@example.org` on
 the server.
 
+## Keys
+
+The top-level `keystore` block turns on the server's key store: public keys anyone can see at
+`/keys` (and as a JWKS at `/keys/jwks.json`), uploaded by users, and key pairs the server makes
+and holds for users and for itself, to sign with when a module asks. See
+[library/keystore/README.md](library/keystore/README.md).
+
+```json
+"keystore": { "enabled": true }
+```
+
+The private keys are in a database of their own (`keystore-private.db`, mode 0600) in the
+databases folder.
+
 ## Modules
 
 Each module has its own entry under `modules`, documented with the module:

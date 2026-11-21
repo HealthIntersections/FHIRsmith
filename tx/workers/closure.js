@@ -419,7 +419,7 @@ class ClosureWorker extends TerminologyWorker {
   async workOutAdd(table, name, conceptParams, memo) {
     // replay the table's configuration: its code systems, and its version rules
     const stored = { resourceType: 'Parameters', parameter: this.store.getParams(table.id) };
-    this.setupAdditionalResources(stored);
+    await this.setupAdditionalResources(stored);
     const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
     txp.readParams(stored);
 

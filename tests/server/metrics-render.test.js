@@ -39,7 +39,7 @@ async function render(template, metrics) {
   return { html, charts, elements };
 }
 
-test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s renders each process on the existing charts at its real sample times', async (name, count) => {
+test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s renders each process on the memory chart at its real sample times, and the cluster as one line on the rest', async (name, count) => {
   const metrics = { cluster:true, sampledAt:now + 20000, series:[
     { label:'Master m0', status:'ready', history:[point(now, 1), point(now + 10000, 2)] },
     { label:'Worker tx1', status:'restarting', restarts:1, history:[point(now + 3000, 7), { time:now + 12000, rpm:null, mem:null }] },
@@ -51,17 +51,21 @@ test.each([['cluster-dash-metrics', 3], ['cluster-home-metrics', 6]])('%s render
   expect(html).toContain('Private memory</h4>');
   // no private memory in the samples (not Linux): the heap change, and the title says so
   expect(elements.get('memoryChartTitle').textContent).toBe('Heap change since start');
+  const memory = charts.find(c => c.canvas === elements.get('memoryChart'));
+  expect(memory.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2']);
+  expect(memory.data.datasets[1].data.map(d => d.x)).toEqual([now + 3000, now + 12000]);
+  expect(memory.data.datasets[1].data[1].y).toBeNull();
+  expect(memory.data.datasets[2].data).toEqual([]);
+  expect(new Set(memory.data.datasets.map(d => d.pointStyle)).size).toBe(3);
   for (const chart of charts) {
-    const total = [elements.get('requestChart'), elements.get('clientCacheChart')].includes(chart.canvas) ? ['Total'] : [];
-    expect(chart.data.datasets.map(d => d.label)).toEqual(['Master m0', 'Worker tx1', 'Worker tx2', ...total]);
-    expect(chart.data.datasets[1].data.map(d => d.x)).toEqual([now + 3000, now + 12000]);
-    expect(chart.data.datasets[1].data[1].y).toBeNull();
-    expect(chart.data.datasets[2].data).toEqual([]);
+    if (chart !== memory) expect(chart.data.datasets.map(d => d.label)).toEqual(['Cluster']);
     // at least a minute's axis, ending at the snapshot
     expect(chart.options.scales.x).toMatchObject({ type:'linear', min:now - 40000, max:now + 20000 });
     expect(chart.data.datasets.every(d => d.fill === false && d.spanGaps === false)).toBe(true);
-    expect(new Set(chart.data.datasets.slice(0, 3).map(d => d.pointStyle)).size).toBe(3);
   }
+  // the titles say how the processes are combined
+  expect(elements.get('requestChartTitle').textContent).toBe('Requests per Minute (all processes)');
+  expect(elements.get('tatChartTitle').textContent).toBe('Turnaround Time (mean, all processes)');
   const legend = legendText(elements);
   expect(legend).toContain('Worker tx1 · restarting · 1 restart');
   expect(legend).toContain('Worker tx2 · starting');
@@ -100,7 +104,7 @@ test('refusals are hatched over merged real intervals, with counts in the note a
   }
 });
 
-test('requests per minute adds a Total, summing each sample interval across processes', async () => {
+test('requests per minute is the cluster\'s, summing each sample interval across processes', async () => {
   const minute = 60000;
   const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now + 3 * minute, series:[
     { label:'Master', status:'ready', intervalMs:minute, history:[point(now, 1), point(now + minute, 2), point(now + 2 * minute, 3)] },
@@ -108,11 +112,11 @@ test('requests per minute adds a Total, summing each sample interval across proc
       point(now + 2 * minute + 2000, 30)] }
   ] });
   const rpm = charts.find(c => c.canvas === elements.get('requestChart'));
-  const total = rpm.data.datasets.find(d => d.label === 'Total');
-  expect(total.data).toEqual([{ x:now, y:11 }, { x:now + minute, y:2 }, { x:now + 2 * minute, y:33 }]);
-  expect(total.borderWidth).toBeGreaterThan(rpm.data.datasets[0].borderWidth);
-  expect(charts.filter(c => c.data.datasets.some(d => d.label === 'Total'))).toEqual([rpm]);
-  expect(legendText(elements)).toContain('Total');
+  expect(rpm.data.datasets).toHaveLength(1);
+  expect(rpm.data.datasets[0].data.map(({ x, y }) => ({ x, y }))).toEqual([{ x:now, y:11 }, { x:now + minute, y:2 }, { x:now + 2 * minute, y:33 }]);
+  // no memory total in this snapshot: no Total line anywhere
+  expect(charts.filter(c => c.data.datasets.some(d => d.label === 'Total'))).toEqual([]);
+  expect(legendText(elements)).toContain('requests per minute summed');
 });
 
 test('the memory graph: private memory per process, the cgroup\'s Total and the refusal threshold, labelled', async () => {
@@ -136,7 +140,8 @@ test('the memory graph: private memory per process, the cgroup\'s Total and the 
   expect(memory.options.scales.y.title.text).toBe('MB private (anon)');
   expect(elements.get('memoryChartTitle').textContent).toBeUndefined();
   const legend = legendText(elements);
-  expect(legend).toContain('Total: requests per minute, client concepts, memory (the cgroup\'s private)');
+  expect(legend).toContain('client concepts summed');
+  expect(legend).toContain('on memory, the Total (the cgroup\'s private)');
   expect(legend).toContain('Memory guard refuses above 10.2 GB (the cgroup)');
   // the threshold's value is written on its line
   const texts = [];
@@ -146,7 +151,7 @@ test('the memory graph: private memory per process, the cgroup\'s Total and the 
   expect(texts).toEqual(['refuses above 10.2 GB']);
 });
 
-test('client concepts add a Total: summed, or with the shared cache taken once', async () => {
+test('client concepts are the cluster\'s: summed, or with the shared cache taken once', async () => {
   const minute = 60000;
   const concepts = (time, n) => ({ ...point(time, 1), clientConcepts:n });
   const series = [
@@ -155,24 +160,39 @@ test('client concepts add a Total: summed, or with the shared cache taken once',
   ];
   const totalOf = async (sharedCache) => {
     const { charts, elements } = await render('cluster-home-metrics', { cluster:true, sampledAt:now + minute, sharedCache, series });
-    return charts.find(c => c.canvas === elements.get('clientCacheChart')).data.datasets.find(d => d.label === 'Total').data;
+    return charts.find(c => c.canvas === elements.get('clientCacheChart')).data.datasets.find(d => d.label === 'Cluster').data
+      .map(({ x, y }) => ({ x, y }));
   };
   expect(await totalOf(false)).toEqual([{ x:now, y:200 }, { x:now + minute, y:600 }]);
   expect(await totalOf(true)).toEqual([{ x:now, y:100 }, { x:now + minute, y:300 }]);
 });
 
-test('past eight processes, no style repeats: the rest are only in the Total and the note', async () => {
+test('past eight processes, no style repeats on the memory graph: the rest are only in the cluster lines and the note', async () => {
   const series = Array.from({ length:11 }, (_v, i) => ({ label:'P' + i, status:'ready', intervalMs:600000, history:[point(now, 1)] }));
   const { charts, elements } = await render('cluster-dash-metrics', { cluster:true, sampledAt:now, series });
-  for (const chart of charts) {
-    const processes = chart.data.datasets.filter(d => d.label !== 'Total');
-    expect(processes).toHaveLength(8);
-    for (const key of ['pointStyle', 'borderColor']) expect(new Set(processes.map(d => d[key])).size).toBe(8);
-    expect(new Set(processes.map(d => JSON.stringify(d.borderDash))).size).toBe(8);
-  }
+  const processes = charts.find(c => c.canvas === elements.get('memoryChart')).data.datasets;
+  expect(processes).toHaveLength(8);
+  for (const key of ['pointStyle', 'borderColor']) expect(new Set(processes.map(d => d[key])).size).toBe(8);
+  expect(new Set(processes.map(d => JSON.stringify(d.borderDash))).size).toBe(8);
   const rpm = charts.find(c => c.canvas === elements.get('requestChart'));
-  expect(rpm.data.datasets.find(d => d.label === 'Total').data).toEqual([{ x:now, y:11 }]);
+  expect(rpm.data.datasets.map(d => d.label)).toEqual(['Cluster']);
+  expect(rpm.data.datasets[0].data.map(({ x, y }) => ({ x, y }))).toEqual([{ x:now, y:11 }]);
   expect(legendText(elements)).toContain('3 more workers are not drawn individually');
+});
+
+test('turnaround is averaged over the requests, node blocking is the worst process\'s', async () => {
+  const minute = 60000;
+  const sample = (time, rpm, tat, block, blockMax) => ({ time, rpm, tat, block, blockMax, mem:1048576, clientConcepts:0 });
+  const { charts, elements } = await render('cluster-home-metrics', { cluster:true, sampledAt:now + minute, series:[
+    { label:'Master', status:'ready', intervalMs:minute, history:[sample(now, 30, 10, 2, 40), sample(now + minute, 0, 0, 1, 5)] },
+    { label:'Worker', status:'ready', intervalMs:minute, history:[sample(now + 2000, 10, 50, 7, 300), sample(now + minute + 2000, 0, 0, 3, 9)] }
+  ] });
+  const line = id => charts.find(c => c.canvas === elements.get(id)).data.datasets[0].data.map(p => p.y);
+  // (30 x 10 + 10 x 50) / 40; with no requests anywhere, the plain mean
+  expect(line('tatChart')).toEqual([20, 0]);
+  expect(line('blockChart')).toEqual([7, 3]);
+  expect(line('blockMaxChart')).toEqual([300, 9]);
+  expect(elements.get('blockMaxChartTitle').textContent).toBe('Node Blocking (max, worst process)');
 });
 
 test('an empty cluster snapshot still renders without an invented process', async () => {

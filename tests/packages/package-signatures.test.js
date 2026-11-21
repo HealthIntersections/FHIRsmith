@@ -28,11 +28,11 @@ function makeKey() {
 }
 
 // A signature bundle as the IG Publisher writes one
-function sign(k, buf, name, version) {
+function sign(k, buf, name, version, predicateType = 'http://hl7.org/fhir/package-signature/v1') {
   const statement = {
     _type: 'https://in-toto.io/Statement/v1',
     subject: [{ name: purl(name, version), digest: { sha512: crypto.createHash('sha512').update(buf).digest('hex') } }],
-    predicateType: 'http://hl7.org/fhir/package-signature/v1',
+    predicateType,
     predicate: { tool: 'test', signedAt: new Date().toISOString() }
   };
   const payload = Buffer.from(JSON.stringify(statement), 'utf8');
@@ -88,6 +88,15 @@ describe('verifyPackageSignature', () => {
     st.predicate.tool = 'forged';
     forged.dsseEnvelope.payload = Buffer.from(JSON.stringify(st)).toString('base64');
     expect(() => verifyPackageSignature(buf, forged, [JAVA.key], 'example.fhir.javasigned', '1.2.3', null)).toThrow(/no signature verifies/);
+  });
+
+  test('refuses another kind of statement made with the same key', () => {
+    const k = makeKey();
+    const good = JSON.parse(sign(k, buf, 'example.fhir.javasigned', '1.2.3'));
+    expect(verifyPackageSignature(buf, good, [k.entry], 'example.fhir.javasigned', '1.2.3', null).keyid).toBe(k.entry.keyid);
+    const provenance = JSON.parse(sign(k, buf, 'example.fhir.javasigned', '1.2.3', 'https://slsa.dev/provenance/v1'));
+    expect(() => verifyPackageSignature(buf, provenance, [k.entry], 'example.fhir.javasigned', '1.2.3', null))
+      .toThrow(/not a FHIR package signature \(predicateType is https:\/\/slsa.dev\/provenance\/v1\)/);
   });
 });
 

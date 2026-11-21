@@ -44,10 +44,11 @@ function defineNpmRegistryChecks(target) {
   });
 }
 
-// Minimal ustar writer: files is { path: string | Buffer }, returns a .tgz Buffer
+// Minimal ustar writer: files is { path: string | Buffer }, or [[path, string | Buffer]] (which
+// can name a file twice), returns a .tgz Buffer
 function tgz(files) {
   const blocks = [];
-  for (const [name, content] of Object.entries(files)) {
+  for (const [name, content] of (Array.isArray(files) ? files : Object.entries(files))) {
     const data = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf8');
     const header = Buffer.alloc(512);
     header.write(name, 0, 100, 'utf8');

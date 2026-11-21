@@ -130,16 +130,21 @@ class BaseTerminologyModule {
       message: 'Overwrite existing database if it exists?',
       default: smartDefaults.overwrite !== undefined ? smartDefaults.overwrite : false,
       when: (answers) => {
+        if (options.yes || options.overwrite !== undefined) {
+          return false;
+        }
         const destPath = options.dest || answers.dest;
         return fs.existsSync(destPath);
       }
     });
 
+    // --verbose on the command line, or -y (non-interactive), means don't ask
     questions.push({
       type: 'confirm',
       name: 'verbose',
       message: 'Show verbose progress output?',
-      default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true
+      default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true,
+      when: () => !options.yes && options.verbose === undefined
     });
 
     const answers = await inquirer.prompt(questions);
@@ -163,6 +168,10 @@ class BaseTerminologyModule {
       ...answers,
       source: finalSource
     };
+    if (options.yes && options.overwrite === undefined && answers.overwrite === undefined) {
+      // -y answers yes to the overwrite confirmation too
+      finalConfig.overwrite = true;
+    }
 
     return finalConfig;
   }

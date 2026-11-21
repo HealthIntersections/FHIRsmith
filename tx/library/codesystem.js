@@ -4,6 +4,7 @@ const {codeSystemFromR5, codeSystemToR5} = require("../xversion/xv-codesystem");
 const {getValuePrimitive} = require("../../library/utilities");
 const {VersionUtilities} = require("../../library/version-utilities");
 const {countNested} = require("./nesting-limit");
+const {runSteps, runStepsAsync} = require("./steps");
 const regexUtilities = require("../../library/regex-utilities");
 
 const CodeSystemContentMode = Object.freeze({
@@ -31,7 +32,7 @@ class CodeSystem extends CanonicalResource {
    * @param {string} jsonObj.status - Publication status (draft|active|retired|unknown)
    * @param {Object[]} [jsonObj.concept] - Array of concept definitions
    */
-  constructor(jsonObj, fhirVersion = 'R5', noMaps = false) {
+  constructor(jsonObj, fhirVersion = 'R5', noMaps = false, deferChecks = false) {
     super(jsonObj, fhirVersion);
     // Convert to R5 format internally (modifies input for performance)
     this.jsonObj = codeSystemToR5(this.jsonObj, fhirVersion);
@@ -45,21 +46,60 @@ class CodeSystem extends CanonicalResource {
       // Optional chaining because this runs ahead of validate()'s "expected object"
       // guard, and a null body must still get that message rather than a TypeError.
       this._conceptCount = countNested(this.jsonObj?.concept, 'concept', 'Invalid CodeSystem: concept');
-      if (!noMaps) {
+      if (!noMaps && !deferChecks) {
         this.validate();
       }
     } catch (e) {
-      const id = this.jsonObj?.url ? `${this.jsonObj.url}|${this.jsonObj.version || ''}` : this.jsonObj?.name || 'unknown';
-      const wrapped = new Error(`${e.message} (in ${id})`);
-      // Don't let the rewrap swallow the HTTP shape the thrower asked for.
-      if (e.statusCode) { wrapped.statusCode = e.statusCode; }
-      if (e.issueCode) { wrapped.issueCode = e.issueCode; }
-      throw wrapped;
+      throw this._invalid(e);
+    }
+    if (deferChecks) {
+      // createAsync does the rest
+      return;
     }
     this.checkContained();
     if (!noMaps) {
       this.buildMaps();
     }
+  }
+
+  /**
+   * A CodeSystem, checked and indexed without holding the event loop: what the constructor does,
+   * letting other work run as it goes (pause), and with its expansion-key hash worked out too.
+   * For a large code system a client sends (tx-resource): the full ICD-10-CM sent that way held
+   * tx.fhir.org's event loop for 2 seconds (2026-11-20). The same checks, the same errors, and the
+   * same result as the constructor.
+   *
+   * @param {Object} jsonObj
+   * @param {string} [fhirVersion='R5']
+   * @param {Function} [pause] - async: lets other work run (OperationContext checkAndYield)
+   * @returns {Promise<CodeSystem>}
+   */
+  static async createAsync(jsonObj, fhirVersion = 'R5', pause = null) {
+    const cs = new CodeSystem(jsonObj, fhirVersion, false, true);
+    const invalid = (e) => cs._invalid(e);
+    try {
+      cs._validateHeader();
+    } catch (e) {
+      throw invalid(e);
+    }
+    await runStepsAsync(cs._validateConceptSteps(), pause, invalid);
+    cs.checkContained();
+    await runStepsAsync(cs._buildMapsSteps(), pause);
+    await cs.prepareExpansionKeyHash(pause);
+    return cs;
+  }
+
+  /**
+   * An error found checking the resource, naming it
+   * @private
+   */
+  _invalid(e) {
+    const id = this.jsonObj?.url ? `${this.jsonObj.url}|${this.jsonObj.version || ''}` : this.jsonObj?.name || 'unknown';
+    const wrapped = new Error(`${e.message} (in ${id})`);
+    // Don't let the rewrap swallow the HTTP shape the thrower asked for.
+    if (e.statusCode) { wrapped.statusCode = e.statusCode; }
+    if (e.issueCode) { wrapped.issueCode = e.issueCode; }
+    return wrapped;
   }
 
   /**
@@ -132,6 +172,15 @@ class CodeSystem extends CanonicalResource {
    * Add this to replace the existing validate() method
    */
   validate() {
+    this._validateHeader();
+    runSteps(this._validateConceptSteps());
+  }
+
+  /**
+   * validate(), all but the concepts
+   * @private
+   */
+  _validateHeader() {
     if (!this.jsonObj || typeof this.jsonObj !== 'object') {
       throw new Error('Invalid CodeSystem: expected object');
     }
@@ -229,12 +278,18 @@ class CodeSystem extends CanonicalResource {
       });
     }
 
-    // Validate concept array
+  }
+
+  /**
+   * validate(), the concepts (see steps.js)
+   * @private
+   */
+  * _validateConceptSteps() {
     if (this.jsonObj.concept) {
       if (!Array.isArray(this.jsonObj.concept)) {
         throw new Error('Invalid CodeSystem: concept must be an array if present');
       }
-      this._validateConceptArray(this.jsonObj.concept, 'concept');
+      yield* this._validateConceptArraySteps(this.jsonObj.concept, 'concept');
     }
   }
 
@@ -261,13 +316,20 @@ class CodeSystem extends CanonicalResource {
   }
 
   /**
-   * Recursively validates concept arrays and their nested structure
+   * Recursively validates concept arrays and their nested structure, a concept a step
    * @param {Array} concepts - Array of concepts to validate
    * @param {string} path - Path description for error messages
    * @private
    */
-  _validateConceptArray(concepts, path) {
-    this._validateArray(concepts, path, (concept, index) => {
+  * _validateConceptArraySteps(concepts, path) {
+    if (!Array.isArray(concepts)) {
+      throw new Error(`Invalid CodeSystem: ${path} must be an array`);
+    }
+    for (let index = 0; index < concepts.length; index++) {
+      const concept = concepts[index];
+      if (concept === null || concept === undefined) {
+        throw new Error(`Invalid CodeSystem: ${path}[${index}] is null or undefined`);
+      }
       const conceptPath = `${path}[${index}]`;
 
       if (!concept || typeof concept !== 'object') {
@@ -305,15 +367,16 @@ class CodeSystem extends CanonicalResource {
           }
         });
       }
+      yield;
 
       // Recursively validate nested concepts
       if (concept.concept) {
         if (!Array.isArray(concept.concept)) {
           throw new Error(`Invalid CodeSystem: ${conceptPath}.concept must be an array if present`);
         }
-        this._validateConceptArray(concept.concept, `${conceptPath}.concept`);
+        yield* this._validateConceptArraySteps(concept.concept, `${conceptPath}.concept`);
       }
-    });
+    }
   }
 
   /**
@@ -321,6 +384,14 @@ class CodeSystem extends CanonicalResource {
    * @private
    */
   buildMaps() {
+    runSteps(this._buildMapsSteps());
+  }
+
+  /**
+   * buildMaps(), a concept a step (see steps.js)
+   * @private
+   */
+  * _buildMapsSteps() {
     this.codeMap.clear();
     if (this.caseInsensitive()) {
       this.codeMapNC = new Map();
@@ -335,26 +406,29 @@ class CodeSystem extends CanonicalResource {
 
     // First pass: build basic maps and collect all concepts (including nested)
     const allConcepts = [];
-    this._collectAllConcepts(this.jsonObj.concept, allConcepts);
+    yield* this._collectAllConceptSteps(this.jsonObj.concept, allConcepts);
 
-    allConcepts.forEach(concept => {
+    const caseInsensitive = this.caseInsensitive();
+    for (const concept of allConcepts) {
       // Build code and display maps
       this.codeMap.set(concept.code, concept);
-      if (this.caseInsensitive()) {
+      if (caseInsensitive) {
         this.codeMapNC.set(concept.code.toLowerCase(), concept);
       }
       if (concept.display) {
         this.displayMap.set(concept.display, concept);
       }
-    });
+      yield;
+    }
 
     // Second pass: build hierarchy maps
-    allConcepts.forEach(concept => {
+    for (const concept of allConcepts) {
       this._buildHierarchyMaps(concept);
-    });
+      yield;
+    }
 
     // Third pass: handle nested concept structures
-    this._buildNestedHierarchy(this.jsonObj.concept);
+    yield* this._buildNestedHierarchySteps(this.jsonObj.concept);
 
     this.hasMultiHierarchy = Array.from(this.childToParentsMap.values()).some(parents => parents.length > 1);
   }
@@ -365,13 +439,14 @@ class CodeSystem extends CanonicalResource {
    * @param {Object[]} allConcepts - Accumulator for all concepts
    * @private
    */
-  _collectAllConcepts(concepts, allConcepts) {
-    concepts.forEach(concept => {
+  * _collectAllConceptSteps(concepts, allConcepts) {
+    for (const concept of concepts) {
       allConcepts.push(concept);
+      yield;
       if (concept.concept && Array.isArray(concept.concept)) {
-        this._collectAllConcepts(concept.concept, allConcepts);
+        yield* this._collectAllConceptSteps(concept.concept, allConcepts);
       }
-    });
+    }
   }
 
   /**
@@ -403,17 +478,18 @@ class CodeSystem extends CanonicalResource {
    * @param {string} [parentCode] - Code of parent concept
    * @private
    */
-  _buildNestedHierarchy(concepts, parentCode = null) {
-    concepts.forEach(concept => {
+  * _buildNestedHierarchySteps(concepts, parentCode = null) {
+    for (const concept of concepts) {
       if (parentCode) {
         this._addToChildToParentsMap(concept.code, parentCode);
         this._addToParentToChildrenMap(parentCode, concept.code);
       }
+      yield;
 
       if (concept.concept && Array.isArray(concept.concept)) {
-        this._buildNestedHierarchy(concept.concept, concept.code);
+        yield* this._buildNestedHierarchySteps(concept.concept, concept.code);
       }
-    });
+    }
   }
 
   /**

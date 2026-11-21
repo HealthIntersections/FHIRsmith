@@ -79,7 +79,7 @@ class Report {
 // and null (the default) unless it says required
 
 const bool = (o = {}) => ({ t: 'bool', ...o });
-const num = (o = {}) => ({ t: 'num', ...o }); // min, max, above (exclusive), int
+const num = (o = {}) => ({ t: 'num', ...o }); // min, max, above (exclusive), int, values
 const int = (o = {}) => ({ t: 'num', int: true, ...o });
 const count = (o = {}) => int({ min: 0, ...o }); // 0 is usually "no limit"
 const positive = (o = {}) => num({ above: 0, ...o });
@@ -187,6 +187,16 @@ const TOP = obj({
     requestsPerMinute: positive(),
     afterLogout: str({ pattern: /^\/(?![/\\])\S*$/, patternText: 'a path on this server, starting with /' }),
     bcryptCost: int({ min: 4, max: 15 })
+  }),
+  // the key store (library/keystore)
+  keystore: obj({
+    enabled: bool(),
+    database: str({ nonEmpty: true }),
+    privateDatabase: str({ nonEmpty: true }),
+    uploadAllowance: count(),
+    uploadsPerDay: count(),
+    createsPerDay: count(),
+    rsaBits: int({ values: [2048, 3072, 4096] })
   }),
   accessibility: obj({ checkPanel: bool() }),
   logging: obj({
@@ -425,6 +435,8 @@ const MODULES = {
     maxSize: int({ min: 1 }),
     rateLimit: obj({ windowMinutes: positive(), max: count(), lookupMax: count() }),
     processing: obj({ enabled: bool(), intervalSeconds: positive() }),
+    // signing documents (the source view's Sign choices): how far apart the system signs for any one address
+    signing: obj({ systemSeconds: num({ min: 0 }) }),
     txServer: str({ nonEmpty: true }),
     summarySource: str({ values: ['modified', 'original'] }),
     reports: obj({ database: str({ nonEmpty: true }), package: str({ nonEmpty: true }), profile: str({ nonEmpty: true }), queryTimeoutSeconds: positive(), maxRows: int({ min: 1 }), csvMaxRows: int({ min: 1 }), buildBudgetMs: positive() }),
@@ -560,6 +572,9 @@ function mismatch(value, spec) {
       }
       if (spec.max !== undefined && value > spec.max) {
         return `must be at most ${spec.max}`;
+      }
+      if (spec.values && !spec.values.includes(value)) {
+        return `must be one of ${spec.values.join(', ')}`;
       }
       return null;
     }

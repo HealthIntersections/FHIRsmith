@@ -735,10 +735,13 @@ class TerminologyWorker {
    * it ("value set ... could not be found"). A primary resource is only usable by
    * reference if it has a url to key on, so url-less ones are skipped.
    *
+   * The resources are built letting other requests run (wrapRawResourceAsync): a client can
+   * send a code system of 100,000 concepts or more.
+   *
    * @param {Object} params - Parameters resource
-   * @returns {{txResources: Array, primaryResources: Array}} wrapped resources
+   * @returns {Promise<{txResources: Array, primaryResources: Array}>} wrapped resources
    */
-  collectSuppliedResources(params) {
+  async collectSuppliedResources(params) {
     const txResources = [];
     const primaryResources = [];
     if (!params || !params.parameter) {
@@ -747,12 +750,12 @@ class TerminologyWorker {
     for (const param of params.parameter) {
       this.deadCheck('collectSuppliedResources');
       if (param.name === 'tx-resource' && param.resource) {
-        const res = this.wrapRawResource(param.resource);
+        const res = await this.wrapRawResourceAsync(param.resource);
         if (res) {
           txResources.push(res);
         }
       } else if ((param.name === 'valueSet' || param.name === 'codeSystem') && param.resource && param.resource.url) {
-        const res = this.wrapRawResource(param.resource);
+        const res = await this.wrapRawResourceAsync(param.resource);
         if (res) {
           primaryResources.push(res);
         }
@@ -765,13 +768,13 @@ class TerminologyWorker {
    * Set up additional resources from tx-resource parameters and cache
    * @param {Object} params - Parameters resource
    */
-  setupAdditionalResources(params) {
+  async setupAdditionalResources(params) {
     if (!params || !params.parameter) return;
 
     // Collect the resources supplied inline on this request (tx-resource plus the
     // primary valueSet/codeSystem). See collectSuppliedResources for why the
     // primary resource is included.
-    const { txResources, primaryResources } = this.collectSuppliedResources(params);
+    const { txResources, primaryResources } = await this.collectSuppliedResources(params);
 
     // Check for cache-id. An explicit cache-id *parameter* wins; otherwise fall
     // back to the cache-id the middleware lifted off the X-Cache-Id header onto
@@ -869,6 +872,26 @@ class TerminologyWorker {
       e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
     }
     return e;
+  }
+
+  /**
+   * wrapRawResource, letting other requests run while it's done: a resource a client sends
+   * (tx-resource) can be large - the full ICD-10-CM, 98,505 concepts, 28 MB, held tx.fhir.org's
+   * event loop for 2 seconds (2026-11-20) - and it's checked, indexed and hashed (for the
+   * expansion cache key) here, a step at a time (CodeSystem.createAsync, prepareExpansionKeyHash)
+   * @param {Object} resource - Raw resource object
+   * @returns {Promise<CodeSystem|ValueSet|ConceptMap|null>}
+   */
+  async wrapRawResourceAsync(resource) {
+    const pause = () => this.checkAndYield('tx-resource');
+    if (resource.resourceType === 'CodeSystem') {
+      return CodeSystem.createAsync(resource, this.provider.getFhirVersion(), pause);
+    }
+    const res = this.wrapRawResource(resource);
+    if (res && typeof res.prepareExpansionKeyHash === 'function') {
+      await res.prepareExpansionKeyHash(pause);
+    }
+    return res;
   }
 
   /**

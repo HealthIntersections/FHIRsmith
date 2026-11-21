@@ -101,8 +101,12 @@ processing status; the FHIR parameters below work there too), and at the foot a
 documentation section with the endpoint's URL, the CapabilityStatement link and a table of
 the requests it answers - and `/ips/{code}/Bundle/{id}` shows the document.
 The document page's header names the patient, the document's date, when and how it was
-received and its size, with links to the FHIR JSON and to download it (`?download=1`, sent
-as an attachment named `ips-{code}-{id}.json`). Below it, the processing pipeline is shown
+received and its size, with a link to the FHIR JSON. The source view has a banner of what
+can be done with the copy it shows (the original, or the modified copy): download it - as JSON
+(`?download=1`, sent as an attachment named `ips-{code}-{id}.json`; `&source=modified` for the
+modified copy, `ips-{code}-{id}-modified.json`), a ZIP, or a PDF with the document attached (both
+made in the browser, by `doc-actions.js`, as the editors make them) - and share it as an SHL or
+a VHL, when sharing is set up. Below the header, the processing pipeline is shown
 as one connected line: Received, then each step in the order it runs, coloured by where it
 is (tick: done, cross: failed, gear: running, moon: waiting - the step's note, or for
 managers the reason it failed, on hover); each step links to the view that shows its work.
@@ -187,7 +191,7 @@ takes submitted documents in turn, marks each `processing`, runs the pipeline's 
 it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `error` with the
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
-document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
+document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: check the document's **signatures**; determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
 **national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI; and run it into the [**reports**](#reports). Translation, the narrative,
 validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
@@ -209,9 +213,33 @@ failed, nor when it was skipped (its result says `skipped`). The page refreshes 
 seconds unless that is turned off (remembered in the browser). Managers can
 queue a document again from its page, though not while it is being processed.
 
+### Signatures
+
+The first step (`ips/pipeline.js`, `signatures`) checks the document's signatures, with `verify()` in
+`ips/signatures.js` - whose header is the contract for it: the document (a copy of it as stored), a KeyProvider,
+and when the server received the document; it returns a list of outcomes, each a status (`error`, `warning`,
+`information`), the key id it is about (or none), and a description. The KeyProvider (`ips/signature-keys.js`)
+finds keys by id (`getKeyById`) or by the public key a signature carries (`getKeyByPublicKey`, so a key in a
+signature's certificate is still checked against the key store, where it may have been revoked), in the server's
+key store ([library/keystore](../library/keystore/README.md)); with the key store off, it knows no keys. The
+outcomes are kept as the step's result and shown at the top of the analysis view.
+
+Signing is `sign()` in the same file. The source view's banner has Sign choices above the downloads and shares:
+the logged in user (enabled when they have a key pair, in the key store, of one of the types
+`signatures.signingKeyTypes` lists) and the system (enabled when it has one). With either ticked, the JSON, ZIP and
+PDF downloads and the SHL and VHL shares are of a signed copy of whichever copy is shown, made by the server when
+asked (`POST {document}/signed`, `{source, user, system}`; the share forms' `signUser` and `signSystem`) and not
+kept: the server loads the private keys from the key store (each load is logged there) and gives `sign()` the
+document and a signer for each - the public key (as the KeyProvider gives it), the private key, and the key's
+permalink (`/keys/key/{id}`). Signing as yourself needs a login (and, as every logged in post, the CSRF token);
+the system signs for anyone, but no more often than `signing.systemSeconds` (10) apart for any one address. The
+choices need scripts. `sign()` is not written yet: it gives the document back as it was. They don't go into the document's
+status line, and a check that fails is an error outcome, not a failed step. `verify()` itself is not written yet: it
+says so, as an information outcome.
+
 ### Jurisdiction
 
-The first step (`ips/nationality.js` - the code still calls it nationality) works out which jurisdiction the document is
+The second step (`ips/nationality.js` - the code still calls it nationality) works out which jurisdiction the document is
 from, as far as the document says. Jurisdiction rather than nation, because there are IPS specifications at smaller
 (Canadian provinces) and bigger (the EU) levels than a nation. Few national IGs give a way to tell, so this is a short list of signs, to grow as more are found:
 
@@ -228,7 +256,7 @@ decided, and why.
 
 ### Analysis
 
-The first step (`ips/analysis.js`), over the document as submitted. It walks the same tree
+The analysis step (`ips/analysis.js`), over the document as submitted. It walks the same tree
 as the structure view (`ips/structure.js`) and, for each resource there (once, where it is
 first met; contained resources too) and for the Composition section by section (the
 Composition itself without its sections), keeps a list of findings, by the node's key

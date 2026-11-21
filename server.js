@@ -163,6 +163,7 @@ const IpsModule = require('./ips/ips.js');
 
 const htmlServer = require('./library/html-server');
 const auth = require('./library/auth');
+const keystore = require('./library/keystore');
 const ServerStats = require("./stats");
 const { connectMetrics, graphData, externalSummary } = require('./library/cluster-metrics');
 const { connectCounts } = require('./library/cluster-counts');
@@ -305,6 +306,20 @@ async function initializeModules() {
     databasesDir: folders.databasesDir()
   });
   app.use('/auth', auth.router());
+
+  // The key store, after the login system: public keys, and the key pairs the server holds for
+  // users and for itself (library/keystore)
+  if (config.keystore?.enabled) {
+    keystore.initialize(config.keystore, {
+      log: Logger.getInstance().child({ module: 'keystore' }),
+      databasesDir: folders.databasesDir(),
+      auth
+    });
+    auth.defineModule('keystore', { title: 'Keys', path: '/keys' });
+    auth.addAccountPage('keystore', { label: 'Your keys', path: '/keys/mine', description: 'upload your public keys, or have the server make key pairs for you' });
+    auth.addAdminPage('keystore', { label: 'Keys', path: '/keys/admin', description: 'the system\'s key pairs; revoking and deleting keys' });
+    app.use('/keys', keystore.router());
+  }
 
   // Initialize SHL module
   if (config.modules?.shl?.enabled) {
@@ -669,6 +684,12 @@ async function buildRootPageContent() {
   if (config.modules?.packages?.enabled) {
     content += '<li class="list-group-item">';
     content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
+    content += '</li>';
+  }
+
+  if (config.keystore?.enabled) {
+    content += '<li class="list-group-item">';
+    content += '<a href="/keys" class="text-decoration-none">Keys</a>: Public keys for checking signatures (<a href="/keys/jwks.json">JWKS</a>)';
     content += '</li>';
   }
 
@@ -1101,7 +1122,7 @@ async function startServer() {
       log: Logger.getInstance().child({ module: 'daily-report' }),
       stats: stats,
       // the login system's paragraph (library/auth) comes before the modules'
-      modules: { auth, ...modules },
+      modules: { auth, ...(keystore.initialized ? { keystore } : {}), ...modules },
       mailer,
       npmAudit: npmAudit,
       version: packageJson.version,
@@ -1170,6 +1191,7 @@ async function shutdown() {
       serverLog.error(`Error shutting down ${moduleName} module:`, error);
     }
   }
+  keystore.shutdown();
   auth.shutdown();
   stats.finishStats();
   disconnectMetrics();
