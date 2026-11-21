@@ -684,13 +684,15 @@ class SnomedV2Factory extends SqliteV2Factory {
    * a string, so its [1] and [2] are the characters 'h' and 't': every xsct edition has the id
    * 'SCT-h-t'. Kept so CodeSystem/x-<id> reads and search ids are the same on both engines.
    */
+  /** as cs-snomed.js SnomedServicesFactory.id(): SCT-<edition>-<date>, or xSCT-<edition>-<date> for an xsct edition */
   id() {
+    let prefix = '';
     let match = this.version().match(/^http:\/\/snomed\.info\/sct\/(\d+)(?:\/version\/(\d{8}))?$/);
     if (!match) {
       match = this.version().match(/^http:\/\/snomed\.info\/xsct\/(\d+)(?:\/version\/(\d{8}))?$/);
-      if (match) match = 'x' + match;
+      if (match) prefix = 'x';
     }
-    return match && match[1] && match[2] ? 'SCT-' + match[1] + '-' + match[2] : null;
+    return match && match[1] && match[2] ? prefix + 'SCT-' + match[1] + '-' + match[2] : null;
   }
 
   describeVersion(version) {

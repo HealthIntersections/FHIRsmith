@@ -81,7 +81,7 @@ describe('over the test fixtures, the same release on both engines', () => {
   test.each([
     [LOINC, 'loinc2.80-test'],
     [RXNORM, 'RxNorm-08242025'],
-    [SCT, 'SCT-h-t'] // the fixture is a test edition (snomed.info/xsct): see SnomedV2Factory.id()
+    [SCT, 'xSCT-31000003106-20250909'] // the fixture is a test edition (snomed.info/xsct): see SnomedV2Factory.id()
   ])('%s', (system, id) => {
     const { main, v2 } = loaded[system];
     expect(v2.system()).toBe(main.system());
@@ -116,11 +116,19 @@ describe('main\'s id() and the engine\'s, over a table of versions', () => {
     ['900000000000207008', 'http://snomed.info/sct/900000000000207008'], // no version: no id
     ['31000003106', 'http://snomed.info/xsct/31000003106/version/20250909'], // test edition
     ['11010000107', 'http://snomed.info/sct/11010000107/version/20261021'], // LOINC extension: not in the edition list
-    ['900000000000207008', 'http://snomed.info/xsct/900000000000207008/version/20250814']
+    ['900000000000207008', 'http://snomed.info/xsct/900000000000207008/version/20250814'],
+    ['31000003106', 'http://snomed.info/xsct/31000003106'] // undated test edition: no id, as for sct
   ])('SNOMED CT %s %s', (edition, v) => {
     const engine = v2(SnomedV2Factory, SCT, v, { edition });
     expect(engine.id()).toBe(mainSct(v, edition).id());
     // the placeholder's name too (search and read show it): 'SCT Unknown Edition' for an unlisted edition
     expect(engine.name()).toBe(mainSct(v, edition).name());
+  });
+
+  test('two dated test editions have different ids', () => {
+    const a = v2(SnomedV2Factory, SCT, 'http://snomed.info/xsct/31000003106/version/20250909', { edition: '31000003106' });
+    const b = v2(SnomedV2Factory, SCT, 'http://snomed.info/xsct/31000003106/version/20240909', { edition: '31000003106' });
+    expect(a.id()).toBe('xSCT-31000003106-20250909');
+    expect(a.id()).not.toBe(b.id());
   });
 });
