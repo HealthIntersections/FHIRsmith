@@ -341,12 +341,14 @@ const snomed = {
   },
   filter(c, prop, op, value) {
     const S = c.store;
-    // code is the same filter property as concept (tx-ecosystem sct/*-code-in); code regex stays a text filter
-    if (prop === 'concept' || (prop === 'code' && op !== 'regex')) {
-      if (!['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'in', 'not-in', 'is-not-a', 'descendent-leaf'].includes(op)) {
-        throw notUnderstood(prop, op, value);
+    // code is the same filter property as concept (cs-snomed.js #filterProperty; tx-ecosystem
+    // sct/*-code-in), and is reported as concept
+    if (prop === 'concept' || prop === 'code') {
+      // cs-snomed.js SNOMED_CONCEPT_FILTER_OPS (no not-in, regex or exists)
+      if (!['=', 'is-a', 'descendent-of', 'child-of', 'generalizes', 'in', 'is-not-a', 'descendent-leaf'].includes(op)) {
+        throw notUnderstood('concept', op, value);
       }
-      if (op !== 'in' && op !== 'not-in' && !sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);
+      if (op !== 'in' && !sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);
       return null; // generic concept rules
     }
     if (prop === 'inactive') {
@@ -354,7 +356,10 @@ const snomed = {
       if (value !== 'true' && value !== 'false') throw new FilterError(`Invalid filter value: ${value}`);
       return value === 'true' ? { t: 'inactive' } : { t: 'active' };
     }
-    if (prop === 'constraint' && op === '=') return c.ecl(value);
+    if (prop === 'constraint') {
+      if (op !== '=') throw notUnderstood(prop, op, value);
+      return c.ecl(value);
+    }
     if (prop === 'moduleId') {
       if (op !== '=') throw notUnderstood(prop, op, value);
       if (!sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);
@@ -386,7 +391,8 @@ const snomed = {
       const lang = c.term.lang || 'en';
       return { t: 'desigRegex', re: String(value), lang, uses: [FSN_ID, SYNONYM_ID], ...(lits.length ? { lits } : {}), label: `display (${lang}) ~ /${value}/` };
     }
-    if (prop === 'display' || prop === 'code') return null; // generic text rules
+    // display: regex only, as cs-snomed.js
+    if (prop === 'display') throw notUnderstood(prop, op, value);
     if (sctId(prop)) {
       if (op !== '=') throw notUnderstood(prop, op, value);
       if (!sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);

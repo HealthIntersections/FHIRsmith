@@ -362,7 +362,8 @@ describe('sqlite-v2 SNOMED concept in / code in', () => {
       expect(r.codes.sort()).toEqual(['1001001', '1003001', '1004001']);
       expect(r.r.total).toBe(3);
       expect(expand(sct, [sinc([f(prop, 'in', '9001001,1004001')])]).codes.sort()).toEqual(['1001001', '1002001', '1004001']);
-      expect(expand(sct, [sinc([f(prop, 'not-in', '1003001')])]).codes).not.toContain('1003001');
+      // not-in is not one of cs-snomed.js's concept operators (SNOMED_CONCEPT_FILTER_OPS)
+      expect(() => expand(sct, [sinc([f(prop, 'not-in', '1003001')])])).toThrow('not understood or supported');
     }
     expect(() => expand(sct, [sinc([f('code', 'in', '1003001,41000147108')])])).toThrow('The SNOMED CT Concept 41000147108 is not known');
   });

@@ -26,7 +26,20 @@ const ASSOCIATIONS = {
 const IDENTIFIER_SCHEMES = { '30051010000102': { system: 'http://loinc.org', property: 'loinc' } };
 // whether props names this property explicitly (property=* does not count)
 const askedFor = (props, name) => !!props && props.some((p) => p && String(p).toLowerCase() === name.toLowerCase());
-const isConceptId = (code) => /^\s*\d+\s*$/.test(String(code));
+// cs-snomed.js stringToIdOrZero: a code is a concept id when BigInt() reads it as a number other
+// than 0 (digits with spaces or leading zeros, but also +22298006 or 0x1543d96); anything else is
+// an expression. The id as stored, or null
+const sctIdOf = (code) => {
+  const s = String(code);
+  if (!s.trim()) return null;
+  try {
+    const n = BigInt(s);
+    return n === 0n ? null : n.toString();
+  } catch {
+    return null;
+  }
+};
+const isConceptId = (code) => sctIdOf(code) != null;
 // post-coordinated expressions and the edition / identifier translations: sct-native.js, over
 // this file (stored normal forms, MRCM from the file)
 const native = require('./sct-native');
@@ -66,9 +79,9 @@ class SnomedV2Provider extends SqliteV2Provider {
   }
 
   normaliseCode(code) {
-    const s = String(code).trim();
-    // as BigInt(code): leading zeros are tolerated
-    return /^\d+$/.test(s) ? s.replace(/^0+(?=\d)/, '') : s;
+    // as BigInt(code) (sctIdOf)
+    const id = sctIdOf(code);
+    return id != null ? id : String(code).trim();
   }
 
   /** a concept id as stored: an expression, or an id with spaces or leading zeros, goes through locate() */
@@ -628,7 +641,7 @@ class SnomedV2Provider extends SqliteV2Provider {
 
   /** ECL failures are reported as upstream does: INVALID_ECL / UNSUPPORTED_ECL, 400 */
   filterError(e, prop, op, value) {
-    if (prop === 'constraint' && (e.unsupported || e.eclSyntax || e.eclUnknown || e.filterError)) {
+    if (prop === 'constraint' && op === '=' && (e.unsupported || e.eclSyntax || e.eclUnknown || e.filterError)) {
       const id = e.eclSyntax || e.eclUnknown || /is not known/.test(e.message) ? 'INVALID_ECL' : 'UNSUPPORTED_ECL';
       return new Issue('error', 'invalid', null, id, this.opContext.i18n.translate(id, this.opContext.langs, [value, e.message]), 'vs-invalid').handleAsOO(400);
     }
