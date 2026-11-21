@@ -20,10 +20,10 @@
 //                 source = RXCUI2, target = RXCUI1 (RRF states RELA as RXCUI2's relation to
 //                 RXCUI1, e.g. SCD has_tradename SBD). REL filters map onto RELA sets via
 //                 cs_config relaByRel.
-//   atom-level    RXNREL rows between atoms (RXAUI1, RXAUI2; every source), to the concept of the
-//   relations     target atom: table rxnorm_atom_rel, for cs-rxnorm.js's AUI:<rxaui> filter values.
-//                 cs_config rxRels / rxRelas: every REL and RELA RXNREL has (cs-rxnorm.js rels /
-//                 reltypes), the names a relationship filter may use.
+//   rel names     cs_config rxRels / rxRelas: every REL and RELA RXNREL has, from any source and
+//                 at concept or atom level (cs-rxnorm.js rels / reltypes), the names a relationship
+//                 filter may use. Atom-level rows themselves are not stored, so an AUI:<rxaui>
+//                 filter value is refused (cs-rxnorm.js follows it over every source's atom rows).
 //   no hierarchy  RxNorm is served without subsumption. Concepts are ordered by (primary TTY
 //                 rank, ingredient group, code) so TTY sets are single runs and a drug's
 //                 forms sit near its ingredient.
@@ -68,15 +68,12 @@ async function importRxNormV2(cfg) {
 
   // RXNCONSO: RXCUI|LAT|TS|LUI|STT|SUI|ISPREF|RXAUI|SAUI|SCUI|SDUI|SAB|TTY|CODE|STR|SRL|SUPPRESS|CVF
   const sabs = [];
-  const auiConcept = new Map(); // RXAUI (number) -> RXCUI, every source's atoms
-  let liveCount = 0;
   await b.stage('parse RXNCONSO', async () => {
     let n = 0;
     const seen = new Map(); // index -> Set of TTY|SUPPRESS literals already written
     const shown = new Map(); // index -> [rank, SUPPRESS] of its display atom so far (cs-rxnorm.js)
     for await (const c of rrf(f('RXNCONSO.RRF'))) {
       const cui = c[0], sab = c[11], tty = c[12], str = c[14], sup = c[16];
-      if (/^\d+$/.test(c[7])) auiConcept.set(Number(c[7]), cui);
       if (sab !== 'RXNORM') { sabs.push(cui, sab); continue; }
       const i = b.concept(cui);
       if (tty !== 'SY') {
@@ -112,7 +109,6 @@ async function importRxNormV2(cfg) {
       if (!sabSeen.has(key)) { sabSeen.add(key); b.literal(i, SAB, sabs[k + 1]); }
     }
     sabs.length = 0;
-    liveCount = b.codes.length;
     return n;
   });
 
@@ -161,19 +157,12 @@ async function importRxNormV2(cfg) {
   const REL_CODES = [];
   const relCode = (rel) => { let i = REL_CODES.indexOf(rel); if (i < 0) { i = REL_CODES.length; REL_CODES.push(rel); } return i; };
   const towards = []; // (drug, ingredient-ward target) pairs for the ordering
-  // every REL and RELA, and the atom-level rows: [RXAUI1, REL index, RELA index, target concept index]
-  const allRels = new Map(), allRelas = new Map();
-  const nameIndex = (m, name) => { let i = m.get(name); if (i === undefined) m.set(name, i = m.size); return i; };
-  const atomRows = [];
+  // every REL and RELA of RXNREL (any source, concept or atom level)
+  const allRels = new Set(), allRelas = new Set();
   await b.stage('parse RXNREL', async () => {
     let n = 0;
     for await (const c of rrf(f('RXNREL.RRF'))) {
-      const reli = nameIndex(allRels, c[3]), relai = nameIndex(allRelas, c[7]);
-      if (c[1] && c[5] && /^\d+$/.test(c[1]) && /^\d+$/.test(c[5])) {
-        const cui = auiConcept.get(Number(c[5]));
-        const t = cui === undefined ? undefined : b.idx(cui);
-        if (t !== undefined && t < liveCount) atomRows.push(Number(c[1]), reli, relai, t);
-      }
+      allRels.add(c[3]); allRelas.add(c[7]);
       if (c[10] !== 'RXNORM' || !c[0] || !c[4] || !c[7]) continue;
       const t = b.idx(c[0]), s = b.idx(c[4]);
       if (s === undefined || t === undefined) { stats.relSkipped++; continue; }
@@ -213,7 +202,6 @@ async function importRxNormV2(cfg) {
     }
     stats.relQualifiedProperties = [...qualified.keys()].sort();
     relRows.length = 0;
-    auiConcept.clear();
     return n;
   });
 
@@ -244,44 +232,11 @@ async function importRxNormV2(cfg) {
   b.setConfig('caseSensitive', 1);
   b.setConfig('defaultLanguage', 'en-US');
   b.setConfig('relaByRel', relaByRel);
-  b.setConfig('rxRels', [...allRels.keys()]);
-  b.setConfig('rxRelas', [...allRelas.keys()]);
+  b.setConfig('rxRels', [...allRels]);
+  b.setConfig('rxRelas', [...allRelas]);
   b.setConfig('filterValuePrefix', 'CUI:');
   b.setConfig('implicitValueSets', [{ pattern: `${RXNORM}/vs`, kind: 'all' }]);
-  const codes = atomRows.length ? b.codes.slice(0, liveCount) : null;
-  const summary = await b.finish(stats);
-  summary.atomRelations = storeAtomRelations(cfg.dest, atomRows, codes, log);
-  return summary;
-}
-
-/**
- * rxnorm_atom_rel: the atom-level RXNREL rows (aui = RXAUI1, the REL and RELA as indexes into
- * cs_config rxRels / rxRelas) with the concept of the target atom, once each. Written into the
- * finished file, by code (the builder renumbers concepts).
- */
-function storeAtomRelations(dest, rows, codes, log) {
-  const Database = require('better-sqlite3');
-  const db = new Database(dest);
-  try {
-    db.exec(`DROP TABLE IF EXISTS rxnorm_atom_rel;
-      CREATE TABLE rxnorm_atom_rel (aui INTEGER NOT NULL, rel INTEGER NOT NULL, rela INTEGER NOT NULL, concept_id INTEGER NOT NULL,
-        PRIMARY KEY (aui, rel, rela, concept_id)) WITHOUT ROWID`);
-    if (!rows.length) return 0;
-    const idOf = new Map(db.prepare('SELECT code, concept_id FROM concept').raw().all());
-    const ins = db.prepare('INSERT OR IGNORE INTO rxnorm_atom_rel VALUES (?, ?, ?, ?)');
-    let n = 0;
-    db.transaction(() => {
-      for (let k = 0; k < rows.length; k += 4) {
-        const id = idOf.get(codes[rows[k + 3]]);
-        if (id !== undefined) n += ins.run(rows[k], rows[k + 1], rows[k + 2], id).changes;
-      }
-    })();
-    db.prepare('INSERT OR REPLACE INTO provenance (key, value) VALUES (?, ?)').run('atomRelations', String(n));
-    log(`atom-level relationships: ${n.toLocaleString()}`);
-    return n;
-  } finally {
-    db.close();
-  }
+  return b.finish(stats);
 }
 
 class RxNormV2Module extends BaseTerminologyModule {

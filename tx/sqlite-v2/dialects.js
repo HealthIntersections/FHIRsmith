@@ -226,8 +226,10 @@ const rxnorm = {
   /**
    * cs-rxnorm.js doesFilter / filter: `=` and `in` only, with at least one value; on TTY, STY and
    * SAB (any case), on concept and code, and on a relationship - a REL or RELA that RXNREL has,
-   * from any source - whose values are all CUI:<rxcui> or AUI:<rxaui>. Anything else is
-   * FILTER_NOT_UNDERSTOOD, 422. A filter on a property a supplement in use defines is left to the
+   * from any source - whose values are all CUI:<rxcui>. Anything else is FILTER_NOT_UNDERSTOOD,
+   * 422, including an AUI:<rxaui> value, which cs-rxnorm.js follows over the atom-level rows of
+   * every source: the file holds no atom-level rows (a table rxnorm_atom_rel in a file built by an
+   * earlier importer is not read). A filter on a property a supplement in use defines is left to the
    * supplement layer, as before.
    */
   filter(c, prop, op, value) {
@@ -253,39 +255,17 @@ const rxnorm = {
     const relas = S.config.rxRelas || [...S.props.values()].filter((p) => p.kind === 'concept').map((p) => p.code);
     const isRel = rels.includes(prop);
     if (!isRel && !relas.includes(prop)) return refuse();
-    if (!vals.every((v) => v.startsWith('CUI:') || v.startsWith('AUI:'))) return refuse();
-    const any = (n) => (n.length === 0 ? { t: 'empty' } : n.length === 1 ? n[0] : { t: 'or', items: n });
-    const parts = [];
-    // CUI: RxNorm's own concept-level rows (SAB = RXNORM), as concept-valued properties
-    const cuis = vals.filter((v) => v.startsWith('CUI:')).map((v) => v.substring(4));
-    if (cuis.length) {
-      const relaMap = S.config.relaByRel || {};
-      const pids = (isRel ? (relaMap[prop] || []) : [prop]).map((a) => S.props.get(a)).filter((p) => p && p.kind === 'concept').map((p) => p.id);
-      const m = c.ids(cuis);
-      const ids = [...new Set([...m.values()].filter((x) => x != null))];
-      parts.push(any(pids.flatMap((pid) => ids.map((id) => ({ t: 'set', kind: KIND.prop, pid, value: id })))));
-    }
-    // AUI: the atom-level rows of every source (rxnorm_atom_rel), to the concept of the target atom
-    const auis = vals.filter((v) => v.startsWith('AUI:')).map((v) => v.substring(4));
-    if (auis.length) parts.push({ t: 'ids', ids: rxAtomTargets(S, isRel ? 'rel' : 'rela', (isRel ? rels : relas).indexOf(prop), auis) });
-    return any(parts);
+    if (!vals.every((v) => v.startsWith('CUI:'))) return refuse();
+    // RxNorm's own concept-level rows (SAB = RXNORM), as concept-valued properties. A REL or RELA
+    // only other sources' or atom-level rows have names no property here, so selects nothing.
+    const relaMap = S.config.relaByRel || {};
+    const pids = (isRel ? (relaMap[prop] || []) : [prop]).map((a) => S.props.get(a)).filter((p) => p && p.kind === 'concept').map((p) => p.id);
+    const m = c.ids(vals.map((v) => v.substring(4)));
+    const ids = [...new Set([...m.values()].filter((x) => x != null))];
+    const items = pids.flatMap((pid) => ids.map((id) => ({ t: 'set', kind: KIND.prop, pid, value: id })));
+    return items.length === 0 ? { t: 'empty' } : items.length === 1 ? items[0] : { t: 'or', items };
   }
 };
-
-/**
- * The concepts the atom-level RXNREL rows lead to from these atoms, for one REL or RELA (an index
- * into cs_config rxRels / rxRelas): cs-rxnorm.js's AUI query. RXAUIs are numbers; a value that
- * isn't one is no atom
- */
-function rxAtomTargets(S, field, index, auis) {
-  if (!S.config.rxRels || !S.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'rxnorm_atom_rel'").get()) {
-    throw new Unsupported('rxnorm-aui', 'the file has no atom-level relationships (built before they were imported): rebuild it with rxnorm-v2 import');
-  }
-  const nums = [...new Set(auis.filter((a) => /^(0|[1-9]\d{0,15})$/.test(a)).map(Number))];
-  if (!nums.length || index < 0) return [];
-  const q = S.stmt(`SELECT DISTINCT concept_id FROM rxnorm_atom_rel WHERE aui IN (${nums.map(() => '?').join(', ')}) AND ${field} = ? ORDER BY concept_id`).pluck();
-  return q.all(...nums, index);
-}
 
 // ---- SNOMED CT -----------------------------------------------------------------------------
 

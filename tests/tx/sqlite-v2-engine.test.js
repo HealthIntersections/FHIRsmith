@@ -389,11 +389,14 @@ describe('sqlite-v2 RxNorm REL filters', () => {
     expect(() => expand(rx, [rxinc([f('XX', '=', 'CUI:1')])])).toThrow('The filter "XX = CUI:1" is not understood or supported');
     expect(expand(rx, [rxinc([f('has_ingredient', 'in', 'CUI:1,CUI:3')])]).codes).toEqual(['4']);
     expect(expand(rx, [rxinc([f('concept', 'in', '2,4,5')])]).codes.sort()).toEqual(['2', '4']);
-    // upstream's set only (cs-rxnorm.js doesFilter): = and in, relationship values CUI: or AUI:
+    // upstream's set only (cs-rxnorm.js doesFilter): = and in, relationship values CUI: (upstream
+    // also takes AUI:, over atom-level rows the file doesn't hold: refused here)
     // (sqlite-v2-rxnorm-filters.test.js runs each against cs-rxnorm.js)
     expect(() => expand(rx, [rxinc([f('tty', 'not-in', 'SCD')])])).toThrow('The filter "tty not-in SCD" is not understood or supported');
     expect(() => expand(rx, [rxinc([f('display', 'regex', 'drug [23]')])])).toThrow('not understood or supported');
     expect(() => expand(rx, [rxinc([f('has_ingredient', '=', '1')])])).toThrow('not understood or supported');
+    expect(() => expand(rx, [rxinc([f('has_ingredient', '=', 'AUI:1')])])).toThrow('The filter "has_ingredient = AUI:1" is not understood or supported');
+    expect(() => expand(rx, [rxinc([f('has_ingredient', 'in', 'CUI:1,AUI:1')])])).toThrow('not understood or supported');
   });
 });
 

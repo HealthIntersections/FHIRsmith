@@ -4,8 +4,9 @@
 // from one small RRF fixture and run through the real router. Main takes `=` and `in` on TTY, STY
 // and SAB (any case), on concept and code, and on a relationship (a REL or RELA that RXNREL has,
 // from any source) whose values are all CUI:<rxcui> or AUI:<rxaui>. Anything else is a 422
-// FILTER_NOT_UNDERSTOOD. A CUI: value follows RxNorm's own concept-level rows; an AUI: value
-// follows the atom-level rows of every source, to the concept of the target atom.
+// FILTER_NOT_UNDERSTOOD. A CUI: value follows RxNorm's own concept-level rows. An AUI: value
+// main follows over the atom-level rows of every source; sqlite-v2 stores no atom-level rows and
+// refuses it with the same 422 (a known difference).
 
 const fs = require('fs');
 const os = require('os');
@@ -119,11 +120,8 @@ const ACCEPTED = [
   [['SAB', 'in', 'MMSL, MTHSPL']], [['concept', '=', '100']], [['concept', 'in', '100,200']], [['code', '=', '300']],
   [['has_ingredient', '=', 'CUI:200']], [['has_ingredient', 'in', 'CUI:200,CUI:400']], [['RO', '=', 'CUI:200']],
   [['RB', '=', 'CUI:100']], [['tradename_of', '=', 'CUI:100']],
-  // AUI: atom-level rows of any source, to the concept of the target atom
-  [['has_ingredient', '=', 'AUI:2002']], [['has_ingredient', 'in', 'CUI:400,AUI:2002']], [['RO', '=', 'AUI:2002']],
-  [['SY', '=', 'AUI:3001']], [['has_active_ingredient', '=', 'AUI:2002']], [['has_ingredient', '=', 'AUI:9999']],
-  // a RELA only atom-level rows have, with a CUI value: RxNorm's own rows have none of it
-  [['has_active_ingredient', '=', 'CUI:200']],
+  // a REL or RELA only atom-level rows have, with a CUI value: RxNorm's own rows have none of it
+  [['has_active_ingredient', '=', 'CUI:200']], [['SY', '=', 'CUI:300']],
   [['TTY', '=', 'SCD'], ['has_ingredient', '=', 'CUI:200']],
 ];
 
@@ -137,6 +135,17 @@ const REFUSED = [
   [['TTY', '=', 'SCD'], ['TTY', 'regex', 'S.*']],
 ];
 
+// main follows these over the atom-level rows (200); sqlite-v2 refuses them
+const AUI = [
+  [['has_ingredient', '=', 'AUI:2002']], [['has_ingredient', 'in', 'CUI:400,AUI:2002']], [['has_ingredient', 'in', 'AUI:2002,CUI:400']],
+  [['RO', '=', 'AUI:2002']], [['SY', '=', 'AUI:3001']], [['has_active_ingredient', '=', 'AUI:2002']], [['has_ingredient', '=', 'AUI:9999']],
+];
+
+const refusal = (filters) => {
+  const [property, op, value] = filters[filters.length - 1];
+  return { status: 422, issues: [['error', 'not-supported', `The filter "${property} ${op} ${value}" is not understood or supported`, 'vs-invalid', 'FILTER_NOT_UNDERSTOOD']] };
+};
+
 describe('sqlite-v2 RxNorm filters, as main', () => {
   test.each(ACCEPTED)('accepted: %j', async (...filters) => {
     const r = await both(filters);
@@ -149,6 +158,12 @@ describe('sqlite-v2 RxNorm filters, as main', () => {
     expect(r.main.status).toBe(422);
     expect(r.main.issues.map((i) => i[4])).toContain('FILTER_NOT_UNDERSTOOD');
     expect(r.v2).toEqual(r.main);
+  });
+
+  test.each(AUI)('AUI: value, main follows atom-level rows, sqlite-v2 refuses: %j', async (...filters) => {
+    const r = await both(filters);
+    expect(r.main.status).toBe(200);
+    expect(r.v2).toEqual(refusal(filters));
   });
 
   test.each([
@@ -184,12 +199,46 @@ describe('sqlite-v2 RxNorm filters, as main', () => {
     expect(await codesOf(v2)).toEqual(want);
   });
 
-  test('the fixture finds something: CUI and AUI values, and other sources\' rows', async () => {
+  test('the fixture finds something: CUI values, and (main only) AUI values over other sources\' rows', async () => {
     const r = async (f) => (await both([f])).main.codes;
     expect(await r(['has_ingredient', '=', 'CUI:200'])).toEqual(['100']);
     expect(await r(['has_ingredient', '=', 'AUI:2002'])).toEqual(['100']);
     expect(await r(['SY', '=', 'AUI:3001'])).toEqual(['300']);
     expect(await r(['has_active_ingredient', '=', 'AUI:2002'])).toEqual(['300']);
     expect(await r(['has_active_ingredient', '=', 'CUI:200'])).toEqual([]);
+  });
+
+  test('the file holds no atom-level rows; a file that still has rxnorm_atom_rel (earlier importer) reads the same', async () => {
+    const Database = require('better-sqlite3');
+    const db = new Database(path.join(dir, 'rx.db'), { readonly: true });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'rxnorm_atom_rel'").all()).toEqual([]);
+    const config = Object.fromEntries(db.prepare('SELECT key, value FROM cs_config').raw().all());
+    db.close();
+    expect(JSON.parse(config.rxRelas)).toEqual(expect.arrayContaining(['has_ingredient', 'has_active_ingredient', 'tradename_of']));
+    expect(JSON.parse(config.rxRels)).toEqual(expect.arrayContaining(['RO', 'RB', 'SY']));
+
+    const old = path.join(dir, 'rx-old.db');
+    fs.copyFileSync(path.join(dir, 'rx.db'), old);
+    const w = new Database(old);
+    w.exec(`CREATE TABLE rxnorm_atom_rel (aui INTEGER NOT NULL, rel INTEGER NOT NULL, rela INTEGER NOT NULL, concept_id INTEGER NOT NULL,
+      PRIMARY KEY (aui, rel, rela, concept_id)) WITHOUT ROWID;
+      INSERT INTO rxnorm_atom_rel SELECT 2002, 0, 0, concept_id FROM concept WHERE code = '100'`);
+    w.close();
+    const f = await loadSqliteV2Factory(tx.i18n, old);
+    try {
+      use(f);
+      for (const filters of [[['has_ingredient', '=', 'CUI:200']], [['has_active_ingredient', '=', 'CUI:200']], [['TTY', '=', 'SCD']]]) {
+        use(f);
+        const a = await expand(filters);
+        use(v2);
+        expect(a).toEqual(await expand(filters));
+        expect(a.status).toBe(200);
+      }
+      use(f);
+      expect(await expand(AUI[0])).toEqual(refusal(AUI[0]));
+    } finally {
+      use(v2);
+      f.store.close();
+    }
   });
 });
