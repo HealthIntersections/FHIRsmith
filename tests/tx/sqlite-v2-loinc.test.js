@@ -525,10 +525,24 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
   test('$lookup 10332-5: part properties, literals and designations', async () => {
     const res = await request(app).get(`/tx/r5/CodeSystem/$lookup?system=${L}&code=10332-5&property=*`);
     const f = flatParams(res.body);
-    expect(f).toEqual(expect.arrayContaining(['property(code=COMPONENT,value=LP305473-3)', 'property(code=SCALE_TYP,value=LP7753-9)',
+    expect(f).toEqual(expect.arrayContaining(['property(code=COMPONENT,description=Cortisol^pre 250 ug corticotropin IM,value=LP305473-3)', 'property(code=SCALE_TYP,description=Qn,value=LP7753-9)',
       'property(code=CLASSTYPE,description=Laboratory class,value=1)', 'property(code=UNITSREQUIRED,value=Y)', 'property(code=ORDER_OBS,value=Observation)',
-      'property(code=STATUS,value=ACTIVE)', 'property(code=AnswerList,value=LL1892-0)', 'property(code=RELATEDNAMES2,language=nl-NL,value=adrenocorticotroop hormoon; adrenocorticotrofine; corticotrofine)']));
+      'property(code=STATUS,value=ACTIVE)', 'property(code=AnswerList,description=ICD-9_ICD-10,value=LL1892-0)', 'property(code=RELATEDNAMES2,language=nl-NL,value=adrenocorticotroop hormoon; adrenocorticotrofine; corticotrofine)']));
     expect(f.some((p) => p.startsWith('designation(') && p.includes('value=Cortis pre 250 ug ACTH IM SerPl-mCnc'))).toBe(true);
+  });
+
+  // a code-valued property carries the display of the code it names as its description (as main,
+  // cs-loinc.test.js); CLASS stays a string property with the part code as partCode
+  test('$lookup: code-valued properties have the named code\'s display as their description, as main', async () => {
+    for (const [code, prop, value, description] of [['10332-5', 'COMPONENT', 'LP305473-3', 'Cortisol^pre 250 ug corticotropin IM'],
+      ['LP14355-9', 'parent', 'LP31398-8', 'Renal function'], ['10332-5', 'AnswerList', 'LL1892-0', 'ICD-9_ICD-10']]) {
+      const r = await both(async () => {
+        const res = await request(app).get(`/tx/r5/CodeSystem/$lookup?system=${L}&code=${code}&property=${prop}`);
+        return flatParams(res.body).filter((p) => p.startsWith('property('));
+      });
+      expect(r.v2).toEqual(r.classic);
+      expect(r.v2).toContain(`property(code=${prop},description=${description},value=${value})`);
+    }
   });
 
   const VALIDATE = [

@@ -677,7 +677,8 @@ class SqliteV2Provider extends BaseCSServices {
         const pr = this._addStringProperty(params, 'property', 'CLASS', t.display || t.code);
         pr.part.push({ name: 'partCode', valueCode: t.code });
       } else {
-        this._addCodeProperty(params, 'property', l.code, t.code);
+        // the target's display as the description, as main gives it (cs-loinc.js: Codes.Description)
+        this._addCodeProperty(params, 'property', l.code, t.code, null, t.display || null);
       }
     }
     const lits = S.literalsOf([c.id], true, st).map((r) => ({ ...r, code: (S.propsById.get(r.p) || {}).code })).filter((r) => r.code);
