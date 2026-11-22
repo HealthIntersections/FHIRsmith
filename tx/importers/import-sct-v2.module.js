@@ -11,7 +11,7 @@ const path = require('path');
 const { BaseTerminologyModule } = require('./tx-import-base');
 const { tsvRows, firstLine } = require('./sqlite-v2/text');
 const {
-  SnomedSink, discover, MODULE_DEPENDENCY, displayRefsetsFor, isoDate, concrete, EDITION_NAMES, rf2DefaultLanguage,
+  SnomedSink, discover, MODULE_DEPENDENCY, displayRefsetsFor, checkDisplayRefsets, isoDate, concrete, EDITION_NAMES, rf2DefaultLanguage,
   SCT, US_ENGLISH, INFERRED,
 } = require('./sct-v2-common');
 
@@ -40,6 +40,7 @@ async function importSnomedV2(cfg) {
     for (let k = 0; k < meta.length; k += 4) sink.conceptMeta(meta[k], sink.idx(meta[k + 1]), sink.idx(meta[k + 2]), isoDate(meta[k + 3]));
     return meta.length / 4;
   });
+  const nConcepts = meta.length / 4;
   meta.length = 0;
   for (const c of displayRefsetsFor(cfg.edition)) if (sink.idx(c) !== undefined) displayRefsets.push(c);
   // an edition without any of its display refsets lists US English
@@ -56,6 +57,12 @@ async function importSnomedV2(cfg) {
     }
     return n;
   });
+  // the cache importer's display refset check; a release has no defects to force past, so warnings only
+  {
+    const shown = checkDisplayRefsets(cfg.edition, displayRefsets, (r) => sink.langMembers.get(r), nConcepts);
+    stats.displayRefsetWarnings = [...shown.fatal, ...shown.warnings];
+    for (const w of stats.displayRefsetWarnings) log(`WARNING: ${w}`);
+  }
 
   const activeLanguages = new Set();
   await sink.stage('parse descriptions', async () => {

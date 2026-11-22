@@ -182,3 +182,80 @@ describe('SNOMED CT English dialects (engine)', () => {
     }
   });
 });
+
+// An Australian release as shipped: its own English reference set has the members, the GB and US
+// reference set concepts are in the release with no members. That imports from the cache without
+// --force (the empty refsets are fallbacks); an Australian refset with no members does not.
+describe('display reference sets without members (Australian edition)', () => {
+  const AU = '32570271000036106', GB = '900000000000508004', US = '900000000000509007';
+  let au, sum = {};
+  const lines = (f) => fs.readFileSync(f, 'utf8').split(/\r?\n/).filter(Boolean);
+  const file = (snap, re) => walk(snap).find((f) => re.test(path.basename(f)));
+  // the merged snapshot with an Australian English refset concept (is-a English language refset);
+  // `langRows(refset)` -> the refset id a GB / US row is moved to (null: the row is dropped)
+  function auSnapshot(name, langRows) {
+    const snap = path.join(dir, name);
+    mergeSnapshot(SRC, snap);
+    fs.appendFileSync(file(snap, /^sct2_Concept_Snapshot_/), `${AU}\t20230731\t1\t31000003106\t900000000000074008\n`);
+    fs.appendFileSync(file(snap, /^sct2_Description_Snapshot-en_/),
+      `9000001000036110\t20230731\t1\t31000003106\t${AU}\ten\t900000000000003001\tAustralian English language reference set (foundation metadata concept)\t900000000000017005\n`);
+    fs.appendFileSync(file(snap, /^sct2_Relationship_Snapshot_/),
+      `9000001000036121\t20230731\t1\t31000003106\t${AU}\t900000000000507009\t0\t116680003\t900000000000011006\t900000000000451002\n`);
+    const lang = file(snap, /^der2_cRefset_LanguageSnapshot-en_/);
+    const [head, ...rows] = lines(lang);
+    const out = [head];
+    for (const r of rows) {
+      const c = r.split('\t');
+      if (c[4] !== GB && c[4] !== US) { out.push(r); continue; }
+      const to = langRows(c[4]);
+      if (to) { c[4] = to; out.push(c.join('\t')); }
+    }
+    fs.writeFileSync(lang, out.join('\n') + '\n');
+    return snap;
+  }
+  async function cache(snap, name) {
+    const dest = path.join(dir, name + '.cache');
+    const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await new SnomedImporter({ source: snap, dest, edition: EDITIONS.au, version: '20230731',
+        uri: `http://snomed.info/sct/${EDITIONS.au}/version/20230731`, language: 'en-US', license: SCT_LICENSE, verbose: false, overwrite: true }).run();
+    } finally { quiet.mockRestore(); }
+    return dest;
+  }
+  const db = (name) => path.join(dir, name + '.db');
+
+  beforeAll(async () => {
+    // the GB rows become the Australian refset's; the US ones are dropped
+    const shipped = auSnapshot('au-shipped', (r) => (r === GB ? AU : null));
+    const c = await cache(shipped, 'au-shipped');
+    sum.cache = await importSnomedV2FromCache({ source: c, dest: db('au-shipped'), overwrite: true, normalForms: false, log: () => {} });
+    sum.rf2 = await importSnomedV2({ source: shipped, dest: db('au-shipped-rf2'), edition: EDITIONS.au, version: '20230731', overwrite: true, normalForms: false, log: () => {} });
+    au = await loadSqliteV2Factory(op.i18n, db('au-shipped'));
+    // the Australian refset without members, the GB and US ones as the test edition has them
+    sum.lostCache = await cache(auSnapshot('au-lost', (r) => r), 'au-lost');
+  }, 120000);
+  afterAll(() => { if (au) au.store.close(); });
+
+  test('the shipped layout imports from the cache without --force; the empty fallbacks are warnings', async () => {
+    const codes = au.displayRefsetIds().map((id) => au.store.conceptRows([id]).get(id).code);
+    expect(codes).toEqual([AU, GB, US]);
+    const w = sum.cache.importer.cacheWarnings;
+    expect(w.filter((x) => /display language refset/.test(x)).map((x) => x.split(' ')[3]).sort()).toEqual([GB, US].sort());
+    expect(await display(au, '262797004', null, true)).toBe('Subcapsular liver haematoma');
+    expect(await display(au, '35566002', null, true)).toBe('Haematoma');
+  });
+
+  test('the RF2 import of the same release reports the same fallbacks, and the same displays', () => {
+    expect(sum.rf2.importer.displayRefsetWarnings.map((x) => x.split(' ')[3]).sort()).toEqual([GB, US].sort());
+    const read = (f) => { const d = new (require('better-sqlite3'))(f, { readonly: true });
+      try { return d.prepare('SELECT code, display FROM concept ORDER BY code').all(); } finally { d.close(); } };
+    expect(read(db('au-shipped-rf2'))).toEqual(read(db('au-shipped')));
+  });
+
+  test("the edition's own refset without members stops the import unless forced", async () => {
+    await expect(importSnomedV2FromCache({ source: sum.lostCache, dest: db('au-lost'), overwrite: true, normalForms: false, log: () => {} }))
+      .rejects.toThrow(`display language refset ${AU} has no members`);
+    const forced = await importSnomedV2FromCache({ source: sum.lostCache, dest: db('au-lost'), overwrite: true, force: true, normalForms: false, log: () => {} });
+    expect(forced.importer.cacheWarnings).toContain(`display language refset ${AU} has no members`);
+  });
+});

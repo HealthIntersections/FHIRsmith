@@ -70,6 +70,25 @@ const DISPLAY_REFSETS = {
   '11000220105': ['21000220103', GB_ENGLISH, US_ENGLISH] // Irish
 };
 const displayRefsetsFor = (edition) => DISPLAY_REFSETS[edition] || [US_ENGLISH, GB_ENGLISH];
+
+/**
+ * The display language refsets an import found: `present`, the edition's display refsets that are
+ * concepts in it, in order; count(code), its members. The first is the one the displays and
+ * item.preferred come from, so for an edition with an entry of its own, that one without members
+ * means its language refset was lost (fatal). A fallback refset without members is a warning only:
+ * a national release may ship its own refset and leave the International dialects empty.
+ * @returns {{fatal: string[], warnings: string[]}}
+ */
+function checkDisplayRefsets(edition, present, count, nConcepts) {
+  const fatal = [], warnings = [];
+  present.forEach((r, k) => {
+    const n = count(r) || 0;
+    if (n === 0 && k === 0 && DISPLAY_REFSETS[edition]) fatal.push(`display language refset ${r} has no members`);
+    else if (n === 0) warnings.push(`display language refset ${r} has no members${k ? ' (a fallback; displays come from the refsets before it)' : ''}`);
+    else if (n < nConcepts / 10) warnings.push(`display language refset ${r} has only ${n} members (displays fall back to the FSN)`);
+  });
+  return { fatal, warnings };
+}
 const INFERRED = '900000000000011006';
 const EDITION_NAMES = {
   '900000000000207008': 'SNOMED CT International Edition',
@@ -173,6 +192,7 @@ class SnomedSink {
     this.displayRefsets = cfg.displayRefsets;
     // language members, held until the descriptions: [key, refset handle, acceptability handle]
     this.lang = { key: [], refset: [], acc: [] };
+    this.langMembers = new Map(); // language refset code -> active rows read
     this.prefRank = new Map();     // description key -> best display-refset rank where Preferred
     this.anyPreferred = new Set(); // description keys Preferred in any language refset
     this.preferredKeys = new Set(); // description keys Preferred in cfg.preferredRefset
@@ -203,6 +223,7 @@ class SnomedSink {
     const refset = this.b.idx(refsetCode), acc = this.b.idx(accCode);
     if (refset === undefined || acc === undefined) { this.stats.languageRowsSkipped++; return; }
     this.lang.key.push(key); this.lang.refset.push(refset); this.lang.acc.push(acc);
+    this.langMembers.set(refsetCode, (this.langMembers.get(refsetCode) || 0) + 1);
     if (accCode === PREFERRED) {
       this.anyPreferred.add(key);
       if (refsetCode === this.cfg.preferredRefset) this.preferredKeys.add(key);
@@ -441,5 +462,5 @@ function derivedIndexes(file, log = () => {}, normalForms = true) {
   return out;
 }
 
-module.exports = { SnomedSink, derivedIndexes, discover, isoDate, idLess, concrete, displayRefsetsFor, rf2DefaultLanguage,
+module.exports = { SnomedSink, derivedIndexes, discover, isoDate, idLess, concrete, displayRefsetsFor, checkDisplayRefsets, rf2DefaultLanguage,
   DISPLAY_REFSETS, EDITION_NAMES, EDITION_LANGUAGES, MODULE_DEPENDENCY, SCT, IS_A, PREFERRED, US_ENGLISH, INFERRED };

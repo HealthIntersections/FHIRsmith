@@ -22,7 +22,7 @@ const {
   SnomedReferenceSetMembers, SnomedReferenceSetIndex,
 } = require('../sct/structures');
 const { SnomedFileReader, SNOMED_CACHE_VERSION } = require('../sct/structures');
-const { isoDate, displayRefsetsFor, DISPLAY_REFSETS, concrete, SnomedSink, SCT } = require('./sct-v2-common');
+const { isoDate, displayRefsetsFor, checkDisplayRefsets, concrete, SnomedSink, SCT } = require('./sct-v2-common');
 const { editionName } = require('../sct/editions');
 
 const LANGUAGE_TYPE_REFSET = '900000000000506000';
@@ -188,12 +188,10 @@ async function importSnomedV2FromCache(cfg) {
     }
     const dup = [...defs].filter(([, n]) => n > 1);
     if (dup.length) fatal.push(`refset index names ${dup.map(([o, n]) => `${code[o / C]} x${n}`).join(', ')} (refsets collapsed onto one concept)`);
-    for (const r of displayRefsetsFor(edition)) {
-      if (known(r) === undefined) continue;
-      const n = members.get(known(r) * C) || 0;
-      if (n === 0 && (DISPLAY_REFSETS[edition] || []).includes(r)) fatal.push(`display language refset ${r} has no members`);
-      else if (n > 0 && n < nC / 10) warnings.push(`display language refset ${r} has only ${n} members (displays fall back to the FSN)`);
-    }
+    const shown = checkDisplayRefsets(edition, displayRefsetsFor(edition).filter((r) => known(r) !== undefined),
+      (r) => members.get(known(r) * C), nC);
+    fatal.push(...shown.fatal);
+    warnings.push(...shown.warnings);
     if (shift) warnings.push(`dates shifted by ${shift} day(s) (cache built east of UTC before upstream b082f98)`);
     if (!(d.concreteValues || []).length) warnings.push(`no concrete values (cache v${d.cacheVersion}; carried from v19)`);
     warnings.push(...fatal);
