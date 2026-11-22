@@ -90,6 +90,13 @@
  * Returns (a promise of) the signed document, as parsed JSON. Throw to refuse: the message is
  * shown to the user. The signed document is not kept: it is downloaded, or shared, as it is.
  *
+ * Patient comments (ips/patient-comments.js): when the user asks for them to be included, any
+ * patient notes section (LOINC 51855-5) is removed from `bundle` before sign() sees it, and the
+ * patient's comments are added afterwards, as the Composition's first section (LOINC 51855-5):
+ * they are not signed, so the signed document a recipient gets has a section the signature did
+ * not cover. So verify() is given the document with any patient notes section removed (the
+ * signatures step does it): the signature covers the document without that section.
+ *
  * A signer is
  *
  *   {

@@ -106,6 +106,16 @@ const SCHEMA = `
     PRIMARY KEY (doc_id, step)
   );
 
+  -- the patient's comments on a document (the Patient Comments tab): one per document, CommonMark,
+  -- kept apart from the document (which is never altered) and from the step results (so processing
+  -- again leaves it alone)
+  CREATE TABLE IF NOT EXISTS patient_comments (
+    doc_id      INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    markdown    TEXT NOT NULL,
+    updated_ms  INTEGER NOT NULL,
+    updated_by  TEXT
+  );
+
   -- the AI assessment calls made, per project: for the daily cap, and what they cost
   CREATE TABLE IF NOT EXISTS ai_calls (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -985,6 +995,24 @@ class IpsStore {
     }
     this.stmts.clearResults.run(id);
     return 'queued';
+  }
+
+  // ---- the patient's comments ----
+
+  /** @returns {{markdown: string, updated: string, by: string|null}|null} the document's patient comment */
+  patientComment(docId) {
+    const row = this.db.prepare('SELECT markdown, updated_ms, updated_by FROM patient_comments WHERE doc_id = ?').get(docId);
+    return row ? { markdown: row.markdown, updated: new Date(row.updated_ms).toISOString(), by: row.updated_by } : null;
+  }
+
+  /** Keep the document's patient comment, replacing the one before; empty (or only spaces) removes it. */
+  savePatientComment(docId, markdown, by, nowMs = Date.now()) {
+    if (!markdown || !markdown.trim()) {
+      this.db.prepare('DELETE FROM patient_comments WHERE doc_id = ?').run(docId);
+      return;
+    }
+    this.db.prepare('INSERT OR REPLACE INTO patient_comments (doc_id, markdown, updated_ms, updated_by) VALUES (?, ?, ?, ?)')
+      .run(docId, markdown, nowMs, by || null);
   }
 
   // ---- the processing steps' results ----

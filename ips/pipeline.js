@@ -36,6 +36,10 @@
 const { terminologyOf } = require('./terminology');
 const { isHl7System } = require('./ips-valuesets');
 const { Presenter } = require('./presenter');
+const { removePatientNotes, patientNotesMarkdown, PATIENT_COMMENT_MAX } = require('./patient-comments');
+
+// who wrote a patient comment read from the document's own patient notes section
+const PATIENT_NOTES_SOURCE = 'the document\'s patient notes section';
 const ai = require('./ai-client');
 const { evaluateAsync } = require('./fhirpath-ips');
 const { checkNarrative } = require('../library/narrative-check');
@@ -122,10 +126,12 @@ function signatureOutcome(o) {
 
 /**
  * Signatures: the document's signatures are checked (signatures.js), on a copy of the
- * document as received, with keys from the server's key store (signature-keys.js; a test, or
+ * document as received - without any patient notes section (LOINC 51855-5) - with keys from the server's key store (signature-keys.js; a test, or
  * another key store, sets module.keyProvider). What it says is kept as the step's result, and
  * shown at the top of the analysis view. It gives no note for the status line, and a check
  * that fails is an error outcome, not a failed step: the rest of the processing goes on.
+ * A patient notes section (LOINC 51855-5) in the document becomes the document's patient comment,
+ * converted to markdown (turndown), when it has none yet.
  */
 const signaturesStep = {
   name: 'signatures',
@@ -133,7 +139,9 @@ const signaturesStep = {
     const started = Date.now();
     let outcomes;
     try {
-      const found = await withTimeout(signatures.verify(structuredClone(row.bundle), module.keyProvider || new KeyStoreKeyProvider(),
+      // without any patient notes section (LOINC 51855-5): a copy downloaded or shared with the
+      // patient's comments has them added there after signing, so the signatures don't cover it
+      const found = await withTimeout(signatures.verify(removePatientNotes(row.bundle), module.keyProvider || new KeyStoreKeyProvider(),
         { receivedAt: row.received || null, log: module.log }), module.verifyTimeoutMs || VERIFY_TIMEOUT_MS, `it took more than ${(module.verifyTimeoutMs || VERIFY_TIMEOUT_MS) / 1000} seconds`);
       outcomes = Array.isArray(found) ? found.map(signatureOutcome) :
         [{ status: 'error', keyId: null, description: 'The signature check did not return a list of outcomes' }];
@@ -142,6 +150,16 @@ const signaturesStep = {
       outcomes = [{ status: 'error', keyId: null, description: `The signature check failed: ${e.message}` }];
     }
     module.store.saveResult(row.id, 'signatures', { ms: Date.now() - started, outcomes });
+    // a patient notes section the document came with becomes its patient comment (as markdown),
+    // unless it has one already - one written here is not overwritten by processing again
+    try {
+      const md = patientNotesMarkdown(row.bundle);
+      if (md && !module.store.patientComment(row.id)) {
+        module.store.savePatientComment(row.id, md.length > PATIENT_COMMENT_MAX ? md.substring(0, PATIENT_COMMENT_MAX) : md, PATIENT_NOTES_SOURCE);
+      }
+    } catch (e) {
+      module.log.error(`IPS module: document ${row.id}: the patient notes section could not be read as the patient's comments: ${e.message}`);
+    }
     return null;
   }
 };
@@ -835,6 +853,58 @@ async function lookupDisplay(tx, coding) {
 }
 
 /**
+ * Generate a document's narrative with the IPS presenter - displays from the module's
+ * terminology server, if it has one (cached, bounded) - and write it into the document, as the
+ * Composition's and each section's text (status generated). Used by the narrative step, and for
+ * a copy downloaded or shared with "Regenerate narrative" (ips.js preparedCopy).
+ * @param {Object} doc - the document: changed
+ * @returns {Promise<{out: Object, lookups: number}>} the presenter's output, and how many lookups it made
+ */
+async function generateNarrative(doc, module) {
+  const cache = module.txCache || (module.txCache = new Map());
+  const budget = { left: MAX_LOOKUPS_PER_DOCUMENT };
+  const counts = { lookups: 0 };
+  const lookup = module.tx ? async (coding) => {
+    const key = `lookup|${coding.system}|${coding.version || ''}|${coding.code}`;
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+    if (budget.left <= 0) {
+      return null;
+    }
+    budget.left--;
+    counts.lookups++;
+    const { display, definite } = await lookupDisplayAnswer(module.tx, coding);
+    // a server that was down or slow isn't an answer: asked again next time
+    if (definite) {
+      if (cache.size >= MAX_CACHED_ANSWERS) {
+        cache.delete(cache.keys().next().value);
+      }
+      cache.set(key, display);
+    }
+    return display;
+  } : null;
+  const presenter = new Presenter({ lookup });
+  const out = await presenter.render(doc);
+  // the presenter escapes what it takes from the document; checked anyway, as every
+  // narrative a document brings is, before it is written anywhere or shown
+  for (const html of [out.html, out.header, ...out.sections.map(s => s.html)]) {
+    const problem = checkNarrative(html);
+    if (problem) {
+      throw new Error(`the generated narrative failed the active content check (${problem})`);
+    }
+  }
+  const composition = doc.entry?.[0]?.resource;
+  if (composition && composition.resourceType === 'Composition') {
+    composition.text = { status: 'generated', div: out.header };
+    for (const s of out.sections) {
+      s.section.text = { status: 'generated', div: s.html };
+    }
+  }
+  return { out, lookups: counts.lookups };
+}
+
+/**
  * Narrative: generate the document's narrative with the IPS presenter, after translation
  * (so the translated codings are in it) and before validation (so the validator sees it).
  * The narrative is kept as the step's result (the whole document, and each section), and
@@ -847,54 +917,14 @@ const narrative = {
       throw new Error('No analysed copy of the document to write to');
     }
     const started = Date.now();
-    const cache = module.txCache || (module.txCache = new Map());
-    const budget = { left: MAX_LOOKUPS_PER_DOCUMENT };
-    const counts = { lookups: 0 };
-    // displays from the terminology server, if there is one: cached, bounded
-    const lookup = module.tx ? async (coding) => {
-      const key = `lookup|${coding.system}|${coding.version || ''}|${coding.code}`;
-      if (cache.has(key)) {
-        return cache.get(key);
-      }
-      if (budget.left <= 0) {
-        return null;
-      }
-      budget.left--;
-      counts.lookups++;
-      const { display, definite } = await lookupDisplayAnswer(module.tx, coding);
-      // a server that was down or slow isn't an answer: asked again next time
-      if (definite) {
-        if (cache.size >= MAX_CACHED_ANSWERS) {
-          cache.delete(cache.keys().next().value);
-        }
-        cache.set(key, display);
-      }
-      return display;
-    } : null;
-    const presenter = new Presenter({ lookup });
-    const out = await presenter.render(row.analysed);
-    // the presenter escapes what it takes from the document; checked anyway, as every
-    // narrative a document brings is, before it is written anywhere or shown
-    for (const html of [out.html, out.header, ...out.sections.map(s => s.html)]) {
-      const problem = checkNarrative(html);
-      if (problem) {
-        throw new Error(`the generated narrative failed the active content check (${problem})`);
-      }
-    }
-    const composition = row.analysed.entry?.[0]?.resource;
-    if (composition && composition.resourceType === 'Composition') {
-      composition.text = { status: 'generated', div: out.header };
-      for (const s of out.sections) {
-        s.section.text = { status: 'generated', div: s.html };
-      }
-    }
+    const { out, lookups } = await generateNarrative(row.analysed, module);
     module.store.saveResult(row.id, 'narrative', {
       ms: Date.now() - started,
-      lookups: counts.lookups,
+      lookups,
       html: out.html,
       sections: out.sections.map(s => ({ title: s.title, level: s.level, html: s.html }))
     });
-    return `narrative: ${out.sections.length} section${out.sections.length === 1 ? '' : 's'}` + (counts.lookups ? ` (${counts.lookups} display lookup${counts.lookups === 1 ? '' : 's'})` : '');
+    return `narrative: ${out.sections.length} section${out.sections.length === 1 ? '' : 's'}` + (lookups ? ` (${lookups} display lookup${lookups === 1 ? '' : 's'})` : '');
   }
 };
 
@@ -1250,7 +1280,7 @@ const reportsStep = {
 const STEPS = [signaturesStep, nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
 
 module.exports = {
-  STEPS, signatures: signaturesStep, signatureOutcome, withTimeout, VERIFY_TIMEOUT_MS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
+  STEPS, generateNarrative, signatures: signaturesStep, signatureOutcome, withTimeout, VERIFY_TIMEOUT_MS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };
