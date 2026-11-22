@@ -102,20 +102,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     if (!isConceptId(code)) return this._nativeLocate(String(code));
     const r = await super._locate(code, prefetched);
     if (r.context) r.context.code = r.context.row ? r.context.row.code : r.context.code;
-    else r.message = this._descriptionIdMessage(code) || r.message;
     return r;
-  }
-
-  /**
-   * A code that is no concept of the edition but is one of its description ids (a file that keeps
-   * them: item external_id): a FHIR SNOMED CT code is a concept id or an expression, so the code
-   * stays unknown, and the message says whose description it is
-   */
-  _descriptionIdMessage(code) {
-    const hit = this.store.itemsByExternalId(String(code).trim())[0];
-    if (!hit) return null;
-    const row = this.store.conceptRows([hit.concept], this._stats()).get(hit.concept);
-    return row ? `${code} is a SNOMED CT description id (of the concept ${row.code} |${row.display}|), not a concept id` : null;
   }
 
   isDisplay(d) {

@@ -109,6 +109,27 @@ describe('SNOMED CT text filter of digits only', () => {
   });
 });
 
+describe('SNOMED CT description id as a code: an unknown code, as main', () => {
+  // 183388015 is a description of 118696008 |Procedure on mediastinum| in the test cache
+  const DESCRIPTION = '183388015';
+  const vsBody = { resourceType: 'Parameters', parameter: [
+    { name: 'valueSet', resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: SCT }] } } },
+    { name: 'coding', valueCoding: { system: SCT, code: DESCRIPTION } }] };
+  test.each([
+    ['$lookup', 'get', `/tx/r5/CodeSystem/$lookup?system=${encodeURIComponent(SCT)}&code=${DESCRIPTION}`, null],
+    ['CodeSystem/$validate-code', 'get', `/tx/r5/CodeSystem/$validate-code?url=${encodeURIComponent(SCT)}&code=${DESCRIPTION}`, null],
+    ['ValueSet/$validate-code', 'post', '/tx/r5/ValueSet/$validate-code', vsBody],
+  ])('%s', async (name, method, url, body) => { // every row has a body (null for a GET): jest passes done as a 4th argument otherwise
+    const r = await both(async () => {
+      const res = await call(method, url, body);
+      return { status: res.status, result: param(res.body, 'result'), message: param(res.body, 'message'), issues: issuesOf(res.body),
+        oo: (res.body.parameter || []).filter((p) => p.resource && p.resource.resourceType === 'OperationOutcome').flatMap((p) => issuesOf(p.resource)) };
+    });
+    expect(r.v2).toEqual(r.main);
+    expect(JSON.stringify(r.v2)).not.toContain('description id');
+  });
+});
+
 describe('SNOMED CT concept in / not-in with an unknown concept', () => {
   // in: expand.js reports an unknown concept and skips the include (filterConceptCodes, since
   // main 4e99d163); not-in: cs-snomed.js doesn't have it (SNOMED_CONCEPT_FILTER_OPS), a 422

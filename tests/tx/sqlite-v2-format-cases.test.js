@@ -2,8 +2,8 @@
 
 // Cases the terminology file answers through the generic reader paths (catalog shapes), over the
 // real router:
-//   1. a SNOMED CT description id (item external_id): $lookup / $validate-code say whose
-//      description it is; ECL {{ D id = ... }} selects its concept
+//   1. a SNOMED CT description id (item external_id): as a code it is an unknown code, the same
+//      answer as any other unknown concept id; ECL {{ D id = ... }} selects its concept
 //   2. a property with links and literals (shape 'both'): `1142139005 = 1` (main: 500 "Invalid
 //      concept ID: 1") selects the concepts whose concrete value is 1, `1142139005 = <code>` the
 //      concepts linked to that code
@@ -130,21 +130,22 @@ afterAll(async () => {
 });
 
 describe('1. SNOMED CT description ids', () => {
-  test('$validate-code and $lookup of a description id: not a code, and the message names its concept', async () => {
+  test('$validate-code and $lookup of a description id: the answer for any unknown concept id', async () => {
     use(SCT, sct);
-    const want = `${DESCRIPTION} is a SNOMED CT description id (of the concept ${SOURCE} |Halibut liver oil 4000 unit oral capsule|), not a concept id`;
-    // CodeSystem/$validate-code reports the unknown code only (validate.js does not add the provider's reason there)
-    const v = await request(app).get(`/tx/r5/CodeSystem/$validate-code?url=${encodeURIComponent(SCT)}&code=${DESCRIPTION}`);
-    expect(v.body.parameter.find((p) => p.name === 'result').valueBoolean).toBe(false);
-    // ValueSet/$validate-code adds the reason as an information issue
-    const vs = await request(app).post('/tx/r5/ValueSet/$validate-code').send({ resourceType: 'Parameters', parameter: [
-      { name: 'valueSet', resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: SCT }] } } },
-      { name: 'coding', valueCoding: { system: SCT, code: DESCRIPTION } }] });
-    expect(vs.body.parameter.find((p) => p.name === 'result').valueBoolean).toBe(false);
-    expect(JSON.stringify(vs.body)).toContain(want);
-    const l = await request(app).get(`/tx/r5/CodeSystem/$lookup?system=${encodeURIComponent(SCT)}&code=${DESCRIPTION}`);
-    expect(l.status).toBe(404);
-    expect(JSON.stringify(l.body)).toContain('is a SNOMED CT description id');
+    // the same requests with a concept id the edition does not have; main (cs-snomed.js locate)
+    // gives an unknown concept id no message of its own, whatever the id is
+    const UNKNOWN = '99999999999';
+    const answers = async (code) => {
+      const cs = await request(app).get(`/tx/r5/CodeSystem/$validate-code?url=${encodeURIComponent(SCT)}&code=${code}`);
+      const vs = await request(app).post('/tx/r5/ValueSet/$validate-code').send({ resourceType: 'Parameters', parameter: [
+        { name: 'valueSet', resource: { resourceType: 'ValueSet', status: 'active', compose: { include: [{ system: SCT }] } } },
+        { name: 'coding', valueCoding: { system: SCT, code } }] });
+      const l = await request(app).get(`/tx/r5/CodeSystem/$lookup?system=${encodeURIComponent(SCT)}&code=${code}`);
+      return JSON.stringify([cs.status, cs.body, vs.status, vs.body, l.status, l.body]).split(code).join('<code>');
+    };
+    const d = await answers(DESCRIPTION);
+    expect(d).toBe(await answers(UNKNOWN));
+    expect(d).not.toContain('description id');
     // a concept id is as before
     const c = await request(app).get(`/tx/r5/CodeSystem/$validate-code?url=${encodeURIComponent(SCT)}&code=${SOURCE}`);
     expect(c.body.parameter.find((p) => p.name === 'result').valueBoolean).toBe(true);

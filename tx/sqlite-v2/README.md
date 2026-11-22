@@ -185,7 +185,6 @@ re-import it; there is no in-place upgrade.
 | an unknown SNOMED CT concept in a `concept is-not-a` filter | 500 `exception` | 400 `invalid` |
 | RxNorm `REL` / `RELA = AUI:<rxaui>` | follows RXNREL's atom-level rows of every source | default build: 422 FILTER_NOT_UNDERSTOOD; a file built with `--atom-relationships` answers as main |
 | SNOMED CT `<attribute> = <number>` on a concrete attribute (`1142139005 = 1`) | 500 "Invalid concept ID: 1" | the concepts with that concrete value (`#1` too) |
-| SNOMED CT description id as a code ($lookup, $validate-code) | unknown code | unknown code; the message (and ValueSet/$validate-code an information issue) names the concept the description belongs to |
 | SNOMED CT ECL `{{ D id = <description id> }}` | the concepts of those descriptions | the same |
 | SNOMED CT reference set whose members are descriptions (`^ R`, `concept in R`) | not compared on these editions | the concepts of the member descriptions |
 | the opioid imported-value-set `$expand` (mix line 1685) | 422 too-costly, at its 20 s limit | 200 in 0.1 s |
