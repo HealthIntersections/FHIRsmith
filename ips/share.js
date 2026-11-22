@@ -26,6 +26,7 @@
 const crypto = require('crypto');
 const jose = require('jose');
 const qrcode = require('qrcode-generator');
+const zlib = require('zlib');
 const { dispatch } = require('./tx-client');
 
 const DEFAULT_VIEWER = 'https://viewer.tcpdev.org/#';
@@ -182,6 +183,50 @@ function qrSvg(text) {
 }
 
 /**
+ * A QR code (error correction L) as a PNG: black on white, 1 bit grey, `scale` pixels a module,
+ * a 4 module quiet zone. For the API ($document), where the web page has the SVG.
+ * @returns {Buffer}
+ */
+function qrPng(text, scale = 8) {
+  const qr = qrcode(0, 'L');
+  qr.addData(text);
+  qr.make();
+  const margin = 4;
+  const n = qr.getModuleCount();
+  const size = (n + 2 * margin) * scale;
+  const rowBytes = Math.ceil(size / 8);
+  const raw = Buffer.alloc((rowBytes + 1) * size, 0);
+  for (let y = 0; y < size; y++) {
+    const row = y * (rowBytes + 1);
+    raw[row] = 0; // filter: none
+    for (let x = 0; x < size; x++) {
+      const mx = Math.floor(x / scale) - margin;
+      const my = Math.floor(y / scale) - margin;
+      const dark = mx >= 0 && my >= 0 && mx < n && my < n && qr.isDark(my, mx);
+      // 1 bit grey: 1 is white
+      if (!dark) {
+        raw[row + 1 + (x >> 3)] |= 0x80 >> (x & 7);
+      }
+    }
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(body));
+    return Buffer.concat([len, body, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 1; // bit depth
+  ihdr[9] = 0; // greyscale
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/**
  * Is this SHL server URL this server's own shl module: http(s), the host of hostName or of
  * publicUrl, and the path /shl? (Then the ips module calls it in process, as this server.)
  * @param {string} server - modules.ips.shl.server
@@ -211,4 +256,4 @@ function isOwnShlServer(server, { hostName, publicUrl } = {}) {
   return hosts.has(u.host.toLowerCase()) && u.pathname.replace(/\/+$/, '') === '/shl';
 }
 
-module.exports = { ShlClient, qrSvg, isOwnShlServer, DEFAULT_VIEWER, DEFAULT_DAYS, MAX_SHARE_BYTES };
+module.exports = { ShlClient, qrSvg, qrPng, isOwnShlServer, DEFAULT_VIEWER, DEFAULT_DAYS, MAX_SHARE_BYTES };

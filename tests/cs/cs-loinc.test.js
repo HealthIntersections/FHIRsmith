@@ -1519,6 +1519,26 @@ describe('LOINC Provider', () => {
       expect(mappingProps(params).map(p => p.value.code)).toEqual(['10828004']);
     });
 
+    // A code-valued property carries the display of the code it names as its description,
+    // so a reader of the $lookup response needn't look each code up
+    test('code-valued properties have the code\'s display as their description', async () => {
+      const params = [];
+      await provider.extendLookup('100007-4', ['COMPONENT'], params);
+      const component = params.find(p => p.name === 'property' && p.part[0].valueCode === 'COMPONENT');
+      expect(component.part.find(x => x.name === 'value').valueCode).toBe('LP430726-2');
+      expect(component.part.find(x => x.name === 'description').valueString)
+        .toBe('Demonstrates knowledge of pain management');
+
+      const parents = [];
+      await provider.extendLookup('LP14355-9', ['parent'], parents);
+      const parent = parents.find(p => p.name === 'property' && p.part[0].valueCode === 'parent');
+      expect(parent.part.find(x => x.name === 'description').valueString).toBe('Renal function');
+    });
+
+    test('expansion properties do not carry the description', async () => {
+      expect(await provider.properties('100007-4', ['COMPONENT'])).toEqual([{ code: 'COMPONENT', valueCode: 'LP430726-2' }]);
+    });
+
     // LP14355-9 Creatinine is listed under LP31398-8 Renal function on two paths in
     // ComponentHierarchyBySystem. It has that parent once, and is that part's child once
     test('a part listed twice under the same parent has it as parent once', async () => {

@@ -94,6 +94,30 @@ limit). The submitter's IP address is recorded, for tracing abuse, and never ret
     GET /ips/{code}/Bundle?{params}      search
     GET /ips/{code}/metadata             CapabilityStatement
 
+`$document` gives the API what the source view's banner gives a browser
+([OperationDefinition](OperationDefinition-ips-document.json), referred to from the
+CapabilityStatement):
+
+    GET /ips/{code}/Bundle/{id}/$document?source=modified&system-sign=true&patient-notes=true
+    POST /ips/{code}/Bundle/{id}/$document    (a Parameters resource)
+
+Parameters: `source` (`original`, the default, or `modified`), and the booleans `user-sign`
+(as the owner of the API token in `Authorization: Bearer` - 401 without one, 409 if they have
+no key pair to sign with), `system-sign`, `patient-notes` (the patient's comments; nothing
+added, and no error, when there are none) and `regenerate-narrative`. The copy is made as the
+web page makes it: any patient notes section (LOINC 51855-5) removed, the narrative regenerated,
+signed, then the patient's comments added as the first section (not signed). What comes back is
+chosen by `Accept`, or `_format` (a short name or the mime type): `application/fhir+json` or
+`application/json` (`json`, the default), `application/zip` (`zip`), `application/pdf`
+(`pdf`), `application/smart-health-link` (`shl`) or `application/verified-health-link`
+(`vhl`); anything else is 406. The ZIP and the PDF are made on the server (`ips/export.js`):
+the PDF is the same content as the browser's - the title, the patient, the date and each
+section's narrative, with the document attached - laid out as text in the standard PDF fonts
+(tables as rows of cells, no images; characters outside Windows-1252 show as `?`). An SHL or
+VHL answer is the QR code as a PNG, with the link it carries in `X-Health-Link`, the manifest in
+`X-Health-Link-Manifest` and the expiry in `X-Health-Link-Expires`. `$document` shares the
+rate limit of sharing and of the web page's signed downloads.
+
 A browser (or `_format=html`) gets pages: `/ips/{code}` is the project's page - its name
 and description in a banner, "Submit a document" (and, for managers, "Settings") buttons,
 the filterable list (patient name, gender, document date, document id or patient identifier,
@@ -101,8 +125,12 @@ processing status; the FHIR parameters below work there too), and at the foot a
 documentation section with the endpoint's URL, the CapabilityStatement link and a table of
 the requests it answers - and `/ips/{code}/Bundle/{id}` shows the document.
 The document page's header names the patient, the document's date, when and how it was
-received and its size, with links to the FHIR JSON and to download it (`?download=1`, sent
-as an attachment named `ips-{code}-{id}.json`). Below it, the processing pipeline is shown
+received and its size, with a link to the FHIR JSON. The source view has a banner of what
+can be done with the copy it shows (the original, or the modified copy): download it - as JSON
+(`?download=1`, sent as an attachment named `ips-{code}-{id}.json`; `&source=modified` for the
+modified copy, `ips-{code}-{id}-modified.json`), a ZIP, or a PDF with the document attached (both
+made in the browser, by `doc-actions.js`, as the editors make them) - and share it as an SHL or
+a VHL, when sharing is set up. Below the header, the processing pipeline is shown
 as one connected line: Received, then each step in the order it runs, coloured by where it
 is (tick: done, cross: failed, gear: running, moon: waiting - the step's note, or for
 managers the reason it failed, on hover); each step links to the view that shows its work.
@@ -187,7 +215,7 @@ takes submitted documents in turn, marks each `processing`, runs the pipeline's 
 it (`ips/pipeline.js`), and marks it `processed` with the steps' notes, or `error` with the
 message of the step that failed. Each step's own state (`waiting`, `running`, `done` or
 `failed`, with its note or error) is kept in its result row as it goes, which is what the
-document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
+document page's step line shows; processing again clears every step's result first. The pipeline, in order, will be: check the document's **signatures**; determine the document's **jurisdiction**; **analyse** each resource; **translate** CodeableConcepts
 to the international terminologies; generate the **narrative**; **validate** the document; validate it against the
 **national profiles**; measure its quality with PIQI; check it against the **clinical profiles**; **assess** it with AI; and run it into the [**reports**](#reports). Translation, the narrative,
 validation, the analysis, the national profiles, the **terminology check**, the clinical profiles check and the AI assessment exist so far (PIQI does not). A step keeps what it finds in one of two places: as a result stored against the
@@ -209,9 +237,47 @@ failed, nor when it was skipped (its result says `skipped`). The page refreshes 
 seconds unless that is turned off (remembered in the browser). Managers can
 queue a document again from its page, though not while it is being processed.
 
+### Signatures
+
+The first step (`ips/pipeline.js`, `signatures`) checks the document's signatures, with `verify()` in
+`ips/signatures.js` - whose header is the contract for it: the document (a copy of it as stored), a KeyProvider,
+and when the server received the document; it returns a list of outcomes, each a status (`error`, `warning`,
+`information`), the key id it is about (or none), and a description. The KeyProvider (`ips/signature-keys.js`)
+finds keys by id (`getKeyById`) or by the public key a signature carries (`getKeyByPublicKey`, so a key in a
+signature's certificate is still checked against the key store, where it may have been revoked), in the server's
+key store ([library/keystore](../library/keystore/README.md)); with the key store off, it knows no keys. The
+outcomes are kept as the step's result and shown at the top of the analysis view.
+
+Signing is `sign()` in the same file. The source view's banner has Sign choices above the downloads and shares:
+the logged in user (enabled when they have a key pair, in the key store, of one of the types
+`signatures.signingKeyTypes` lists) and the system (enabled when it has one). With either ticked, the JSON, ZIP and
+PDF downloads and the SHL and VHL shares are of a signed copy of whichever copy is shown, made by the server when
+asked (`POST {document}/signed`, `{source, user, system}`; the share forms' `signUser` and `signSystem`) and not
+kept: the server loads the private keys from the key store (each load is logged there) and gives `sign()` the
+document and a signer for each - the public key (as the KeyProvider gives it), the private key, and the key's
+permalink (`/keys/key/{id}`). Signing as yourself needs a login (and, as every logged in post, the CSRF token);
+the system signs for anyone, but no more often than `signing.systemSeconds` (10) apart for any one address. The
+choices need scripts, and a public URL for the keys' links (`auth.publicUrl`, or `hostName` - never the request's
+Host, which anyone can set): without one, there is no signing. What the signatures say: the system's, only that the
+document hasn't been changed since it left this server - nothing about where it came from, or whether it is right;
+the user's, that they asked for it to be signed, and it names them (`sign()` gets their name, login and email).
+`verify()` makes no network requests (it gets keys from the KeyProvider, or the signature itself), and has 60
+seconds; `sign()` has 30. `sign()` is not written yet: it gives the document back as it was. They don't go into the document's
+status line, and a check that fails is an error outcome, not a failed step. `verify()` itself is not written yet: it
+says so, as an information outcome.
+
+Patient notes: `verify()` gets the document without any patient notes section (LOINC 51855-5),
+since a copy downloaded or shared with the patient's comments has them added there after
+signing. And a patient notes section the document arrives with becomes its patient comment (the
+Patient Comments tab), its narrative converted to markdown with
+[turndown](https://github.com/mixmark-io/turndown) (`ips/patient-comments.js`): pure markdown -
+text that looks like HTML is escaped, a table row becomes its cells with ` | ` between, images are
+dropped - and at most 30000 characters. Only when the document has no comment yet: one written
+on the tab isn't overwritten by processing again.
+
 ### Jurisdiction
 
-The first step (`ips/nationality.js` - the code still calls it nationality) works out which jurisdiction the document is
+The second step (`ips/nationality.js` - the code still calls it nationality) works out which jurisdiction the document is
 from, as far as the document says. Jurisdiction rather than nation, because there are IPS specifications at smaller
 (Canadian provinces) and bigger (the EU) levels than a nation. Few national IGs give a way to tell, so this is a short list of signs, to grow as more are found:
 
@@ -228,7 +294,7 @@ decided, and why.
 
 ### Analysis
 
-The first step (`ips/analysis.js`), over the document as submitted. It walks the same tree
+The analysis step (`ips/analysis.js`), over the document as submitted. It walks the same tree
 as the structure view (`ips/structure.js`) and, for each resource there (once, where it is
 first met; contained resources too) and for the Composition section by section (the
 Composition itself without its sections), keeps a list of findings, by the node's key
@@ -379,7 +445,7 @@ fatal issues). A profile whose package can't be loaded, or that the validator ca
 reason and counts as not checked; it doesn't stop the pipeline. With no national profiles there is nothing to do, and no
 validator is needed; with some, the step fails, as validation does, without a configured, running validator.
 
-The document's **National Profiles** view lists the profiles as they were when the document was processed, with the
+The document's **Jurisdictional Profiles** view lists the profiles as they were when the document was processed, with the
 outcome (passed, failed, or not checked) and the issue counts for each; a profile's page shows its validation as the
 validation view shows the base validation (`?view=national&np={n}`). The packages loaded for national profiles stay
 loaded in the validator alongside its own (`packages`), so two national IGs that define the same things differently can

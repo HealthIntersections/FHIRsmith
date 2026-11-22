@@ -12,6 +12,8 @@ const zlib = require('zlib');
 const tar = require('tar');
 const axios = require('axios');
 const { VersionUtilities } = require('../library/version-utilities');
+const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('./package-limits');
+const { EntryNames, pathProblem } = require('./package-names');
 
 const DEFAULT_ROOT_URL = 'https://build.fhir.org';
 const DEFAULT_CI_QUERY_INTERVAL = 1000 * 60 * 60; // 1 hour
@@ -663,20 +665,79 @@ class PackageManager {
         // Ensure cache folder exists
         await fs.mkdir(this.cacheFolder, { recursive: true });
 
-        // Create package folder
-        await fs.mkdir(packagePath, { recursive: true });
+        // The package is extracted into a folder of its own, and only renamed into place once it
+        // is all there: one that fails part way - a decompression bomb stopped at the limit, or a
+        // broken tarball - leaves nothing that checkCache would take for the package
+        const partial = await fs.mkdtemp(`${packagePath}.partial-`);
+        try {
+            await this.extractTgz(packageName, packageData, partial);
+        } catch (e) {
+            await fs.rm(partial, { recursive: true, force: true });
+            throw e;
+        }
+        try {
+            await fs.rename(partial, packagePath);
+        } catch (e) {
+            if (await this.checkCache(packageId, version)) {
+                // fetched at the same time by something else, which got there first
+                await fs.rm(partial, { recursive: true, force: true });
+            } else {
+                // an empty or broken folder left by an earlier failure
+                await fs.rm(packagePath, { recursive: true, force: true });
+                await fs.rename(partial, packagePath);
+            }
+        }
+        return packageName;
+    }
 
-        // Extract tar.gz
+    /**
+     * Unpacks a .tgz into a folder, refusing a package that unzips to more than
+     * MAX_UNPACKED_BYTES (it stops as soon as it passes that), or that has a name with a ..
+     * segment or two files of the same name (see library/package-names.js)
+     * @param {string} packageName - for the error message
+     * @param {Buffer} packageData - Package tar.gz data
+     * @param {string} folder - where to unpack it
+     * @returns {Promise<void>}
+     */
+    extractTgz(packageName, packageData, folder) {
         return new Promise((resolve, reject) => {
             const gunzip = zlib.createGunzip();
+            const names = new EntryNames();
+            let unpacked = 0;
+            let failed = false;
             const extract = tar.extract({
-                cwd: packagePath,
-                strict: true
+                cwd: folder,
+                strict: true,
+                filter: (entryPath, entry) => {
+                    const problem = failed ? null : pathProblem(entryPath) || (entry.type === 'Directory' ? null : names.add(entryPath));
+                    if (problem) {
+                        fail(new Error(`Package ${packageName}: ${problem}`));
+                    }
+                    return !failed;
+                }
             });
+            const fail = (e) => {
+                if (!failed) {
+                    failed = true;
+                    gunzip.unpipe(extract);
+                    gunzip.destroy();
+                    reject(e);
+                }
+            };
 
-            gunzip.on('error', reject);
-            extract.on('error', reject);
-            extract.on('finish', () => resolve(packageName));
+            gunzip.on('data', (chunk) => {
+                unpacked += chunk.length;
+                if (unpacked > MAX_UNPACKED_BYTES) {
+                    fail(new Error(`Package ${packageName} unzips to more than the limit of ${MAX_UNPACKED_MB} MB`));
+                }
+            });
+            gunzip.on('error', fail);
+            extract.on('error', fail);
+            extract.on('finish', () => {
+                if (!failed) {
+                    resolve();
+                }
+            });
 
             // Create a readable stream from the buffer and pipe through gunzip to tar
             const stream = require('stream');

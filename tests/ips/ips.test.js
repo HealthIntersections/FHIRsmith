@@ -450,7 +450,8 @@ describe('the web pages', () => {
     expect(page.text).toContain('No known medications');
     expect(page.text).toContain('<a class="ips-step ips-step-waiting" title="validation - waiting" href="/ips/demo/Bundle/1?view=validation"><span class="ips-step-icon">&#9790;</span> Validation</a>');
     expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=narrative">Narrative</a></li>');
-    expect(page.text).toContain('<a href="/ips/demo/Bundle/1?download=1">Download</a>');
+    // downloading is in the source view's banner, not the facts
+    expect(page.text).not.toContain('?download=1');
     expect(page.text).not.toContain('Process again');
     const term = await html('/ips/demo/Bundle/1?view=terminology');
     expect(term.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=terminology">Terminology</a></li>');
@@ -473,13 +474,32 @@ describe('the web pages', () => {
     expect(structure.text).toContain('<td><b>Medication Summary</b> <i>(empty)</i></td>');
     // the tabs, in order
     expect([...page.text.matchAll(/<li(?: class="active")?><a href="\/ips\/demo\/Bundle\/1\?view=[a-z]+">([^<]+)<\/a><\/li>/g)].map(m => m[1]))
-      .toEqual(['Narrative', 'Structure', 'Analysis', 'Translation', 'Terminology', 'Validation', 'National Profiles', 'Clinical Profiles', 'AI Assessment', 'Source']);
+      .toEqual(['Narrative', 'Structure', 'Analysis', 'Translation', 'Terminology', 'Validation', 'Jurisdictions', 'Clinical Profiles', 'AI Check', 'Patient Comments', 'Source']);
     expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=narrative" class="active" title="The narrative in the document as it was submitted">Provided</a>');
     expect((await html('/ips/demo/Bundle/9')).status).toBe(404);
     const dl = await request(app).get('/ips/demo/Bundle/1?download=1').set('Accept', 'text/html');
     expect(dl.headers['content-type']).toMatch(/fhir\+json/);
     expect(dl.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.json"');
     expect(dl.body.resourceType).toBe('Bundle');
+    // the modified copy: not until the document has been processed
+    expect((await request(app).get('/ips/demo/Bundle/1?download=1&source=modified')).status).toBe(404);
+    const modified = structuredClone(mod.store.read(1).bundle);
+    modified.id = 'modified-copy';
+    mod.store.saveAnalysed(1, modified);
+    const dlm = await request(app).get('/ips/demo/Bundle/1?download=1&source=modified').set('Accept', 'text/html');
+    expect(dlm.headers['content-disposition']).toBe('attachment; filename="ips-demo-1-modified.json"');
+    expect(dlm.body.id).toBe('modified-copy');
+    expect((await request(app).get('/ips/demo/Bundle/1?_format=json&source=modified')).body.id).toBe('modified-copy');
+    // the source view's banner: download (JSON a link; ZIP and PDF made in the browser) and share
+    const source = await html('/ips/demo/Bundle/1?view=source');
+    expect(source.text).toContain('<div class="ips-doc-banner-group"><span class="ips-doc-banner-label">Download</span><a class="btn btn-default ips-download-json" href="/ips/demo/Bundle/1?download=1" title="this document (FHIR JSON)">JSON</a>');
+    expect(source.text).toContain('data-kind="zip"');
+    expect(source.text).toContain('data-kind="pdf"');
+    expect(source.text).toContain('data-name="ips-demo-1"');
+    expect(source.text).toContain('/doc-actions.js');
+    const sourceModified = await html('/ips/demo/Bundle/1?view=source&source=modified');
+    expect(sourceModified.text).toContain('href="/ips/demo/Bundle/1?download=1&amp;source=modified"');
+    expect(sourceModified.text).toContain('data-name="ips-demo-1-modified"');
     const fhir = await request(app).get('/ips/demo/Bundle/1?_format=json').set('Accept', 'text/html');
     expect(fhir.headers['content-type']).toMatch(/fhir\+json/);
   });
@@ -1216,7 +1236,7 @@ describe('the national profiles step', () => {
     expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'national profiles: none' });
     expect(mod.store.readResult(1, 'national').result).toMatchObject({ profiles: [] });
     const page = await request(app).get('/ips/demo/Bundle/1?view=national').set('Accept', 'text/html');
-    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=national">National Profiles</a></li>');
+    expect(page.text).toContain('<li class="active"><a href="/ips/demo/Bundle/1?view=national">Jurisdictions</a></li>');
     expect(page.text).toContain('There were no <a href="/ips/national-profiles">national profiles</a> to validate the document against');
   });
 
@@ -1635,7 +1655,7 @@ describe('the terminology step', () => {
 
   test('the translate step adds the translations of concepts that fail the check, before validation, and the check then passes', async () => {
     mod.steps = STEPS.filter(s => s.name === 'translate' || s.name === 'terminology');
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+    expect(STEPS.map(s => s.name)).toEqual(['signatures', 'nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
     await post(app, 'demo', withCondition({ coding: [{ system: 'http://loinc.org', code: 'LA-mod', display: 'Moderate' }] }));
     await mod.processQueue();
     const row = mod.store.read(1);
@@ -2002,7 +2022,7 @@ describe('the AI assessment step', () => {
     expect(r.cost).toBeCloseTo(0.0004, 8);
     expect(r.bytesSent).toBeGreaterThan(1000);
     const page = await aiView(2);
-    expect(page).toContain('<li class="active"><a href="/ips/demo/Bundle/2?view=ai">AI Assessment</a></li>');
+    expect(page).toContain('<li class="active"><a href="/ips/demo/Bundle/2?view=ai">AI Check</a></li>');
     expect(page).toContain("by server-model-2026 (openai, the server's account), without the narrative");
     expect(page).toContain('100 tokens in, 20 out ($0.0004)');
     expect(page).toContain('<span class="ips-badge ips-grade" style="background-color: #1e7e34">Grade A</span> Consistent (');
@@ -2186,13 +2206,58 @@ describe('sharing as SHL / VHL', () => {
   });
   afterEach(() => mod.shutdown());
 
+  test('shares a document with the patient\'s comments as its first section, when asked', async () => {
+    await post(app, 'demo', ips());
+    mod.store.savePatientComment(1, 'Not *my* allergy', 'Jane');
+    const share = (comments) => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org')
+      .set('Accept', 'application/json').type('form').send({ kind: 'shl', comments });
+    const shared = async (r) => {
+      const payload = JSON.parse(Buffer.from(r.body.text.substring(r.body.text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+      const jwe = Buffer.from(mod.shlEntries.get(payload.url.split('/').pop()).files[0].cnt, 'base64').toString('utf8');
+      return JSON.parse(Buffer.from((await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'))).plaintext).toString('utf8'));
+    };
+    let r = await share('1');
+    expect(r.status).toBe(200);
+    const first = (await shared(r)).entry[0].resource.section[0];
+    expect(first.title).toBe('Patient\'s Comments');
+    expect(first.text).toEqual({ status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Not <em>my</em> allergy</p></div>' });
+    // not asked: as stored
+    r = await share('');
+    expect(await shared(r)).toEqual(mod.store.read(1).bundle);
+    // asked, with none
+    mod.store.savePatientComment(1, '', 'Jane');
+    expect((await share('1')).status).toBe(409);
+  });
+
+  test('$document as an SHL or VHL: the QR code as a PNG, the link in headers; the shared copy is the prepared one', async () => {
+    await post(app, 'demo', ips());
+    mod.store.savePatientComment(1, 'Mine', 'Jane');
+    const png = (r) => r.buffer(true).parse((res, cb) => { const c = []; res.on('data', d => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
+    let r = await png(request(app).get('/ips/demo/Bundle/1/$document?patient-notes=true').set('Host', 'example.org').set('Accept', 'application/smart-health-link'));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('image/png');
+    expect(r.body.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+    const text = r.headers['x-health-link'];
+    expect(text.startsWith('https://viewer.example.org/#shlink:/')).toBe(true);
+    expect(r.headers['x-health-link-manifest']).toBe('https://example.org/shl/access/u1');
+    expect(new Date(r.headers['x-health-link-expires']).getTime()).toBeGreaterThan(Date.now());
+    const payload = JSON.parse(Buffer.from(text.substring(text.indexOf('shlink:/') + 8), 'base64url').toString('utf8'));
+    const jwe = Buffer.from(mod.shlEntries.get('u1').files[0].cnt, 'base64').toString('utf8');
+    const shared = JSON.parse(Buffer.from((await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'))).plaintext).toString('utf8'));
+    expect(shared.entry[0].resource.section[0].title).toBe('Patient\'s Comments');
+    r = await png(request(app).get('/ips/demo/Bundle/1/$document?_format=vhl').set('Host', 'example.org'));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('image/png');
+    expect(calls.some(c => c.sign)).toBe(true);
+  });
+
   test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
     await post(app, 'demo', ips());
     // the buttons are on the source view, under the original / modified switch
-    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('class="ips-inline ips-share-form"');
     const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
-    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">Share as SHL</button>');
-    expect(page.text).toContain('Share as VHL</button>');
+    expect(page.text).toContain('<input type="hidden" name="source" value="original"/><input type="hidden" name="kind" value="shl"/><input type="hidden" name="signUser" value=""/><input type="hidden" name="signSystem" value=""/><input type="hidden" name="comments" value=""/><input type="hidden" name="narrative" value=""/><button type="submit" class="btn btn-default" title="A SMART Health Link to this document, as a QR code">SHL</button>');
+    expect(page.text).toContain('as a QR code">VHL</button>');
     expect(page.text).toContain('id="ips-share"');
     const r = await request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' });
     expect(r.status).toBe(200);
@@ -2222,6 +2287,37 @@ describe('sharing as SHL / VHL', () => {
     expect(html.text).toContain('<textarea class="ips-share-text" readonly rows="3">https://viewer.example.org/#shlink:/');
   });
 
+  test('shares a signed copy when asked: the system signs (rate limited); with no key, not shared', async () => {
+    const signatures = require('../../ips/signatures');
+    const keystore = require('../../library/keystore');
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    auth.config.publicUrl = 'https://fhir.example.org';
+    try {
+      await post(app, 'demo', ips());
+      const share = (extra) => request(app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org')
+        .set('Accept', 'application/json').type('form').send({ kind: 'shl', source: 'original', ...extra });
+      const none = await share({ signSystem: '1' });
+      expect(none.status).toBe(409);
+      expect(none.body.error).toMatch(/The system has no EC P-256 or EC P-384 or Ed25519 or RSA key pair/);
+      await keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
+      mod.config.signing = { systemSeconds: 0 };
+      const spy = jest.spyOn(signatures, 'sign').mockImplementation(async (bundle, signers) => ({ ...bundle, signature: { who: signers.system.url } }));
+      const ok = await share({ signSystem: '1' });
+      expect(ok.status).toBe(200);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy.mock.calls[0][1].user).toBeNull();
+      // the link is from the configuration, not the request's Host (example.org)
+      expect(spy.mock.calls[0][1].system.url).toMatch(/^https:\/\/fhir\.example\.org\/keys\/key\/SHA256%3A/);
+      expect(spy.mock.calls[0][1].system.identity).toBeNull();
+      // not signed unless asked
+      await share({ signSystem: '' });
+      expect(spy).toHaveBeenCalledTimes(1);
+      spy.mockRestore();
+    } finally {
+      keystore.shutdown();
+    }
+  });
+
   test('shares the modified copy of a document, once there is one', async () => {
     await post(app, 'demo', ips());
     const form = { kind: 'shl', source: 'modified' };
@@ -2232,13 +2328,13 @@ describe('sharing as SHL / VHL', () => {
     expect(none.body.error).toMatch(/has not been processed yet/);
     const empty = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
     expect(empty.text).toContain('it has not been processed yet');
-    expect(empty.text).not.toContain('Share as SHL');
+    expect(empty.text).not.toContain('class="ips-inline ips-share-form"');
     const modified = structuredClone(mod.store.read(1).bundle);
     modified.id = 'modified-copy';
     mod.store.saveAnalysed(1, modified);
     const page = await request(app).get('/ips/demo/Bundle/1?view=source&source=modified').set('Accept', 'text/html');
     expect(page.text).toContain('<a href="/ips/demo/Bundle/1?view=source&amp;source=modified" class="active"');
-    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">Share as SHL</button>');
+    expect(page.text).toContain('<input type="hidden" name="source" value="modified"/><input type="hidden" name="kind" value="shl"/><input type="hidden" name="signUser" value=""/><input type="hidden" name="signSystem" value=""/><input type="hidden" name="comments" value=""/><input type="hidden" name="narrative" value=""/><button type="submit" class="btn btn-default" title="A SMART Health Link to the modified copy of this document, as a QR code">SHL</button>');
     expect(page.text).toContain('&quot;modified-copy&quot;');
     const r = await share();
     expect(r.status).toBe(200);
@@ -2289,7 +2385,7 @@ describe('sharing as SHL / VHL', () => {
     const other = await makeApp();
     other.mod.store.createProject('demo', 'Demo', null);
     await post(other.app, 'demo', ips());
-    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('Share as SHL');
+    expect((await request(other.app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html')).text).not.toContain('class="ips-inline ips-share-form"');
     expect((await request(other.app).post('/ips/demo/Bundle/1/share').set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').type('form').send({ kind: 'shl' })).status).toBe(404);
     other.mod.shutdown();
   });
@@ -3147,7 +3243,7 @@ describe('the profiles step', () => {
   });
 
   test('runs after the terminology step and before the AI step', () => {
-    expect(STEPS.map(s => s.name)).toEqual(['nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
+    expect(STEPS.map(s => s.name)).toEqual(['signatures', 'nationality', 'analysis', 'translate', 'narrative', 'validation', 'national', 'terminology', 'profiles', 'ai', 'reports']);
   });
 });
 
@@ -3166,6 +3262,18 @@ describe('the module reads its own request bodies', () => {
     mod.store.setProjectToken(mod.store.projectByCode('closed').id, 'the-token');
   });
   afterEach(() => mod.shutdown());
+
+  test('$document reads its own Parameters (POST)', async () => {
+    await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()));
+    const id = mod.store.list(mod.store.projectByCode('open').id)[0].id;
+    const r = await request(app).post(`/ips/open/Bundle/${id}/$document`).set('Content-Type', 'application/fhir+json')
+      .send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'source', valueCode: 'original' }] }));
+    expect(r.status).toBe(200);
+    expect(r.body.resourceType).toBe('Bundle');
+    const bad = await request(app).post(`/ips/open/Bundle/${id}/$document`).set('Content-Type', 'application/fhir+json')
+      .send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'source', valueCode: 'both' }] }));
+    expect(bad.status).toBe(400);
+  });
 
   test('a document arrives as fhir+json or json, no bigger than maxSize, and the token comes first', async () => {
     const r1 = await request(app).post('/ips/open/Bundle').set('Content-Type', 'application/fhir+json').send(JSON.stringify(ips()));
@@ -3350,8 +3458,8 @@ describe('the nationality step', () => {
     expect(nationalityText(both)).toMatch(/^Jurisdiction unknown: the document has signs of more than one jurisdiction \(US: US Core extension is used \(us-core-race\) - AU: the Bundle claims/);
   });
 
-  test('the step runs first, and the nation shows on the list, the document banner and the analysis', async () => {
-    expect(STEPS[0].name).toBe('nationality');
+  test('the step runs second (after the signatures), and the nation shows on the list, the document banner and the analysis', async () => {
+    expect(STEPS[1].name).toBe('nationality');
     mod.steps = STEPS.filter(s => s.name === 'nationality' || s.name === 'analysis');
     await post(app, 'demo', ips({ meta: { profile: [US_PCS] } }));
     await post(app, 'demo', ips());
@@ -3445,6 +3553,13 @@ describe('the analysis step', () => {
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: false }, has], false)).toBe(false);
     expect(analysisOk([{ kind: 'modifier', url: 'http://example.org/x', found: true }, has], false)).toBe(false);
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, none], true)).toBe(false);
+    // why a section is empty is not a problem (as stored before it had a kind of its own, too); the narrative still counts
+    const empty = { kind: 'empty', text: 'Empty: Not Asked' };
+    expect(analysisOk([empty, has], true)).toBe(true);
+    expect(analysisOk([{ kind: 'note', text: 'Empty: Not Asked' }, has], true)).toBe(true);
+    expect(analysisOk([empty, none], true)).toBe(false);
+    // other notes are (a section's author that isn't its container's)
+    expect(analysisOk([{ kind: 'note', text: 'The author (x) is not the Composition\'s' }, has], true)).toBe(false);
     expect(analysisOk([], false)).toBe(false);
     expect(analysisOk(undefined, false)).toBe(false);
   });
@@ -3746,6 +3861,66 @@ describe("a document's page title", () => {
   });
 });
 
+describe('patient comments', () => {
+  test('anyone can see the comment; anyone logged in can write, replace and remove it', async () => {
+    const { app, mod } = await makeApp();
+    try {
+      mod.store.createProject('demo', 'Demo', null);
+      await post(app, 'demo', ips());
+      const page = (agent) => agent.get('/ips/demo/Bundle/1?view=comments').set('Accept', 'text/html');
+
+      // not logged in: the tab and its explanation, no comment, no form, and no posting
+      let res = await page(request(app));
+      expect(res.status).toBe(200);
+      expect(res.text).toContain('Patient Comments');
+      expect(res.text).toContain('comments the patient wishes to make about the accuracy or appropriateness');
+      expect(res.text).toContain('made no comments');
+      expect(res.text).not.toContain('name="comment"');
+      expect((await request(app).post('/ips/demo/Bundle/1/comment').type('form').send({ comment: 'x' })).status).toBe(403);
+      expect(mod.store.patientComment(1)).toBeNull();
+
+      // any logged in user writes it: pure markdown, no HTML at all (block or inline); autolinks are markdown
+      await makeUser('jane', 'password1', { name: 'Jane Smith' });
+      const jane = (await loginAs(app, 'jane', 'password1')).agent;
+      expect((await page(jane)).text).toContain('name="comment"');
+      for (const bad of ['I had asthma.\n\n<script>alert(1)</script>', 'I <b>never</b> had asthma', '<!-- hidden -->', '<div>\nx\n</div>']) {
+        res = await form(jane, '/ips/demo/Bundle/1/comment', { comment: bad });
+        expect(res.status).toBe(400);
+        expect(res.text).toContain('only pure markdown is allowed');
+      }
+      expect(mod.store.patientComment(1)).toBeNull();
+      res = await form(jane, '/ips/demo/Bundle/1/comment', { comment: 'I **never** had asthma: see <https://example.org/x> and 2 < 3.\r\n' });
+      expect(res.status).toBe(302);
+      expect(res.headers.location).toBe('/ips/demo/Bundle/1?view=comments&saved=1');
+      expect(mod.store.patientComment(1)).toMatchObject({ markdown: 'I **never** had asthma: see <https://example.org/x> and 2 < 3.\n', by: 'Jane Smith' });
+      res = await page(request(app));
+      expect(res.text).toContain('I <strong>never</strong> had asthma: see <a href="https://example.org/x">https://example.org/x</a> and 2 &lt; 3.');
+      expect(res.text).toContain('by Jane Smith');
+
+      // one per document: saving again replaces it; processing again leaves it; empty removes it
+      await form(jane, '/ips/demo/Bundle/1/comment', { comment: 'Second thoughts' });
+      expect(mod.store.patientComment(1).markdown).toBe('Second thoughts');
+      mod.store.requeue(1, mod.store.projectByCode('demo').id);
+      mod.store.clearResults(1);
+      expect(mod.store.patientComment(1).markdown).toBe('Second thoughts');
+      await form(jane, '/ips/demo/Bundle/1/comment', { comment: '   ' });
+      expect(mod.store.patientComment(1)).toBeNull();
+
+      // no such document; too long; no CSRF token
+      expect((await form(jane, '/ips/demo/Bundle/99/comment', { comment: 'x' })).status).toBe(404);
+      expect((await form(jane, '/ips/demo/Bundle/1/comment', { comment: 'x'.repeat(30001) })).status).toBe(400);
+      expect((await jane.post('/ips/demo/Bundle/1/comment').type('form').send({ comment: 'x' })).status).toBe(403);
+
+      // deleting the document deletes its comment
+      await form(jane, '/ips/demo/Bundle/1/comment', { comment: 'Kept until the document goes' });
+      mod.store.delete(1, mod.store.projectByCode('demo').id);
+      expect(mod.store.db.prepare('SELECT COUNT(*) AS n FROM patient_comments').get().n).toBe(0);
+    } finally {
+      mod.shutdown();
+    }
+  });
+});
+
 describe('patients: matching, the Patient endpoint, $summary', () => {
   let app;
   let mod;
@@ -3887,5 +4062,499 @@ describe('patients: matching, the Patient endpoint, $summary', () => {
     const p = cs.rest[0].resource.find(r => r.type === 'Patient');
     expect(p.interaction.map(i => i.code)).toEqual(['read', 'search-type']);
     expect(p.operation).toEqual([{ name: 'summary', definition: 'http://hl7.org/fhir/uv/ips/OperationDefinition/summary' }]);
+  });
+});
+
+describe('the signatures step', () => {
+  const signatures = require('../../ips/signatures');
+  const { KeyStoreKeyProvider } = require('../../ips/signature-keys');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    mod.store.createProject('demo', 'Demo', null);
+    mod.steps = STEPS.filter(s => s.name === 'signatures');
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    mod.shutdown();
+  });
+
+  test('the empty implementation says so; no note for the status line; shown at the top of the analysis view', async () => {
+    await post(app, 'demo', ips());
+    expect(await mod.processQueue()).toBe(1);
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: null });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'information', keyId: null, description: 'Signature checking is not implemented yet' }]);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('<h4>Signatures</h4>');
+    expect(page.text).toContain('>Information</span> Signature checking is not implemented yet</li>');
+    expect(page.text).toContain('title="signatures - done"');
+  });
+
+  test('verify gets a copy of the document, a key provider, and when it was received; its outcomes are kept and shown', async () => {
+    const keys = { getKeyById: async () => null, getKeyByPublicKey: async () => null };
+    mod.keyProvider = keys;
+    const spy = jest.spyOn(signatures, 'verify').mockImplementation(async (bundle, provider, options) => {
+      bundle.entry = [];
+      expect(provider).toBe(keys);
+      expect(options.receivedAt).toMatch(/^\d{4}-\d\d-\d\dT/);
+      return [
+        { status: 'error', keyId: 'SHA256:abc<d>', description: 'The signature is not valid <b>' },
+        { status: 'warning', keyId: 'k2', description: 'The key is expired but the signature was valid' }
+      ];
+    });
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(spy).toHaveBeenCalledTimes(1);
+    // the master document is as it was
+    expect(mod.store.read(1).bundle.entry.length).toBeGreaterThan(0);
+    const page = await request(app).get('/ips/demo/Bundle/1?view=analysis').set('Accept', 'text/html');
+    expect(page.text).toContain('>Error</span> <code>SHA256:abc&lt;d&gt;</code>: The signature is not valid &lt;b&gt;</li>');
+    expect(page.text).toContain('>Warning</span> <code>k2</code>: The key is expired but the signature was valid</li>');
+  });
+
+  test('verify gets the document without any patient notes section (they are added after signing)', async () => {
+    const spy = jest.spyOn(signatures, 'verify').mockResolvedValue([]);
+    const doc = ips();
+    doc.entry[0].resource.section.unshift({ title: 'Patient\'s Comments', code: { coding: [{ system: 'http://loinc.org', code: '51855-5' }] }, text: { status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml">x</div>' } });
+    await post(app, 'demo', doc);
+    await mod.processQueue();
+    expect(spy.mock.calls[0][0].entry[0].resource.section.map(x => x.title)).toEqual(['Allergies and Intolerances', 'Medication Summary']);
+    // the stored document keeps it
+    expect(mod.store.read(1).bundle.entry[0].resource.section.length).toBe(3);
+  });
+
+  test('a patient notes section becomes the patient comment, as markdown - unless there is one already', async () => {
+    jest.spyOn(signatures, 'verify').mockResolvedValue([]);
+    const notes = { title: 'Patient Notes', code: { coding: [{ system: 'http://loinc.org', code: '51855-5' }] }, text: { status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>The <b>asthma</b> is wrong</p></div>' } };
+    const doc = ips();
+    doc.entry[0].resource.section.push(notes);
+    await post(app, 'demo', doc);
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.patientComment(1)).toMatchObject({ markdown: 'The **asthma** is wrong', by: 'the document\'s patient notes section' });
+    expect(mod.store.patientComment(2)).toBeNull();
+    // processing again doesn't overwrite one written since
+    mod.store.savePatientComment(1, 'Edited', 'Jane');
+    mod.store.requeue(1, mod.store.projectByCode('demo').id);
+    await mod.processQueue();
+    expect(mod.store.patientComment(1).markdown).toBe('Edited');
+  });
+
+  test('a check that throws, or answers wrongly, is an error outcome, and processing goes on', async () => {
+    jest.spyOn(signatures, 'verify').mockRejectedValueOnce(new Error('canonicalization blew up'))
+      .mockResolvedValueOnce([{ status: 'fatal', description: 'x' }, { status: 'information', keyId: null, description: 'fine' }])
+      .mockResolvedValueOnce('nonsense');
+    mod.steps = [...STEPS.filter(s => s.name === 'signatures'), { name: 'after', run: async () => 'after ran' }];
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    await post(app, 'demo', ips());
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'after ran' });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'error', keyId: null, description: 'The signature check failed: canonicalization blew up' }]);
+    const two = mod.store.readResult(2, 'signatures').result.outcomes;
+    expect(two[0]).toMatchObject({ status: 'error', description: expect.stringContaining('not of the right form') });
+    expect(two[1]).toEqual({ status: 'information', keyId: null, description: 'fine' });
+    expect(mod.store.readResult(3, 'signatures').result.outcomes[0].description).toBe('The signature check did not return a list of outcomes');
+  });
+
+  test('the key store\'s key provider: by id, and by public key; nothing when the key store is off', async () => {
+    const crypto = require('crypto');
+    const keystore = require('../../library/keystore');
+    keystore.shutdown();
+    const off = new KeyStoreKeyProvider();
+    expect(await off.getKeyById('anything')).toBeNull();
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    try {
+      const owner = auth.principalById(await makeUser('signer', null, { name: 'Sam Signer' }));
+      const made = await keystore.create(owner, 'EC-P256');
+      const { publicKey } = crypto.generateKeyPairSync('ed25519');
+      const [uploaded] = keystore.upload(owner, publicKey.export({ type: 'spki', format: 'pem' }), { kid: 'sam-ed' });
+      keystore.revoke(owner, uploaded.id, { reason: 'lost', expires: '2026-10-01T00:00:00Z' });
+      const p = new KeyStoreKeyProvider();
+      const k = await p.getKeyById(made.key_id);
+      expect(k).toMatchObject({ keyId: made.key_id, alg: 'ES256', status: 'active', expires: null, owner: 'created by User: Sam Signer', ownerKind: 'user', origin: 'created', source: 'keystore' });
+      expect(k.key.asymmetricKeyType).toBe('ec');
+      expect(k.jwk).toMatchObject({ kty: 'EC', crv: 'P-256', kid: made.key_id });
+      // a signature made with it checks out with the key as given
+      const s = keystore.sign({ owner: owner.id, purpose: 'test:ips', payload: 'abc' });
+      expect(crypto.verify('sha256', Buffer.from('abc'), { key: k.key, dsaEncoding: 'ieee-p1363' }, s.signature)).toBe(true);
+      // a key that came in a signature's certificate: found by the key itself, revoked
+      expect(await p.getKeyByPublicKey(publicKey)).toMatchObject({ keyId: 'sam-ed', status: 'revoked', expires: '2026-10-01T00:00:00.000Z', reason: 'lost', alg: 'EdDSA', owner: 'uploaded by User: Sam Signer' });
+      expect(await p.getKeyByPublicKey(crypto.generateKeyPairSync('ed25519').publicKey)).toBeNull();
+      expect(await p.getKeyById('nope')).toBeNull();
+    } finally {
+      keystore.shutdown();
+    }
+  });
+});
+
+describe('signing a document for download', () => {
+  const signatures = require('../../ips/signatures');
+  const keystore = require('../../library/keystore');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    // signed documents link to the keys at the server's public URL
+    auth.config.publicUrl = 'https://fhir.example.org';
+    mod.store.createProject('demo', 'Demo', null);
+    await post(app, 'demo', ips());
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    keystore.shutdown();
+    mod.shutdown();
+  });
+  const signed = (agent, body, csrf) => {
+    let r = agent.post('/ips/demo/Bundle/1/signed').set('Accept', 'application/fhir+json');
+    if (csrf) {
+      r = r.set('X-CSRF-Token', csrf);
+    }
+    return r.send(body);
+  };
+
+  test('the Sign choices: you (logged in, with a key pair) and the system (with one); each disabled says why', async () => {
+    let page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<span class="ips-doc-banner-label">Sign document</span>');
+    expect(page.text).toContain('<input type="checkbox" name="sign-user" disabled/> You</label> <span class="ips-small">(<a href="/auth/login?return=');
+    expect(page.text).toContain('<input type="checkbox" name="sign-system" disabled/> System</label> <span class="ips-small">(the system has no EC-P256 or EC-P384 or Ed25519 or RSA key pair)');
+    // not on the other views
+    expect((await request(app).get('/ips/demo/Bundle/1').set('Accept', 'text/html')).text).not.toContain('Sign document');
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    const sys = await keystore.create(admin, 'EC-P256', { system: true });
+    const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
+    page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="checkbox" name="sign-user" disabled/> Administrator</label> <span class="ips-small">(you have no EC-P256 or EC-P384 or Ed25519 or RSA key pair: <a href="/keys/mine">make one</a>)');
+    expect(page.text).toContain(`<input type="checkbox" name="sign-system" data-key="${sys.key_id}"/> System</label>`);
+    const mine = await keystore.create(admin, 'Ed25519');
+    page = await agent.get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain(`<input type="checkbox" name="sign-user" data-key="${mine.key_id}"/> Administrator</label>`);
+    // the key store off: no Sign choices
+    keystore.shutdown();
+    page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).not.toContain('Sign document');
+  });
+
+  test('a signed copy: sign() gets a copy, and the signers - their public keys, private keys and permalinks; not kept', async () => {
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    await keystore.create(admin, 'EC-P256', { system: true });
+    const mine = await keystore.create(admin, 'RSA');
+    const spy = jest.spyOn(signatures, 'sign');
+    // anybody: the system, once in a while
+    let r = await signed(request(app), { source: 'original', system: true });
+    expect(r.status).toBe(200);
+    expect(r.body.resourceType).toBe('Bundle');
+    const [doc, signers] = spy.mock.calls[0];
+    expect(doc).toEqual(mod.store.read(1).bundle);
+    expect(signers.user).toBeNull();
+    expect(signers.system.key).toMatchObject({ status: 'active', origin: 'created', owner: 'created by System', ownerKind: 'system', alg: 'ES256' });
+    expect(signers.system.privateKey.type).toBe('private');
+    expect(signers.system.url).toMatch(/\/keys\/key\/SHA256%3A/);
+    r = await signed(request(app), { source: 'original', system: true });
+    expect(r.status).toBe(429);
+    expect(r.body.error).toMatch(/no more than once every 10 seconds/);
+    // yourself: logged in, with the CSRF token
+    expect((await signed(request(app), { source: 'original', user: true })).status).toBe(401);
+    const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
+    const csrf = await authCsrf(agent, '/auth/account');
+    expect((await signed(agent, { source: 'original', user: true })).status).toBe(403);
+    r = await signed(agent, { source: 'original', user: true }, csrf);
+    expect(r.status).toBe(200);
+    const [, both] = spy.mock.calls[1];
+    expect(both.system).toBeNull();
+    expect(both.user.key).toMatchObject({ keyId: mine.key_id, alg: 'RS256', owner: 'created by User: Administrator' });
+    expect(both.user.privateKey.asymmetricKeyType).toBe('rsa');
+    // signing as yourself names you
+    expect(both.user.identity).toEqual({ name: 'Administrator', login: 'admin', email: null });
+    expect(both.user.url).toBe(`https://fhir.example.org/keys/key/${encodeURIComponent(mine.key_id)}`);
+    // every load is logged
+    expect(keystore.db.db.prepare("SELECT COUNT(*) AS n FROM key_events WHERE kind = 'load' AND operation = 'ips:sign-document'").get().n).toBe(2);
+    // the modified copy: not before it is processed
+    expect((await signed(agent, { source: 'modified', user: true }, csrf)).status).toBe(409);
+    expect((await signed(agent, { source: 'original' }, csrf)).status).toBe(400);
+    // sign() refusing
+    spy.mockRejectedValueOnce(new Error('cannot canonicalize'));
+    r = await signed(agent, { source: 'original', user: true }, csrf);
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('The document could not be signed: cannot canonicalize');
+  });
+
+  test('Include Patient Comments: only when there are some; old patient notes removed before signing, the comments added after', async () => {
+    const PN = { system: 'http://loinc.org', code: '51855-5' };
+    // a document that already has a patient notes section
+    const withNotes = ips();
+    withNotes.entry[0].resource.section.push({ title: 'Old notes', code: { coding: [PN] }, text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml">old</div>' } });
+    await post(app, 'demo', withNotes);
+    const copy = (body) => request(app).post('/ips/demo/Bundle/2/signed').set('Accept', 'application/fhir+json').send(body);
+    // no comments: no choice, and none to include
+    let page = await request(app).get('/ips/demo/Bundle/2?view=source').set('Accept', 'text/html');
+    expect(page.text).not.toContain('Include Patient Comments');
+    expect((await copy({ source: 'original', comments: true })).status).toBe(409);
+    mod.store.savePatientComment(2, 'That is **not** my diagnosis', 'Jane');
+    page = await request(app).get('/ips/demo/Bundle/2?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="checkbox" name="include-comments"/> Include Patient Comments</label>');
+
+    // comments alone: anyone, no signing
+    const spy = jest.spyOn(signatures, 'sign');
+    let r = await copy({ source: 'original', comments: true });
+    expect(r.status).toBe(200);
+    expect(spy).not.toHaveBeenCalled();
+    let sections = r.body.entry[0].resource.section;
+    expect(sections.map(x => x.title)).toEqual(['Patient\'s Comments', 'Allergies and Intolerances', 'Medication Summary']);
+    expect(sections[0]).toEqual({
+      title: 'Patient\'s Comments', code: { coding: [PN] }, author: [{ reference: 'urn:uuid:pat-1' }],
+      text: { status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>That is <strong>not</strong> my diagnosis</p></div>' }
+    });
+    // the stored document is not changed
+    expect(mod.store.read(2).bundle.entry[0].resource.section.map(x => x.title)).toEqual(['Allergies and Intolerances', 'Medication Summary', 'Old notes']);
+
+    // signed too: sign() sees the document without any patient notes; the comments go in after
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    await keystore.create(admin, 'EC-P256', { system: true });
+    spy.mockImplementationOnce(async (d) => ({ ...d, signature: [{ data: 'SIGNED' }] }));
+    r = await copy({ source: 'original', system: true, comments: true });
+    expect(r.status).toBe(200);
+    const [given] = spy.mock.calls[0];
+    expect(given.entry[0].resource.section.map(x => x.title)).toEqual(['Allergies and Intolerances', 'Medication Summary']);
+    expect(r.body.signature).toEqual([{ data: 'SIGNED' }]);
+    sections = r.body.entry[0].resource.section;
+    expect(sections.map(x => x.title)).toEqual(['Patient\'s Comments', 'Allergies and Intolerances', 'Medication Summary']);
+  });
+
+  test('Regenerate narrative: the narrative generated as the narrative step does it, before signing, after old patient notes go; comments after that', async () => {
+    let page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('<input type="checkbox" name="regenerate-narrative"/> Regenerate narrative</label>');
+    const copy = (body) => request(app).post('/ips/demo/Bundle/1/signed').set('Accept', 'application/fhir+json').send(body);
+    // on its own: anyone
+    let r = await copy({ source: 'original', narrative: true });
+    expect(r.status).toBe(200);
+    const comp = r.body.entry[0].resource;
+    const stored = mod.store.read(1).bundle.entry[0].resource;
+    expect(comp.text.status).toBe('generated');
+    expect(comp.text.div).not.toEqual(stored.text.div);
+    expect(comp.section[0].text.status).toBe('generated');
+    expect(comp.section[0].text.div).toContain('Penicillin');
+    // the same narrative the narrative step makes
+    const { generateNarrative } = require('../../ips/pipeline');
+    const expected = structuredClone(mod.store.read(1).bundle);
+    await generateNarrative(expected, mod);
+    expect(r.body.entry[0].resource.text).toEqual(expected.entry[0].resource.text);
+    expect(stored.text.status).toBe('generated');
+    expect(stored.text.div).toContain('Summary for <b>Jane Smith</b>');
+
+    // with signing and comments: sign() gets the regenerated narrative; the comments are not regenerated over
+    mod.store.savePatientComment(1, 'Mine', 'Jane');
+    const admin = auth.principalById(auth.store.userByLogin('admin').id);
+    await keystore.create(admin, 'EC-P256', { system: true });
+    const spy = jest.spyOn(signatures, 'sign');
+    r = await copy({ source: 'original', narrative: true, system: true, comments: true });
+    expect(r.status).toBe(200);
+    expect(spy.mock.calls[0][0].entry[0].resource.text).toEqual(expected.entry[0].resource.text);
+    const sections = r.body.entry[0].resource.section;
+    expect(sections[0].text).toEqual({ status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Mine</p></div>' });
+    expect(sections[1].text.status).toBe('generated');
+  });
+});
+
+describe('the $document operation', () => {
+  const signatures = require('../../ips/signatures');
+  const keystore = require('../../library/keystore');
+  const zlib = require('zlib');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    auth.config.publicUrl = 'https://fhir.example.org';
+    mod.store.createProject('demo', 'Demo', null);
+    await post(app, 'demo', ips());
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    keystore.shutdown();
+    mod.shutdown();
+  });
+  const op = (query = '', accept) => {
+    const r = request(app).get(`/ips/demo/Bundle/1/$document${query}`);
+    return accept ? r.set('Accept', accept) : r;
+  };
+  // the files in a ZIP: name -> content
+  const unzip = (buf) => {
+    const files = {};
+    let i = 0;
+    while (buf.readUInt32LE(i) === 0x04034b50) {
+      const size = buf.readUInt32LE(i + 18);
+      const nameLen = buf.readUInt16LE(i + 26);
+      const extra = buf.readUInt16LE(i + 28);
+      const name = buf.subarray(i + 30, i + 30 + nameLen).toString('utf8');
+      const start = i + 30 + nameLen + extra;
+      files[name] = zlib.inflateRawSync(buf.subarray(start, start + size)).toString('utf8');
+      i = start + size;
+    }
+    return files;
+  };
+  const binary = (r) => r.buffer(true).parse((res, cb) => {
+    const chunks = [];
+    res.on('data', c => chunks.push(c));
+    res.on('end', () => cb(null, Buffer.concat(chunks)));
+  });
+
+  test('the CapabilityStatement names it, with the OperationDefinition on GitHub; the OperationDefinition is there', async () => {
+    const cs = (await request(app).get('/ips/demo/metadata')).body;
+    expect(cs.rest[0].resource[0].operation).toEqual([{ name: 'document', definition: 'https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json' }]);
+    const od = require('../../ips/OperationDefinition-ips-document.json');
+    expect(od.url).toBe(cs.rest[0].resource[0].operation[0].definition);
+    expect(od.parameter.filter(p => p.use === 'in').map(p => p.name)).toEqual(['source', 'user-sign', 'system-sign', 'patient-notes', 'regenerate-narrative']);
+    // the source view says so, under its links
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).toContain('with the <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json"><code>$document</code></a> operation: <code>/ips/demo/Bundle/1/$document</code>.</p>');
+  });
+
+  test('JSON by default (Accept, _format); the parameters are checked; 406 for what it does not give', async () => {
+    const stored = mod.store.read(1).bundle;
+    for (const r of [await op(), await op('', 'text/html,application/xhtml+xml,*/*;q=0.8'), await op('?_format=json'), await op('?_format=application/fhir+json'), await op('', 'application/json')]) {
+      expect(r.status).toBe(200);
+      expect(r.headers['content-type']).toMatch(/^application\/fhir\+json/);
+      expect(r.body).toEqual(stored);
+    }
+    expect((await op('?user-sign=yes')).status).toBe(400);
+    const r = await op('?colour=blue&source=both');
+    expect(r.status).toBe(400);
+    expect(r.body.issue.map(i => i.details.text)).toEqual(['$document has no parameter \'colour\' (it takes source, user-sign, system-sign, patient-notes, regenerate-narrative)', 'source is original or modified, not \'both\'']);
+    expect((await op('', 'application/fhir+xml')).status).toBe(406);
+    expect((await op('?_format=xml')).status).toBe(406);
+    expect((await op('?source=modified')).status).toBe(409);
+    expect((await request(app).get('/ips/demo/Bundle/9/$document')).status).toBe(404);
+    // false is false
+    expect((await op('?patient-notes=false&system-sign=false')).body).toEqual(stored);
+  });
+
+  test('user-sign: an API token (not a session), and a key pair; system-sign: throttled as on the web page', async () => {
+    const spy = jest.spyOn(signatures, 'sign');
+    let r = await op('?user-sign=true');
+    expect(r.status).toBe(401);
+    expect(r.body.issue[0].details.text).toMatch(/needs an API token/);
+    // a session isn't an API token
+    const { agent } = await authLogin(app, 'admin', ADMIN_PASSWORD);
+    expect((await agent.get('/ips/demo/Bundle/1/$document?user-sign=true')).status).toBe(401);
+    const adminId = auth.store.userByLogin('admin').id;
+    const token = tokenFor(adminId);
+    r = await op('?user-sign=true').set('Authorization', `Bearer ${token}`);
+    expect(r.status).toBe(409);
+    expect(r.body.issue[0].details.text).toMatch(/You have no .* key pair/);
+    const admin = auth.principalById(adminId);
+    await keystore.create(admin, 'Ed25519');
+    await keystore.create(admin, 'EC-P256', { system: true });
+    r = await op('?user-sign=true').set('Authorization', `Bearer ${token}`);
+    expect(r.status).toBe(200);
+    expect(spy.mock.calls[0][1].user.identity).toEqual({ name: 'Administrator', login: 'admin', email: null });
+    expect(spy.mock.calls[0][1].system).toBeNull();
+    expect((await op('?system-sign=true')).status).toBe(200);
+    expect(spy.mock.calls[1][1].system).not.toBeNull();
+    r = await op('?system-sign=true');
+    expect(r.status).toBe(429);
+    expect(r.body.issue[0].code).toBe('throttled');
+  });
+
+  test('patient-notes (nothing, silently, when there are none) and regenerate-narrative; POST with Parameters', async () => {
+    const stored = mod.store.read(1).bundle;
+    expect((await op('?patient-notes=true')).body).toEqual(stored);
+    mod.store.savePatientComment(1, 'Not *mine*', 'Jane');
+    let r = await op('?patient-notes=true&regenerate-narrative=true');
+    expect(r.status).toBe(200);
+    const comp = r.body.entry[0].resource;
+    expect(comp.section[0]).toEqual({
+      title: 'Patient\'s Comments', code: { coding: [{ system: 'http://loinc.org', code: '51855-5' }] }, author: [{ reference: 'urn:uuid:pat-1' }],
+      text: { status: 'additional', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Not <em>mine</em></p></div>' }
+    });
+    expect(comp.text.status).toBe('generated');
+    expect(comp.text.div).not.toEqual(stored.entry[0].resource.text.div);
+    // POST: a Parameters resource
+    const p = await request(app).post('/ips/demo/Bundle/1/$document').set('Content-Type', 'application/fhir+json')
+      .send(JSON.stringify({ resourceType: 'Parameters', parameter: [{ name: 'patient-notes', valueBoolean: true }, { name: 'source', valueCode: 'original' }] }));
+    expect(p.status).toBe(200);
+    expect(JSON.parse(p.text).entry[0].resource.section[0].title).toBe('Patient\'s Comments');
+    expect((await request(app).post('/ips/demo/Bundle/1/$document').set('Content-Type', 'application/fhir+json').send('{"resourceType":"Bundle"}')).status).toBe(400);
+  });
+
+  test('a ZIP and a PDF, made on the server, with the document in them', async () => {
+    mod.store.savePatientComment(1, 'Mine', 'Jane');
+    let r = await binary(op('?patient-notes=true', 'application/zip'));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('application/zip');
+    expect(r.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.zip"');
+    const files = unzip(r.body);
+    expect(Object.keys(files)).toEqual(['ips-demo-1.json']);
+    expect(JSON.parse(files['ips-demo-1.json']).entry[0].resource.section[0].title).toBe('Patient\'s Comments');
+    expect(unzip((await binary(op('?_format=zip'))).body)['ips-demo-1.json']).toBe(JSON.stringify(mod.store.read(1).bundle, null, 2));
+
+    r = await binary(op('', 'application/pdf'));
+    expect(r.status).toBe(200);
+    expect(r.headers['content-type']).toBe('application/pdf');
+    expect(r.headers['content-disposition']).toBe('attachment; filename="ips-demo-1.pdf"');
+    expect(r.body.subarray(0, 5).toString()).toBe('%PDF-');
+    expect(r.body.toString('latin1')).toContain('(ips-demo-1.json)');
+    const { PDFDocument } = require('../../ips/vendor/pdf-lib.min.js');
+    expect((await PDFDocument.load(r.body)).getPageCount()).toBe(1);
+  });
+
+  test('the PDF says what the browser\'s says: title, patient, date, each section\'s narrative', async () => {
+    const { pdfContent, narrativeLines } = require('../../ips/export');
+    expect(pdfContent(mod.store.read(1).bundle)).toEqual([
+      { text: 'Patient Summary as of 1 March 2026', kind: 'h1' },
+      { text: 'Jane Alexandra Smith, born 1970-05-06, female', kind: 'b' },
+      { text: 'Date: 2026-03-01T09:30:00Z', kind: 'p' },
+      { text: 'Allergies and Intolerances', kind: 'h2' },
+      { text: 'Penicillin', kind: 'p' },
+      { text: 'Medication Summary', kind: 'h2' },
+      { text: 'No known medications', kind: 'p' }
+    ]);
+    expect(narrativeLines('<div><h3>H</h3><ul><li>a</li></ul><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table><img src="x"/></div>'))
+      .toEqual([{ text: 'H', bold: true }, { text: '• a', bold: false }, { text: 'A | B', bold: true }, { text: '1 | 2', bold: false }]);
+  });
+});
+
+describe('signing and checking: the safeguards', () => {
+  const signatures = require('../../ips/signatures');
+  const keystore = require('../../library/keystore');
+  let app;
+  let mod;
+  beforeEach(async () => {
+    ({ app, mod } = await makeApp());
+    keystore.initialize({ database: ':memory:', privateDatabase: ':memory:' }, { log: quietLog, auth });
+    mod.store.createProject('demo', 'Demo', null);
+    await post(app, 'demo', ips());
+    await keystore.create(auth.principalById(auth.store.userByLogin('admin').id), 'EC-P256', { system: true });
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    keystore.shutdown();
+    mod.shutdown();
+  });
+
+  test('no public URL configured: no signing (the keys\' links would come from the request\'s Host)', async () => {
+    delete auth.config.publicUrl;
+    const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
+    expect(page.text).not.toContain('Sign document');
+    const r = await request(app).post('/ips/demo/Bundle/1/signed').set('Host', 'evil.example.com').send({ source: 'original', system: true });
+    expect(r.status).toBe(503);
+    expect(r.body.error).toMatch(/no public URL/);
+  });
+
+  test('sign() and verify() have time limits', async () => {
+    auth.config.publicUrl = 'https://fhir.example.org';
+    mod.signTimeoutMs = 50;
+    jest.spyOn(signatures, 'sign').mockImplementation(() => new Promise(() => {}));
+    const r = await request(app).post('/ips/demo/Bundle/1/signed').send({ source: 'original', system: true });
+    expect(r.status).toBe(422);
+    expect(r.body.error).toBe('The document could not be signed: it took more than 0.05 seconds');
+    mod.verifyTimeoutMs = 50;
+    jest.spyOn(signatures, 'verify').mockImplementation(() => new Promise(() => {}));
+    mod.steps = [...STEPS.filter(s => s.name === 'signatures'), { name: 'after', run: async () => 'after ran' }];
+    await mod.processQueue();
+    expect(mod.store.read(1)).toMatchObject({ status: 'processed', status_message: 'after ran' });
+    expect(mod.store.readResult(1, 'signatures').result.outcomes).toEqual([{ status: 'error', keyId: null, description: 'The signature check failed: it took more than 0.05 seconds' }]);
   });
 });

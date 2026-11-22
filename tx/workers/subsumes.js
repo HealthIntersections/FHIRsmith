@@ -92,7 +92,7 @@ class SubsumesWorker extends TerminologyWorker {
     // was invisible. On a GET parseParameters turns the query string into the same Parameters
     // shape, and the cache-id comes off the operation context
     const params = new Parameters(this.parseParameters(req));
-    this.setupAdditionalResources(params.jsonObj);
+    await this.setupAdditionalResources(params.jsonObj);
     const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
     txp.readParams(params.jsonObj);
 
@@ -169,7 +169,7 @@ class SubsumesWorker extends TerminologyWorker {
 
     // See handleTypeLevelSubsumes: parse first, so a GET reaches the cache-id handling too
     const params = new Parameters(this.parseParameters(req));
-    this.setupAdditionalResources(params.jsonObj);
+    await this.setupAdditionalResources(params.jsonObj);
     const txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n);
     txp.readParams(params.jsonObj);
 

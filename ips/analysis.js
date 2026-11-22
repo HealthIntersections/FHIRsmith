@@ -391,7 +391,8 @@ async function analyseSection(node, ctx) {
   const sec = node.section;
   const findings = [];
   if (isObject(sec.emptyReason)) {
-    findings.push({ kind: 'note', text: `Empty: ${conceptWords(sec.emptyReason) || '(no reason given)'}` });
+    // why it is empty: worth saying, but not a problem
+    findings.push({ kind: 'empty', text: `Empty: ${conceptWords(sec.emptyReason) || '(no reason given)'}` });
   }
   const own = Array.isArray(sec.author) ? sec.author.filter(isObject) : [];
   if (own.length) {

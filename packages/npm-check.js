@@ -32,6 +32,8 @@ const { requestDeadline } = require('../library/http-limits');
 const zlib = require('zlib');
 const axios = require('axios');
 const { verifySignature } = require('./npm-signing');
+const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('../library/package-limits');
+const { EntryNames, pathProblem } = require('../library/package-names');
 
 // What the npm CLI sends when it fetches a package document
 const NPM_ACCEPT = 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*';
@@ -317,6 +319,33 @@ const CHECKS = [
       c.eq(manifest.version, c.version, 'package.json version');
     }
   },
+  {
+    step: 'tarball', uses: ['tarball'], title: 'has no two files of the same name (ignoring case, ./ and //)',
+    run(c) {
+      // FHIRsmith and the FHIR Java tools refuse such a package: readers differ on which copy wins
+      const found = c.response('tarball').packageJson;
+      if (found.error) {
+        c.fail(`can't unpack the tarball: ${found.error.message}`);
+      }
+      if (found.duplicates.length > 0) {
+        c.fail(found.duplicates.join('; '));
+      }
+    }
+  },
+  {
+    step: 'tarball', uses: ['tarball'], title: 'has no file whose name goes outside its folder (..)',
+    run(c) {
+      // unpacked, such a file is written somewhere other than its name says; FHIRsmith and the
+      // FHIR Java tools refuse such a package
+      const found = c.response('tarball').packageJson;
+      if (found.error) {
+        c.fail(`can't unpack the tarball: ${found.error.message}`);
+      }
+      if (found.outside.length > 0) {
+        c.fail(found.outside.join('; '));
+      }
+    }
+  },
 
   // 5. signatures
   {
@@ -401,14 +430,20 @@ async function digestsOf(buffer, algs) {
 }
 
 /**
- * package/package.json from a .tgz: unzipped as a stream (on libuv's pool, not the event
- * loop), the tar read as it comes, and stopped as soon as it's found - the rest of the package
- * is never held in memory.
- * @returns {Promise<{data: Buffer|null}|{error: Error}>} data null: not in the tarball
+ * package/package.json from a .tgz, any files in it with the same name, and any names with a ..
+ * segment (see library/package-names.js): unzipped as a stream (on libuv's pool, not the event loop), the
+ * tar read as it comes, so only package.json is held in memory. A tarball that unzips to more
+ * than MAX_UNPACKED_BYTES (a decompression bomb, or a package.json that claims to be huge) is
+ * an error. Duplicate and .. names aren't: they are problems the checks report, and package.json
+ * is the first one
+ * @returns {Promise<{data: Buffer|null, duplicates: string[], outside: string[]}|{error: Error}>} data null: not in the tarball
  */
 function readPackageJson(tgz) {
   return new Promise((resolve) => {
     const gunzip = zlib.createGunzip();
+    const names = new EntryNames();
+    const outside = [];
+    let found = null;
     let buf = Buffer.alloc(0);
     let skip = 0;        // bytes of the current entry (and its padding) still to pass over
     let want = null;     // {kind: 'L' (a long name) | 'file', size, pad}: an entry being read
@@ -421,8 +456,18 @@ function readPackageJson(tgz) {
         resolve(result);
       }
     };
+    const finished = () => finish({ data: found, duplicates: names.duplicates, outside });
     const field = (header, off, len) => header.subarray(off, off + len).toString('utf8').replace(/\0.*$/s, '');
+    let unpacked = 0;
     gunzip.on('data', (chunk) => {
+      if (done) {
+        return;
+      }
+      unpacked += chunk.length;
+      if (unpacked > MAX_UNPACKED_BYTES) {
+        finish({ error: new Error(`the tarball unzips to more than the limit of ${MAX_UNPACKED_MB} MB`) });
+        return;
+      }
       buf = buf.length > 0 ? Buffer.concat([buf, chunk]) : chunk;
       while (!done) {
         if (skip > 0) {
@@ -439,10 +484,10 @@ function readPackageJson(tgz) {
           }
           const data = buf.subarray(0, want.size);
           if (want.kind === 'file') {
-            finish({ data: Buffer.from(data) });
-            return;
+            found = Buffer.from(data);
+          } else {
+            longName = data.toString('utf8').replace(/\0.*$/s, '');
           }
-          longName = data.toString('utf8').replace(/\0.*$/s, '');
           buf = buf.subarray(want.size);
           skip = want.pad;
           want = null;
@@ -454,7 +499,7 @@ function readPackageJson(tgz) {
         const header = buf.subarray(0, 512);
         buf = buf.subarray(512);
         if (header.every(b => b === 0)) {
-          finish({ data: null });
+          finished();
           return;
         }
         let name = field(header, 0, 100);
@@ -473,14 +518,25 @@ function readPackageJson(tgz) {
           name = longName;
           longName = null;
         }
-        if ((type === '0' || type === '') && name === 'package/package.json') {
+        // every entry but the pax/GNU headers that describe the next one; directories aren't
+        // counted as duplicates
+        if (!['x', 'g', 'K'].includes(type)) {
+          const problem = pathProblem(name);
+          if (problem) {
+            outside.push(problem);
+          }
+          if (type !== '5') {
+            names.add(name);
+          }
+        }
+        if ((type === '0' || type === '') && name === 'package/package.json' && !found) {
           want = { kind: 'file', size, pad };
         } else {
           skip = size + pad;
         }
       }
     });
-    gunzip.on('end', () => finish({ data: null }));
+    gunzip.on('end', finished);
     gunzip.on('error', (e) => finish({ error: e }));
     gunzip.end(tgz);
   });

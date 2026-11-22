@@ -30,6 +30,7 @@ const { jurisdiction } = require('./jurisdictions');
 const { summaryOf, STEP_TIMINGS_SAMPLE } = require('./store');
 const { SNOMED_LINKABLE_EDITIONS, editionName } = require('../tx/sct/editions');
 const { nationalityText } = require('./nationality');
+const { markdownHtml, PATIENT_COMMENT_MAX } = require('./patient-comments');
 
 // the nations there is a flag for (static/assets/images/flags/{code}.svg); any other is the globe
 const FLAGS = new Set(['US', 'AU']);
@@ -98,9 +99,20 @@ const STYLE = `
   .ips-switch a:last-child { border-radius: 0 3px 3px 0; }
   .ips-switch a.active { background: #5e35b1; border-color: #5e35b1; color: white; }
   .ips-doc-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 10px; }
+  .ips-doc-banner { display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: center; background: #f5f5f5; border: 1px solid #ddd; border-radius: 4px; padding: 6px 12px; margin-bottom: 10px; }
+  .ips-doc-banner-group { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .ips-doc-banner-label { font-weight: bold; margin-right: 4px; }
+  .ips-doc-banner .btn { font-size: 90%; padding: 2px 10px; }
+  .ips-doc-banner a.btn { text-decoration: none; }
+  .ips-doc-banner-message { flex-basis: 100%; font-size: 90%; }
+  .ips-doc-banner .ips-sign { flex-basis: 100%; }
+  .ips-sign-choice { font-weight: normal; margin: 0 0 0 6px; }
+  .ips-sign-off { color: #777; }
+  .ips-doc-banner-message:empty { display: none; }
   .ips-doc-actions .btn { font-size: 90%; padding: 2px 10px; }
   .ips-nav.nav-tabs { margin-bottom: 14px; }
-  .ips-nav.nav-tabs > li > a { padding: 6px 14px; }
+  .ips-nav.nav-tabs > li > a { padding: 6px 9px; }
+  .ips-patient-comment { border: 1px solid #dee2e6; border-radius: 4px; padding: 8px 12px; margin-bottom: 6px; background-color: #fcfcf4; }
   .ips-explain { margin-top: 18px; padding-top: 8px; border-top: 1px solid #dee2e6; }
   .ips-filter { display: flex; flex-wrap: wrap; gap: 4px 6px; align-items: center; font-size: 85%; }
   .ips-filter input, .ips-filter select { font-size: 100%; padding: 1px 4px; height: auto; }
@@ -361,13 +373,19 @@ function crumbs(ctx, project, extra) {
  */
 function renderHome(projects, ctx) {
   let h = STYLE + userBar(ctx);
-  h += '<p>Each project is a collection of International Patient Summary documents, with its own FHIR endpoint ' +
-    '(<code>POST</code> / <code>GET {project}/Bundle</code>) and web pages. ' +
-    `<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a> say what kinds of clinical document are expected to contain, and ` +
-    `<a href="${escape(ctx.base)}/national-profiles">national profiles</a> are the IPS document profiles that national implementation guides define. ` +
-    `<a href="${escape(ctx.base)}/reports">Reports</a> are tables of data drawn from the documents, with SQL statements summarising them, shown in each project. ` +
-    `The <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents. ` +
-    `To make an IPS document - to download, share as a QR code, or submit to a project - <a href="${escape(ctx.base)}/compose">compose a document</a>.</p>`;
+  h += '<p>Each project is a collection of International Patient Summary documents. Users can:</p> ' +
+       '<ul> ' +
+       '  <li>Upload their own documents through the web or the FHIR API, create a document directly, or through QR Codes (see below)</li> ' +
+       `  <li>Once uploaded, each document is check for validity against international IPS and other <a href="${escape(ctx.base)}/national-profiles">jurisdictional IPS variants</a></li> ` +
+       '  <li>Terminology is converted to international suitable versions where possible, and the document is assessed for international suitability</li> ' +
+       `  <li>The document is checked against clinical criteria for different conditions (<a href="${escape(ctx.base)}/StructureDefinition">Clinical profiles</a>)</li> ` +
+       '  <li>An AI Agent checks the document for coherence</li> ' +
+       '  <li>The original or internationalised document can be downloaded directly, or via the FHIR API or turned into a QR code</li> ' +
+       '  <li>Documents can be signed, and signatures are checked, and patients can comment on the document</li> ' +
+       '</ul>' +
+       `<p>Each project produce <a href="${escape(ctx.base)}/reports">Reports</a> (tables of data drawn from the documents). ` +
+       `In addition, the <a href="${escape(ctx.base)}/view">SHL viewer</a> opens SMART Health Links and Verifiable Health Links that carry IPS documents. ` +
+       `To make an IPS document - to download, share as a QR code, or submit to a project - <a href="${escape(ctx.base)}/compose">compose a document</a>.</p>`;
   if (projects.length === 0) {
     h += '<p>There are no projects yet' + (ctx.user?.isAdmin ? `: <a href="${escape(ctx.base)}/admin/projects">create one</a>` : '') + '.</p>';
   } else {
@@ -510,6 +528,10 @@ function projectDocs(project, ctx) {
     '<table class="table table-sm ips-table ips-api"><tr><th>Request</th><th></th></tr>' +
     `<tr><td><code>POST ${purl}/Bundle</code></td><td>submit a document${submitNote(project)}; the response is the stored document, with its id</td></tr>` +
     `<tr><td><code>GET ${purl}/Bundle/{id}</code></td><td>read a document - JSON for a FHIR client, this web page for a browser (<code>?_format=json</code> forces JSON, <code>?download=1</code> downloads it)</td></tr>` +
+    `<tr><td><code>GET ${purl}/Bundle/{id}/$document?...</code></td><td>the document as the source view gives it for download or sharing: parameters <code>source</code> (original | modified), ` +
+    '<code>user-sign</code> (as the owner of the API token in <code>Authorization: Bearer</code>), <code>system-sign</code>, <code>patient-notes</code>, <code>regenerate-narrative</code> (true | false); ' +
+    'by <code>Accept</code> (or <code>_format</code>) the JSON, <code>application/zip</code>, <code>application/pdf</code>, or the QR code (a PNG) of an SHL (<code>application/smart-health-link</code>) or VHL (<code>application/verified-health-link</code>) - ' +
+    '<a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json">OperationDefinition</a></td></tr>' +
     `<tr><td><code>GET ${purl}/Bundle?...</code></td><td>search: Bundle's search parameters (<code>_id</code>, <code>identifier</code>, <code>_lastUpdated</code>, <code>composition</code>), chained to the Composition and Patient as ` +
     '<code>composition.date</code>, <code>composition.title</code>, <code>composition.patient.name</code>, <code>composition.patient.gender</code>, <code>composition.patient.birthdate</code>, <code>composition.patient.identifier</code>, ...; ' +
     'with <code>_sort</code>, <code>_count</code>, <code>_offset</code>, <code>_summary=count</code>, and <code>processing-status</code> for where a document is in the pipeline (the CapabilityStatement lists them all)</td></tr>' +
@@ -954,7 +976,8 @@ function findingHtml(f) {
 /**
  * Whether the analysis found nothing to say about a node: All OK, and nothing else but the
  * narrative - which doesn't matter for a resource, but a section without narrative is a problem -
- * and the Composition's negation (unless there's more than one approach: that's attention).
+ * the Composition's negation (unless there's more than one approach: that's attention), and why
+ * a section is empty (its emptyReason).
  */
 function analysisOk(findings, isSection) {
   if (!Array.isArray(findings) || findings.length === 0) {
@@ -962,7 +985,9 @@ function analysisOk(findings, isSection) {
   }
   // nothing that needs looking at: All OK, how negation is done, narrative (but a section
   // needs some), and extensions the validator knows - an unknown or modifier extension is a problem
-  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || (f.kind === 'extension' && f.found) ||
+  // (an analysis made before the emptyReason had a kind of its own has it as a note)
+  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || f.kind === 'empty' ||
+    (f.kind === 'note' && typeof f.text === 'string' && f.text.startsWith('Empty: ')) || (f.kind === 'extension' && f.found) ||
     (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
 }
 
@@ -972,10 +997,39 @@ function analysisOk(findings, isSection) {
  * row with what the analysis step found (analysis.js).
  */
 function renderAnalysis(row, options = {}) {
+  const sigs = renderSignatures(row);
   const r = row.results?.analysis;
   if (!r || (r.result.status && r.result.status !== 'done') || !isObject(r.result.items)) {
-    return noResultNote(row, 'analysis', 'There is no analysis of this document', options);
+    return sigs + noResultNote(row, 'analysis', 'There is no analysis of this document', options);
   }
+  return sigs + renderAnalysisTable(row, r);
+}
+
+const SIGNATURE_LABELS = { error: 'Error', warning: 'Warning', information: 'Information' };
+
+/**
+ * What the signatures step found (pipeline.js, signatures.js), for the top of the analysis
+ * view: each outcome with its severity (as a word, and coloured), the key it is about, and
+ * what it says. Nothing for a document processed before the step existed, or not yet
+ */
+function renderSignatures(row) {
+  const r = row.results?.signatures;
+  if (!r || (r.result.status && r.result.status !== 'done') || !Array.isArray(r.result.outcomes)) {
+    return '';
+  }
+  // a key id links to the key store's page for it, when there is one
+  const keysListed = require('../library/keystore').initialized;
+  const items = r.result.outcomes.map(o => {
+    const sev = SIGNATURE_LABELS[o.status] ? o.status : 'error';
+    return `<li><span class="ips-badge" style="background-color: ${SEVERITY_COLOURS[sev]}">${SIGNATURE_LABELS[sev]}</span> ` +
+      (o.keyId ? (keysListed ? `<a href="/keys/key/${encodeURIComponent(o.keyId)}"><code>${escape(o.keyId)}</code></a>: ` : `<code>${escape(o.keyId)}</code>: `) : '') +
+      `${escape(o.description)}</li>`;
+  }).join('');
+  return `<div class="ips-signatures"><h4>Signatures</h4><ul class="ips-signature-outcomes">${items || '<li><i>The signature check said nothing</i></li>'}</ul></div>`;
+}
+
+/** The analysis table (renderAnalysis), from the analysis step's result */
+function renderAnalysisTable(row, r) {
   const top = structureTree(row.bundle);
   if (!top) {
     return '<p><i>The document has no Composition.</i></p>';
@@ -1030,7 +1084,7 @@ function renderAnalysis(row, options = {}) {
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
     '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), values given as an extension instead (a data-absent-reason, say), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
     'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the jurisdiction of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
-    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK, or has nothing more to say than known extensions - an unknown extension, or a modifier extension, is a problem; and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
+    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK, or has nothing more to say than known extensions - an unknown extension, or a modifier extension, is a problem; and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem. Why a section is empty (its emptyReason) is not a problem.</p></div>';
   h += `<script>
 (function () {
   var KEY = 'fhirsmith.ips.analysis.problemsOnly';
@@ -1468,6 +1522,73 @@ function renderAi(row, options = {}) {
   h += showHide("the model's answer", `<pre class="ips-json">${escape(String(v.raw || ''))}</pre>`);
   h += '<div class="ips-explain"><p class="ips-small">An AI service\'s assessment of the document (the analysed copy, with the narrative as submitted or without any, as the project\'s settings say): its consistency and integrity as a whole - do its details agree with each other and the overall picture, and is anything missing; with the narrative, what it says that the data does not back up - ' +
     'and its terminology - are the codes consistent with each other and with their text. The grade runs A (consistent and complete) to F (not usable). It is the model\'s opinion, to be read as such.</p></div>';
+  return h;
+}
+
+
+/**
+ * The Patient Comments view: the one comment the patient makes on the document - the accuracy or
+ * appropriateness of its content (typically a diagnosis in the problems section). Everyone sees it;
+ * anyone logged in can write it.
+ * @param {Object} row - from store.read(), with .comment (store.patientComment) or not
+ * @param {{base: string, user?: Object, csrf?: string, docUrl: string, here?: string, saved?: boolean}} ctx
+ */
+function renderPatientComments(row, ctx) {
+  const c = row.comment;
+  let h = '<p class="ips-small">This is a section for any comments the patient wishes to make about the accuracy or appropriateness of the content in the document.</p>';
+  if (ctx.saved) {
+    h += '<div class="alert alert-success">The comment has been saved.</div>';
+  }
+  if (c) {
+    h += `<div class="ips-patient-comment">${markdownHtml(c.markdown)}</div>`;
+    h += `<p class="ips-small">Last changed ${escape(c.updated)}${c.by ? ` by ${escape(c.by)}` : ''}</p>`;
+  } else {
+    h += '<p><i>The patient has made no comments on this document.</i></p>';
+  }
+  if (!ctx.user) {
+    h += `<p class="ips-small"><a href="${escape(`/auth/login?return=${encodeURIComponent(ctx.here || ctx.docUrl)}`)}">Log in</a> to write the patient's comment.</p>`;
+  } else {
+    h += `<h3>${c ? 'Edit the comment' : 'Write a comment'}</h3>`;
+    h += `<form method="post" action="${escape(ctx.docUrl)}/comment">${csrfField(ctx.csrf)}`;
+    h += '<div class="ips-switch" role="tablist"><a href="#" class="active" id="pc-write" role="tab" aria-controls="pc-text">Write</a>' +
+      '<a href="#" id="pc-preview" role="tab" aria-controls="pc-shown">Preview</a></div>';
+    h += '<label for="pc-text" class="ips-small">The comment, in <a href="https://commonmark.org/help/">markdown</a> - pure markdown: no HTML is allowed. Saving it replaces the comment there was; saving it empty removes it.</label>' +
+      `<textarea id="pc-text" name="comment" class="form-control" rows="12" maxlength="${PATIENT_COMMENT_MAX}">${escape(c ? c.markdown : '')}</textarea>` +
+      '<div id="pc-shown" class="ips-patient-comment" style="display: none; min-height: 8em" aria-live="polite"></div>';
+    h += '<div style="margin-top: 6px"><button type="submit" class="btn btn-primary">Save</button></div></form>';
+    h += `<script src="${escape(assets.src(ctx.base, 'vendor/commonmark.min.js'))}"></script>`;
+    h += `<script>
+(function () {
+  var text = document.getElementById('pc-text'), shown = document.getElementById('pc-shown');
+  var write = document.getElementById('pc-write'), preview = document.getElementById('pc-preview');
+  function show(previewing) {
+    if (previewing) {
+      var cm = window.commonmark;
+      if (!cm) {
+        shown.innerHTML = '<p><i>(the preview could not be made)</i></p>';
+      } else {
+        var doc = new cm.Parser().parse(text.value), w = doc.walker(), ev, html = false;
+        while ((ev = w.next())) {
+          if (ev.entering && (ev.node.type === 'html_block' || ev.node.type === 'html_inline')) { html = true; }
+        }
+        shown.innerHTML = (html ? '<div class="alert alert-danger">The comment has HTML in it: only pure markdown is allowed, so it cannot be saved like this.</div>' : '') +
+          new cm.HtmlRenderer({ safe: true }).render(doc);
+      }
+    }
+    text.style.display = previewing ? 'none' : '';
+    shown.style.display = previewing ? '' : 'none';
+    write.className = previewing ? '' : 'active';
+    preview.className = previewing ? 'active' : '';
+  }
+  write.addEventListener('click', function (e) { e.preventDefault(); show(false); });
+  preview.addEventListener('click', function (e) { e.preventDefault(); show(true); });
+})();
+</script>`;
+  }
+  h += '<div class="ips-explain"><p class="ips-small">The patient\'s own comments on the document - where they take issue with its content, such as a diagnosis in the problems section ' +
+    '(these are notoriously unreliable). The patient may be right or wrong: the comment is what they say, not a correction. ' +
+    'There is one comment per document, written in markdown; it is kept apart from the document, which is not changed, and processing the document again leaves it alone. ' +
+    'Everyone can see it; anyone logged in can change it.</p></div>';
   return h;
 }
 
@@ -2410,23 +2531,174 @@ function renderSource(row, durl, ctx) {
   if (!doc) {
     return h + '<p><i>There is no modified copy of this document: it has not been processed yet.</i></p>';
   }
-  if (ctx.canShare) {
-    // sharing as a QR code: a form each (they work without scripts); with scripts, the
-    // page asks for JSON and shows the code in a panel over the page
-    const which = modified ? 'modified' : 'original';
-    const what = modified ? 'the modified copy of this document' : 'this document';
-    const form = (kind, title, label) => `<form method="post" action="${durl}/share" class="ips-inline ips-share-form">` +
-      `<input type="hidden" name="source" value="${which}"/><input type="hidden" name="kind" value="${kind}"/>` +
-      `<button type="submit" class="btn btn-default" title="${escape(title)}">${label}</button></form>`;
-    h += '<div class="ips-doc-actions">' +
-      form('shl', `A SMART Health Link to ${what}, as a QR code`, 'Share as SHL') +
-      form('vhl', `A Verifiable Health Link (GDHCN) to ${what}, as a QR code`, 'Share as VHL') + '</div>';
-    h += sharePanelScript();
-  }
+  h += documentBanner(durl, modified, { ...ctx, hasComment: !!row.comment });
+  h += '<p class="ips-small">The same downloads and shares can be had from the API, with the ' +
+    '<a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json"><code>$document</code></a> operation: ' +
+    `<code>${escape(durl)}/$document</code>.</p>`;
   h += `<pre class="ips-json">${sourceJsonHtml(doc)}</pre>`;
   h += '<div class="ips-explain"><p class="ips-small">Original is the document as it was submitted. Modified is what the processing ended up with: ' +
     'codings added to CodeableConcepts by translation (marked with an extension saying where they came from), the narrative generated by this server, ' +
-    'and an extension on each CodeableConcept recording the terminology check. The original is never changed. Either can be shared, as a SMART Health Link or a Verifiable Health Link.</p></div>';
+    'and an extension on each CodeableConcept recording the terminology check. The original is never changed. Either can be downloaded (as JSON, a ZIP, or a PDF with the document attached), or shared, as a SMART Health Link or a Verifiable Health Link.</p></div>';
+  return h;
+}
+
+/**
+ * The Sign choices on the source view's banner (ctx.signing, from ips.js signingState): the
+ * user (enabled for a logged in user with a key pair of a type signatures.js signs with) and
+ * the system (enabled when it has one). Each disabled choice says why. Shown only when scripts
+ * run: the downloads and shares send the choices from the page
+ */
+function signChoices(ctx) {
+  const s = ctx.signing;
+  if (!s) {
+    return '';
+  }
+  const words = (s.types || []).join(' or ');
+  const choice = (name, label, keyId, why) => `<label class="ips-sign-choice${keyId ? '' : ' ips-sign-off'}">` +
+    `<input type="checkbox" name="${name}"${keyId ? ` data-key="${escape(keyId)}"` : ' disabled'}/> ${label}</label>` +
+    (keyId ? '' : ` <span class="ips-small">(${why})</span>`);
+  let h = '<div class="ips-doc-banner-group ips-sign" hidden><span class="ips-doc-banner-label">Sign document</span>';
+  if (s.user) {
+    h += choice('sign-user', escape(s.user.name), s.user.keyId, `you have no ${escape(words)} key pair: <a href="/keys/mine">make one</a>`) +
+      (s.user.keyId ? ' <span class="ips-small">(the signature names you: your name and email)</span>' : '');
+  } else {
+    h += choice('sign-user', 'You', null, `<a href="${escape(`/auth/login?return=${encodeURIComponent(ctx.here || '/')}`)}">log in</a> to sign as yourself`);
+  }
+  h += ' ' + choice('sign-system', 'System', s.system.keyId, `the system has no ${escape(words)} key pair`);
+  return h + '</div>';
+}
+
+/**
+ * The banner over the source view: what can be done with whichever copy is shown (the original,
+ * or the modified copy) - sign it (signChoices), download it (JSON, a ZIP, or a PDF with the
+ * document attached), and share it as a QR code (when sharing is set up). JSON is a link, and
+ * sharing forms, so they work without scripts; the ZIP and the PDF are made in the browser
+ * (doc-actions.js), so their buttons show only when scripts run, as signing does. With a Sign
+ * choice ticked, each download and share is of a signed copy, made by the server when asked
+ * ({durl}/signed, and the share forms' signUser and signSystem); it isn't kept. When the document
+ * has patient comments, "Include Patient Comments" adds them to each download and share the same
+ * way (comments), after any signing; "Regenerate narrative" (narrative) has the server generate the
+ * narrative first, as the narrative step does
+ */
+function documentBanner(durl, modified, ctx) {
+  const which = modified ? 'modified' : 'original';
+  const what = modified ? 'the modified copy of this document' : 'this document';
+  const jsonUrl = `${durl}?download=1${modified ? '&amp;source=modified' : ''}`;
+  const fileName = `ips-${ctx.projectCode || 'document'}-${ctx.docId}${modified ? '-modified' : ''}`;
+  const vendor = {
+    jspdf: assets.src(ctx.base, 'vendor/jspdf.umd.min.js'), html2canvas: assets.src(ctx.base, 'vendor/html2canvas.min.js'),
+    pdflib: assets.src(ctx.base, 'vendor/pdf-lib.min.js'), zip: assets.src(ctx.base, 'vendor/zip.min.js')
+  };
+  let h = `<div class="ips-doc-banner" data-json="${escape(`${durl}?_format=json${modified ? '&source=modified' : ''}`)}" data-name="${escape(fileName)}" data-vendor="${escape(JSON.stringify(vendor))}"` +
+    ` data-signed="${escape(`${durl}/signed`)}" data-source="${which}" data-csrf="${escape(ctx.csrf || '')}">`;
+  h += signChoices(ctx);
+  // the narrative regenerated, as the narrative view's Generated shows it (before any signing)
+  h += '<div class="ips-doc-banner-group ips-narrative-choice" hidden><label class="ips-sign-choice">' +
+    '<input type="checkbox" name="regenerate-narrative"/> Regenerate narrative</label>' +
+    ' <span class="ips-small">(as the Narrative tab\'s Generated shows it, before signing)</span></div>';
+  // the patient's comments, when there are some: added to each copy after it is signed (not signed)
+  if (ctx.hasComment) {
+    h += '<div class="ips-doc-banner-group ips-comments-choice" hidden><label class="ips-sign-choice">' +
+      '<input type="checkbox" name="include-comments"/> Include Patient Comments</label>' +
+      ' <span class="ips-small">(as the first section, added after signing: they are not signed)</span></div>';
+  }
+  h += '<div class="ips-doc-banner-group"><span class="ips-doc-banner-label">Download</span>' +
+    `<a class="btn btn-default ips-download-json" href="${jsonUrl}" title="${escape(`${what} (FHIR JSON)`)}">JSON</a>` +
+    `<button type="button" class="btn btn-default ips-download" data-kind="zip" title="${escape(`${what}, in a ZIP file`)}" hidden>ZIP</button>` +
+    `<button type="button" class="btn btn-default ips-download" data-kind="pdf" title="${escape(`${what} as a PDF, with the document attached to it`)}" hidden>PDF</button></div>`;
+  if (ctx.canShare) {
+    // sharing as a QR code: a form each (they work without scripts); with scripts, the
+    // page asks for JSON and shows the code in a panel over the page
+    const form = (kind, title, label) => `<form method="post" action="${durl}/share" class="ips-inline ips-share-form">` + csrfField(ctx.csrf) +
+      `<input type="hidden" name="source" value="${which}"/><input type="hidden" name="kind" value="${kind}"/>` +
+      '<input type="hidden" name="signUser" value=""/><input type="hidden" name="signSystem" value=""/><input type="hidden" name="comments" value=""/><input type="hidden" name="narrative" value=""/>' +
+      `<button type="submit" class="btn btn-default" title="${escape(title)}">${label}</button></form>`;
+    h += '<div class="ips-doc-banner-group"><span class="ips-doc-banner-label">Share</span>' +
+      form('shl', `A SMART Health Link to ${what}, as a QR code`, 'SHL') +
+      form('vhl', `A Verifiable Health Link (GDHCN) to ${what}, as a QR code`, 'VHL') + '</div>';
+  }
+  h += '<div class="ips-doc-banner-message" role="status"></div></div>';
+  if (ctx.canShare) {
+    h += sharePanelScript();
+  }
+  h += `<script src="${escape(scripts.src(ctx.base, 'doc-actions.js'))}"></script>` + `<script>
+(function () {
+  var banner = document.querySelector('.ips-doc-banner');
+  if (!banner || !window.IpsDocActions) { return; }
+  var message = banner.querySelector('.ips-doc-banner-message');
+  var vendor = JSON.parse(banner.getAttribute('data-vendor'));
+  var sign = banner.querySelector('.ips-sign');
+  var signUser = banner.querySelector('[name=sign-user]');
+  var signSystem = banner.querySelector('[name=sign-system]');
+  var comments = banner.querySelector('[name=include-comments]');
+  var narrative = banner.querySelector('[name=regenerate-narrative]');
+  if (sign) { sign.hidden = false; }
+  if (narrative) { banner.querySelector('.ips-narrative-choice').hidden = false; }
+  if (comments) { banner.querySelector('.ips-comments-choice').hidden = false; }
+  function signing() {
+    return { user: !!(signUser && signUser.checked), system: !!(signSystem && signSystem.checked), comments: !!(comments && comments.checked), narrative: !!(narrative && narrative.checked) };
+  }
+  // the share forms send the choices too
+  function syncShares() {
+    var s = signing();
+    banner.querySelectorAll('.ips-share-form').forEach(function (f) {
+      f.querySelector('[name=signUser]').value = s.user ? '1' : '';
+      f.querySelector('[name=signSystem]').value = s.system ? '1' : '';
+      f.querySelector('[name=comments]').value = s.comments ? '1' : '';
+      f.querySelector('[name=narrative]').value = s.narrative ? '1' : '';
+    });
+  }
+  [signUser, signSystem, comments, narrative].forEach(function (c) { if (c) { c.addEventListener('change', syncShares); } });
+  syncShares();
+  // the document as JSON text: as stored, or a copy the server makes now (signed, with the patient's comments)
+  function documentJson() {
+    var s = signing();
+    var req = s.user || s.system || s.comments || s.narrative
+      ? fetch(banner.getAttribute('data-signed'), { method: 'POST', credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/fhir+json', 'X-CSRF-Token': banner.getAttribute('data-csrf') },
+        body: JSON.stringify({ source: banner.getAttribute('data-source'), user: s.user, system: s.system, comments: s.comments, narrative: s.narrative }) })
+      : fetch(banner.getAttribute('data-json'), { headers: { Accept: 'application/fhir+json' }, credentials: 'same-origin' });
+    return req.then(function (r) {
+      return r.text().then(function (t) {
+        if (!r.ok) { var m = 'HTTP ' + r.status; try { m = JSON.parse(t).error || m; } catch (e) { /* not JSON */ } throw new Error(m); }
+        return t;
+      });
+    });
+  }
+  function fileName() {
+    var s = signing();
+    return banner.getAttribute('data-name') + (s.user || s.system ? '-signed' : '');
+  }
+  function run(kind, button) {
+    var label = kind.toUpperCase();
+    if (button) { button.disabled = true; }
+    var s = signing();
+    message.textContent = (s.narrative ? 'Generating the narrative, and making the ' : s.user || s.system ? 'Signing, and making the ' : 'Making the ') + label + '...';
+    documentJson()
+      .then(function (json) {
+        return window.IpsDocActions.download(kind, { json: json, bundle: JSON.parse(json), name: fileName(), vendor: vendor });
+      })
+      .then(function () { message.textContent = ''; })
+      .catch(function (e) { message.textContent = 'The ' + label + ' could not be made: ' + e.message; })
+      .finally(function () { if (button) { button.disabled = false; } });
+  }
+  // JSON is a link (it works without scripts); signed, it is made here
+  var jsonLink = banner.querySelector('.ips-download-json');
+  if (jsonLink) {
+    jsonLink.addEventListener('click', function (e) {
+      var s = signing();
+      if (s.user || s.system || s.comments || s.narrative) {
+        e.preventDefault();
+        run('json', null);
+      }
+    });
+  }
+  banner.querySelectorAll('.ips-download').forEach(function (b) {
+    b.hidden = false;
+    b.addEventListener('click', function () { run(b.getAttribute('data-kind'), b); });
+  });
+})();
+</script>`;
   return h;
 }
 
@@ -2538,9 +2810,10 @@ const VIEWS = [
   ['translation', 'Translation'],
   ['terminology', 'Terminology'],
   ['validation', 'Validation'],
-  ['national', 'National Profiles'],
+  ['national', 'Jurisdictions'],
   ['profiles', 'Clinical Profiles'],
-  ['ai', 'AI Assessment'],
+  ['ai', 'AI Check'],
+  ['comments', 'Patient Comments'],
   ['source', 'Source']
 ];
 
@@ -2599,15 +2872,16 @@ function stepState(row, step) {
 
 // each step as the pipeline shows it, and the view that shows its work (as a query)
 const STEP_LABELS = {
+  signatures: ['Signatures', 'view=analysis'],
   nationality: ['Jurisdiction', 'view=analysis'],
   analysis: ['Analysis', 'view=analysis'],
   translate: ['Translate', 'view=translation'],
   narrative: ['Narrative', 'view=narrative&narrative=generated'],
   validation: ['Validation', 'view=validation'],
-  national: ['National Profiles', 'view=national'],
+  national: ['Jurisdictions', 'view=national'],
   terminology: ['Terminology', 'view=terminology'],
   profiles: ['Clinical Profiles', 'view=profiles'],
-  ai: ['AI Assessment', 'view=ai'],
+  ai: ['AI Check', 'view=ai'],
   reports: ['Reports', null]
 };
 
@@ -2643,7 +2917,7 @@ function renderDocument(project, row, view, ctx) {
   h += '<div class="ips-facts">' +
     (row.comp_date ? `Document date ${escape(row.comp_date)} &nbsp;|&nbsp; ` : '') +
     `Received ${escape(row.received)} (${escape(row.source)})${row.submitted_by ? ` from ${escape(row.submitted_by)}` : ''} &nbsp;|&nbsp; ${row.size.toLocaleString()} bytes` +
-    ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a> &nbsp;|&nbsp; <a href="${durl}?download=1">Download</a></div>`;
+    ` &nbsp;|&nbsp; <a href="${durl}?_format=json">FHIR JSON</a></div>`;
   if (row.patient_id) {
     h += `<div class="ips-facts">Patient <a href="${purl}/Patient/${row.patient_id}">#${row.patient_id}</a>` +
       (row.match ? `: ${escape(MATCH_WORDS[row.match.method] || row.match.method)}${row.match.method === 'new' && row.match.detail !== 'Not seen before' ? ` - ${escape(row.match.detail.replace(/^Not seen before \((.*)\)$/, '$1'))}` : ''}` : '') + '</div>';
@@ -2671,7 +2945,7 @@ function renderDocument(project, row, view, ctx) {
   } else if (view === 'analysis') {
     h += renderAnalysis(row, { canManage: ctx.canManage });
   } else if (view === 'source') {
-    h += renderSource(row, durl, ctx);
+    h += renderSource(row, durl, { ...ctx, projectCode: project.code, docId: row.id });
   } else if (view === 'terminology') {
     // the analysed copy carries the checks; the concepts are the same
     h += renderTerminology(row.analysed || row.bundle, { ...ctx, analysed: !!row.analysed, docUrl: durl });
@@ -2681,6 +2955,8 @@ function renderDocument(project, row, view, ctx) {
     h += renderProfileChecks(row, { base: ctx.base, canManage: ctx.canManage });
   } else if (view === 'ai') {
     h += renderAi(row, { canManage: ctx.canManage });
+  } else if (view === 'comments') {
+    h += renderPatientComments(row, { ...ctx, docUrl: durl });
   } else if (view === 'validation') {
     h += renderValidation(row, { level: ctx.level, docUrl: durl, canManage: ctx.canManage });
   } else if (view === 'national') {
@@ -2990,6 +3266,6 @@ function renderProjectReport(project, report, out, problem, errors, ctx, maxRows
 module.exports = {
   analysisOk,
   renderHome, renderProjects, renderProject, renderSubmit, renderSettings, renderDocument,
-  assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
+  assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderPatientComments, PATIENT_COMMENT_MAX, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
   renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };

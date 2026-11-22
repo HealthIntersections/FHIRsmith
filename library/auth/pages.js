@@ -11,7 +11,7 @@ const rateLimit = require('express-rate-limit');
 const escape = require('escape-html');
 const bcrypt = require('bcrypt');
 const oauth = require('./oauth');
-const { AuthStore } = require('./store');
+const { AuthStore, nameProblem } = require('./store');
 const { safeReturn, redirectBack, SERVER, ADMINISTRATOR, MIN_PASSWORD } = require('./auth');
 
 const TEMPLATE = 'root';
@@ -223,8 +223,13 @@ function buildRouter(auth) {
     res.json({ login: p.login, name: p.name, administrator: p.isAdmin });
   }));
   r.post('/account/name', sameOrigin, session, form, csrf, user, h((req, res) => {
-    auth.store.updateUser(req.user.id, { name: str(req.body.name).trim().substring(0, 200) });
-    flash(req, 'Saved');
+    const name = str(req.body.name).trim().substring(0, 200);
+    if (nameProblem(name)) {
+      flash(req, nameProblem(name), 'danger');
+    } else {
+      auth.store.updateUser(req.user.id, { name });
+      flash(req, 'Saved');
+    }
     res.redirect('/auth/account');
   }));
   r.post('/account/password', sameOrigin, limiter, session, form, csrf, user, h((req, res) => changePassword(auth, req, res)));
@@ -382,8 +387,10 @@ async function providerCallback(auth, p, req, res) {
     // a new account, with no roles. The email is the provider's verified one, unless an account
     // here already has it - accounts are never matched by email
     const email = who.email && !auth.store.userByEmail(who.email) ? who.email : null;
+    // a provider's name the server keeps for itself ("System") isn't taken: the login shows instead
+    const name = [who.name, who.login].find(n => n && !nameProblem(n)) || '';
     const id = auth.store.createUser({
-      login: auth.store.freeLogin(who.login), name: who.name || who.login, email,
+      login: auth.store.freeLogin(who.login), name, email,
       identity: { provider: p.key, id: who.id, handle: who.handle }, notes: `Made by logging in with ${p.label}`
     });
     u = auth.store.userById(id);
@@ -536,6 +543,13 @@ function canDoHtml(auth, p) {
   if (!p.isAdmin && roles.length === 0) {
     h += '<li>Read what this server shows everyone, and look after your account (below). ' +
       'You have no roles yet: an administrator gives them.</li>';
+  }
+  // what every user has (library/auth addAccountPage)
+  for (const [, info] of [...auth.moduleInfo.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    for (const page of info.accountPages || []) {
+      h += `<li><a href="${escape(page.path)}">${escape(page.label)}</a>` +
+        (page.description ? ` - ${escape(page.description)}` : '') + '</li>';
+    }
   }
   return h + '</ul>';
 }

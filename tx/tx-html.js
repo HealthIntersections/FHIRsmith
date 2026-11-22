@@ -770,15 +770,69 @@ class TxHtmlRenderer {
     html += '<thead><tr><th>Name</th><th>Value</th></tr></thead>';
     html += '<tbody>';
 
-    if (json.parameter && Array.isArray(json.parameter)) {
-      for (const param of json.parameter) {
-        html += await this.renderParameter(param, codes);
+    // Properties and designations ($lookup) are pulled out of the main table into a
+    // table each below it, where every part becomes a column.
+    const params = Array.isArray(json.parameter) ? json.parameter : [];
+    // In a $lookup response, "name" is the name of the code system, not of the concept
+    const isLookup = params.some((p) => p.name === 'name') && params.some((p) => p.name === 'display');
+    const tabled = { property: [], designation: [] };
+    for (const param of params) {
+      if (Object.prototype.hasOwnProperty.call(tabled, param.name) && Array.isArray(param.part)) {
+        tabled[param.name].push(param);
+      } else {
+        html += await this.renderParameter(param, codes, isLookup && param.name === 'name' ? 'Code System name' : null);
       }
     }
 
     html += '</tbody></table>';
+    html += await this.renderPartsTable('Properties', tabled.property, codes);
+    html += await this.renderPartsTable('Designations', tabled.designation, codes);
     html += this.renderJsonSource(json);
 
+    return html;
+  }
+
+  /**
+   * A table of repeating parameters that each have parts (the properties or the
+   * designations of a $lookup response): one row per parameter, one column per part
+   * name, in the order the part names first appear. A part that repeats in a row (an
+   * additionalUse, a subproperty) is listed in the one cell. Nothing is rendered when
+   * there are no rows.
+   */
+  async renderPartsTable(title, rows, codes) {
+    if (!rows.length) {
+      return '';
+    }
+    const columns = [];
+    for (const row of rows) {
+      for (const part of row.part) {
+        const name = part.name || '';
+        if (!columns.includes(name)) {
+          columns.push(name);
+        }
+      }
+    }
+    let html = `<h3>${escape(title)}</h3>`;
+    html += '<table class="table grid">';
+    html += '<thead><tr>';
+    for (const col of columns) {
+      html += `<th scope="col">${escape(col)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const row of rows) {
+      html += '<tr>';
+      for (const col of columns) {
+        const values = [];
+        for (const part of row.part) {
+          if ((part.name || '') === col) {
+            values.push(await this.renderParameterValue(part, codes, row.name));
+          }
+        }
+        html += `<td>${values.join('<br/>')}</td>`;
+      }
+      html += '</tr>';
+    }
+    html += '</tbody></table>';
     return html;
   }
 
@@ -801,9 +855,9 @@ class TxHtmlRenderer {
   /**
    * Render a single parameter row
    */
-  async renderParameter(param, codes) {
+  async renderParameter(param, codes, label = null) {
     let html = '<tr>';
-    html += `<td>${escape(param.name || '')}</td>`;
+    html += `<td>${escape(label || param.name || '')}</td>`;
     html += '<td>';
     html += await this.renderParameterValue(param, codes, null);
     html += '</td>';
@@ -819,25 +873,50 @@ class TxHtmlRenderer {
    * into it. Building a checker here means the code system is built once for the page
    * rather than once per property.
    *
+   * Codings name their own code system, which may be another one (a designation's use,
+   * say); checkers for those are built when first needed, once per code system for the
+   * page (checkers).
+   *
    * @param {Object} json a Parameters resource
-   * @returns {Promise<{system: string, version: string|null, exists: function}|null>}
+   * @returns {Promise<{system: string|null, version: string|null, exists: function|null, checkers: Map}|null>}
+   *   null when this page can't link codes at all; exists is null when the server does
+   *   not have the code system the response is about
    */
   async parametersCodeContext(json) {
+    if (!this.renderer?.linkResolver?.codeChecker || !this.renderer.opContext) {
+      return null;
+    }
     const value = (name) => (json.parameter || []).find((p) => p.name === name);
-    const system = value('system')?.valueUri || value('system')?.valueString;
-    if (!system || !this.renderer?.linkResolver?.codeChecker || !this.renderer.opContext) {
-      return null;
-    }
+    const system = value('system')?.valueUri || value('system')?.valueString || null;
     const version = value('version')?.valueString || null;
-    try {
-      const exists = await this.renderer.linkResolver.codeChecker(this.renderer.opContext, system, version);
-      return exists ? { system, version, exists } : null;
-    } catch (e) {
-      // A link is a courtesy; failing to work out whether to offer one is not a reason
-      // to fail the page.
-      debugLog(e);
-      return null;
+    const codes = { system, version, exists: null, checkers: new Map() };
+    if (system) {
+      codes.exists = await this.codeCheckerFor(codes, system, version);
     }
+    return codes;
+  }
+
+  /**
+   * The checker for a code system, built once for the page however many codes from it
+   * there are.
+   *
+   * @returns {Promise<function|null>} null if the server does not have the code system
+   */
+  codeCheckerFor(codes, system, version) {
+    const key = system + '|' + (version || '');
+    if (!codes.checkers.has(key)) {
+      codes.checkers.set(key, (async () => {
+        try {
+          return (await this.renderer.linkResolver.codeChecker(this.renderer.opContext, system, version)) || null;
+        } catch (e) {
+          // A link is a courtesy; failing to work out whether to offer one is not a reason
+          // to fail the page.
+          debugLog(e);
+          return null;
+        }
+      })());
+    }
+    return codes.checkers.get(key);
   }
 
   /**
@@ -855,7 +934,7 @@ class TxHtmlRenderer {
    */
   async renderPropertyCode(code, codes) {
     const plain = `<code>${escape(code)}</code>`;
-    if (!codes) {
+    if (!codes || !codes.exists) {
       return plain;
     }
     let display;
@@ -899,6 +978,9 @@ class TxHtmlRenderer {
 
     // Check for complex datatypes
     if (param.valueCoding) {
+      if (parentName === 'designation' && ['use', 'additionalUse'].includes(param.name)) {
+        return await this.renderDesignationUse(param.valueCoding, codes);
+      }
       return await this.renderCoding(param.valueCoding, codes);
     }
     if (param.valueCodeableConcept) {
@@ -999,13 +1081,23 @@ class TxHtmlRenderer {
       parts.push(escape(coding.system));
     }
     if (coding.code) {
-      // A Coding says which code system it is in, so it can be linked - but only when
-      // that is the code system this page already built a checker for. Building one per
-      // coding would mean building a code system per row.
-      const sameSystem = codes && coding.system === codes.system
-        && (!coding.version || !codes.version || coding.version === codes.version);
-      parts.push(sameSystem
-        ? await this.renderPropertyCode(coding.code, codes)
+      // A Coding says which code system it is in, so it can be linked to $lookup on it,
+      // in whatever code system that is (a designation's use is often from another),
+      // if the server has it - checked with that code system's checker, built once for
+      // the page however many codings name it
+      let target = null;
+      if (codes && coding.system) {
+        const sameSystem = coding.system === codes.system
+          && (!coding.version || !codes.version || coding.version === codes.version);
+        if (sameSystem) {
+          target = codes;
+        } else {
+          const exists = await this.codeCheckerFor(codes, coding.system, coding.version || null);
+          target = exists ? { system: coding.system, version: coding.version || null, exists } : null;
+        }
+      }
+      parts.push(target
+        ? await this.renderPropertyCode(coding.code, target)
         : `<code>${escape(coding.code)}</code>`);
     }
     if (coding.display) {
@@ -1016,6 +1108,48 @@ class TxHtmlRenderer {
     }
 
     return parts.join(' | ') || '<em>(empty coding)</em>';
+  }
+
+  /**
+   * A designation's use: what the reader wants is what kind of designation it is
+   * (Synonym, Fully specified name), so it is shown as its display, linked to $lookup on
+   * the code where that will work, with the system and code in its title. With no display
+   * in the coding, the code system's display for it is used; with neither, the code.
+   */
+  async renderDesignationUse(coding, codes) {
+    if (!coding || !coding.code) {
+      return coding ? await this.renderCoding(coding, codes) : '';
+    }
+    const id = (coding.system ? coding.system + '#' : '') + coding.code
+      + (coding.version ? ' (version: ' + coding.version + ')' : '');
+    let target = null;
+    if (codes && coding.system) {
+      const sameSystem = coding.system === codes.system
+        && (!coding.version || !codes.version || coding.version === codes.version);
+      if (sameSystem) {
+        target = codes.exists ? codes : null;
+      } else {
+        const exists = await this.codeCheckerFor(codes, coding.system, coding.version || null);
+        target = exists ? { system: coding.system, version: coding.version || null, exists } : null;
+      }
+    }
+    let display = coding.display || null;
+    let link = null;
+    if (target) {
+      try {
+        const known = await target.exists(coding.code);
+        if (known !== null && known !== undefined) {
+          display = display || known || null;
+          link = this.renderer.linkResolver.lookupLink(target.system, target.version, coding.code);
+        }
+      } catch (e) {
+        debugLog(e);
+      }
+    }
+    const text = display ? escape(display) : `<code>${escape(coding.code)}</code>`;
+    return link
+      ? `<a href="${escape(link)}" title="${escape(id)}">${text}</a>`
+      : `<span title="${escape(id)}">${text}</span>`;
   }
 
   /**

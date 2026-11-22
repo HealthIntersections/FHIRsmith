@@ -91,7 +91,7 @@ class CompareWorker extends TerminologyWorker {
 
     let params = req.body;
     this.addHttpParams(req, params);
-    this.setupAdditionalResources(params);
+    await this.setupAdditionalResources(params);
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
     this.params = txp;
@@ -112,7 +112,7 @@ class CompareWorker extends TerminologyWorker {
 
     let params = req.body;
     this.addHttpParams(req, params);
-    this.setupAdditionalResources(params);
+    await this.setupAdditionalResources(params);
     let txp = new TxParameters(this.opContext.i18n.languageDefinitions, this.opContext.i18n, false);
     txp.readParams(params);
 

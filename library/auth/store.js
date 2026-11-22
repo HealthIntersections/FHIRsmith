@@ -39,6 +39,14 @@ function now() {
   return new Date().toISOString();
 }
 
+// names an account can't have: what the server calls itself (the key store's "System" keys)
+const RESERVED_NAME_RE = /^\s*(the\s+)?system\s*$/i;
+
+/** '' when an account may have this display name, else why not */
+function nameProblem(name) {
+  return typeof name === 'string' && RESERVED_NAME_RE.test(name) ? `"${name.trim()}" is the server's own name: choose another` : '';
+}
+
 class AuthStore {
   /**
    * @param {string} dbPath file path, or ':memory:'
@@ -268,6 +276,9 @@ class AuthStore {
     if (email && !EMAIL_RE.test(email)) {
       throw new Error('That is not an email address');
     }
+    if (nameProblem(name)) {
+      throw new Error(nameProblem(name));
+    }
     const create = () => {
       const r = this.stmts.insertUser.run(login, name, email || null, githubId ? String(githubId) : null, githubLogin, notes, now());
       const id = Number(r.lastInsertRowid);
@@ -288,6 +299,9 @@ class AuthStore {
     const e = email === undefined ? u.email : (email || null);
     if (e && !EMAIL_RE.test(e)) {
       throw new Error('That is not an email address');
+    }
+    if (name !== undefined && name !== null && nameProblem(name)) {
+      throw new Error(nameProblem(name));
     }
     this.stmts.updateUser.run(name ?? u.name, e, notes ?? u.notes, id);
     return true;
@@ -577,4 +591,4 @@ class AuthStore {
   }
 }
 
-module.exports = { AuthStore, TOKEN_PREFIX, LOGIN_RE, EMAIL_RE, sha256 };
+module.exports = { AuthStore, TOKEN_PREFIX, LOGIN_RE, EMAIL_RE, sha256, nameProblem };

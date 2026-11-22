@@ -14,7 +14,7 @@ describe('npm-check: unpacking and hashing a tarball', () => {
   });
 
   test('says when there is none, and when the tarball is not gzip', async () => {
-    expect(await readPackageJson(tgz({ 'package/x.json': '{}' }))).toEqual({ data: null });
+    expect(await readPackageJson(tgz({ 'package/x.json': '{}' }))).toEqual({ data: null, duplicates: [], outside: [] });
     const bad = await readPackageJson(Buffer.from('this is not gzip at all'));
     expect(bad.error.message).toMatch(/header/);
   });

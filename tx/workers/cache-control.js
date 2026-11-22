@@ -121,7 +121,7 @@ class CacheControlWorker extends TerminologyWorker {
     }
 
     const params = new Parameters(this.buildParameters(req));
-    const { txResources, primaryResources } = this.collectSuppliedResources(params.jsonObj);
+    const { txResources, primaryResources } = await this.collectSuppliedResources(params.jsonObj);
     const resources = txResources.concat(primaryResources);
 
     // `sealed` controls whether the cache may grow after creation. When sealed,

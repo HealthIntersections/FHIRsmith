@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const {VersionUtilities, VersionPrecision} = require("../../library/version-utilities");
 const {Issue} = require("./operation-outcome");
+const { runStepsAsync, jsonPieces } = require("./steps");
 
 /**
  * Contained resources. The terminology server supports exactly one use of them: a ValueSet
@@ -96,6 +97,44 @@ class CanonicalResource {
       .update(JSON.stringify(json))
       .digest('hex')
       .substring(0, 16);
+  }
+
+  /**
+   * computeExpansionKeyHash, without holding the event loop: the same hash, of the same text,
+   * serialised and hashed a piece at a time (see steps.js jsonPieces), calling pause between.
+   * @param {Object} json - the resource (R5 form)
+   * @param {Function} [pause] - async: lets other work run (OperationContext checkAndYield)
+   * @returns {Promise<string>}
+   */
+  static async computeExpansionKeyHashAsync(json, pause = null) {
+    const hash = crypto.createHash('sha256');
+    await runStepsAsync((function* () {
+      for (const piece of jsonPieces(json)) {
+        hash.update(piece);
+        yield;
+      }
+    })(), pause);
+    return hash.digest('hex').substring(0, 16);
+  }
+
+  /**
+   * Work out and remember this resource's expansion-key hash now, letting other work run (a
+   * large resource a client sends: see TerminologyWorker wrapRawResourceAsync), so that
+   * expansionKeyHash() needn't, later, in one go
+   * @param {Function} [pause]
+   * @returns {Promise<string>}
+   */
+  async prepareExpansionKeyHash(pause = null) {
+    const memo = this._expansionKeyHashMemo;
+    if (memo && memo.json === this.jsonObj) {
+      return memo.hash;
+    }
+    const json = this.jsonObj;
+    const hash = await CanonicalResource.computeExpansionKeyHashAsync(json, pause);
+    if (this.jsonObj !== json) {
+      return this.expansionKeyHash();
+    }
+    return this.setExpansionKeyHash(hash);
   }
 
   /**

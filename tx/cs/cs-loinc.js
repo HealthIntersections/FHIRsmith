@@ -599,7 +599,8 @@ class LoincServices extends BaseCSServices {
                 this._addStringProperty(params, 'property', row.Relationship, row.Value || row.Code)
                   .part.push({name: 'partCode', valueCode: row.Code});
               } else {
-                this._addCodeProperty(params, 'property', row.Relationship, row.Code);
+                // the code's display as the description, so a reader needn't look the code up
+                this._addCodeProperty(params, 'property', row.Relationship, row.Code, null, row.Value || null);
               }
             }
           }

@@ -118,7 +118,7 @@ class TranslateWorker extends TerminologyWorker {
 
     // Handle tx-resource and cache-id parameters from Parameters resource
     if (req.body && req.body.resourceType === 'Parameters') {
-      this.setupAdditionalResources(req.body);
+      await this.setupAdditionalResources(req.body);
     }
 
     // Parse parameters from request
@@ -364,7 +364,7 @@ class TranslateWorker extends TerminologyWorker {
 
     // Handle tx-resource and cache-id parameters from Parameters resource
     if (req.body && req.body.resourceType === 'Parameters') {
-      this.setupAdditionalResources(req.body);
+      await this.setupAdditionalResources(req.body);
     }
 
     // Parse parameters from request
