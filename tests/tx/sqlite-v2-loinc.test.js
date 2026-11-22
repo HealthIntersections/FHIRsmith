@@ -6,9 +6,10 @@
 // router: once on the sqlite-v2 file, once on main's provider (tx/cs/cs-loinc.js) over the same
 // fixture; where main's answer is defined, the two must agree (as sets where order is not).
 //
-// The fixture gets two small additions in a temporary copy, so the cases have something to find:
+// The fixture gets small additions in a temporary copy, so the cases have something to find:
 // an externally defined answer list (a row with no AnswerStringId, as AnswerList.csv in 2.83 has
-// 65 of) linked to a term, and a third-party copyright notice on one term.
+// 65 of) linked to a term, a third-party copyright notice on one term, and a row in LL744-4 for
+// an answer whose external code is on that list's row only (as LA11840-8's SNOMED CT code is in 2.83).
 
 const fs = require('fs');
 const os = require('os');
@@ -29,6 +30,7 @@ const SRC = path.resolve(__dirname, '../../tx/data/loinc');
 const VERSION = '2.80-test';
 const EXT_LIST = 'LL1892-0'; // externally defined: no answers
 const COPYRIGHT_TERM = '595-9';
+const LATE_MAPPED = 'LA32972-4'; // in LL6136-7 with no external code, then in LL744-4 with one
 
 let app, tx, dir, v2, classic;
 
@@ -52,7 +54,10 @@ function buildFixture(dest) {
   // DisplayText, ExtCodeId, ExtCodeDisplayName, ExtCodeSystem, ExtCodeSystemVersion,
   // ExtCodeSystemCopyrightNotice, SubsequentTextPrompt, Description, Score
   const answers = path.join(dest, 'AccessoryFiles', 'AnswerFile', 'AnswerList.csv');
-  fs.writeFileSync(answers, fs.readFileSync(answers, 'utf8').replace(/\s*$/, '') + '\n' + csvLine([EXT_LIST, 'ICD-9_ICD-10', '1.3.6.1.4.1.12009.10.1.1892', 'Y', 'ICD-10', 'http://www.who.int/classifications/icd10',
+  fs.writeFileSync(answers, fs.readFileSync(answers, 'utf8').replace(/\s*$/, '') + '\n' +
+    csvLine(['LL744-4', 'Detected|Not det', '1.3.6.1.4.1.12009.10.1.3226', 'N', '', '', LATE_MAPPED, '', '', '3', 'Not met',
+      '9990001000', 'Not met (synthetic)', 'http://snomed.info/sct', 'http://snomed.info/sct/900000000000207008/version/20240701', '', '', '', '']) + '\n' +
+    csvLine([EXT_LIST, 'ICD-9_ICD-10', '1.3.6.1.4.1.12009.10.1.1892', 'Y', 'ICD-10', 'http://www.who.int/classifications/icd10',
     '', '', '', '', '', '', '', '', '', '', '', '', '']) + '\n');
   const links = path.join(dest, 'AccessoryFiles', 'AnswerFile', 'LoincAnswerListLink.csv');
   const body = fs.readFileSync(links, 'utf8').replace(/\s*$/, '');
@@ -170,6 +175,18 @@ describe('LOINC v2 importer over the test fixture', () => {
     // a list's members are its Answer links
     expect(db.prepare("SELECT count(*) FROM link WHERE subject_id = ? AND property_id = (SELECT id FROM property WHERE code = 'Answer')")
       .pluck().get(id(EXT_LIST))).toBe(0);
+  });
+
+  test('an answer\'s external code on a later list\'s row is kept, once, as main keeps it', () => {
+    const v = db.prepare('SELECT m.system, m.version, m.code, m.display, m.relationship FROM mapping m JOIN concept c ON c.id = m.concept_id WHERE c.code = ?')
+      .all(LATE_MAPPED);
+    expect(v).toEqual([{ system: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20240701',
+      code: '9990001000', display: 'Not met (synthetic)', relationship: 'equivalent' }]);
+    const m = cdb.prepare(`SELECT e.System system, e.Version version, e.Code code, e.Display display, m.Equivalence relationship
+      FROM ExternalMappings m JOIN Codes c ON c.CodeKey = m.CodeKey JOIN ExternalCodes e ON e.ExternalCodeKey = m.ExternalCodeKey WHERE c.Code = ?`).all(LATE_MAPPED);
+    expect(v).toEqual(m);
+    // an answer mapped on its first row only, in one list
+    expect(db.prepare('SELECT count(*) FROM mapping m JOIN concept c ON c.id = m.concept_id WHERE c.code = ?').pluck().get('LA6576-8')).toBe(1);
   });
 
   test('inactive iff DISCOURAGED; STATUS literal on terms and parts', () => {

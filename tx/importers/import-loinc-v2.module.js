@@ -253,6 +253,9 @@ async function importLoincV2(cfg) {
 
   await b.stage('parse AnswerList.csv', async () => {
     let n = 0, row = 0, currentList = '';
+    // an answer's external code is on the row of the list that names it, not always its first:
+    // each (answer, system, code) once
+    const mapped = new Set();
     for await (const r of csvObjects(f.answerList)) {
       const listCode = r.AnswerListId.trim(), answerCode = r.AnswerStringId.trim();
       const newRun = listCode !== currentList;
@@ -261,15 +264,16 @@ async function importLoincV2(cfg) {
       const list = b.concept(listCode, { display: r.AnswerListName.trim() || listCode, sortKey: KIND.list });
       if (newRun) setOrder(list, ORDER_TYPE.list, ORDER.answers * ORDER_STAGE + (++row));
       if (!answerCode) continue;
-      const known = b.idx(answerCode) !== undefined;
       const a = b.concept(answerCode, { display: r.DisplayText.trim() || answerCode, sortKey: KIND.answer });
       if (!sourceOrder.has(a)) setOrder(a, ORDER_TYPE.answer, ORDER.answers * ORDER_STAGE + (++row));
       // the answer's position in the list (lists are ordered: ordinal scales, questionnaires)
       const seq = Number.parseInt(r.SequenceNumber, 10);
       b.link(list, answer, a, { seq: Number.isFinite(seq) ? seq : null });
-      if (!known && r.ExtCodeId.trim() && r.ExtCodeSystem.trim()) {
-        b.mapping(a, { system: EXTERNAL_SYSTEMS[r.ExtCodeSystem.trim()] || r.ExtCodeSystem.trim(), version: r.ExtCodeSystemVersion.trim() || null,
-          code: r.ExtCodeId.trim(), display: r.ExtCodeDisplayName.trim() || null, relationship: 'equivalent' });
+      const extSystem = EXTERNAL_SYSTEMS[r.ExtCodeSystem.trim()] || r.ExtCodeSystem.trim(), extCode = r.ExtCodeId.trim();
+      if (extCode && extSystem && !mapped.has(`${a}|${extSystem}|${extCode}`)) {
+        mapped.add(`${a}|${extSystem}|${extCode}`);
+        b.mapping(a, { system: extSystem, version: r.ExtCodeSystemVersion.trim() || null,
+          code: extCode, display: r.ExtCodeDisplayName.trim() || null, relationship: 'equivalent' });
       }
       n++;
     }
