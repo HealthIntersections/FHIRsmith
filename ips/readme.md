@@ -94,6 +94,30 @@ limit). The submitter's IP address is recorded, for tracing abuse, and never ret
     GET /ips/{code}/Bundle?{params}      search
     GET /ips/{code}/metadata             CapabilityStatement
 
+`$document` gives the API what the source view's banner gives a browser
+([OperationDefinition](OperationDefinition-ips-document.json), referred to from the
+CapabilityStatement):
+
+    GET /ips/{code}/Bundle/{id}/$document?source=modified&system-sign=true&patient-notes=true
+    POST /ips/{code}/Bundle/{id}/$document    (a Parameters resource)
+
+Parameters: `source` (`original`, the default, or `modified`), and the booleans `user-sign`
+(as the owner of the API token in `Authorization: Bearer` - 401 without one, 409 if they have
+no key pair to sign with), `system-sign`, `patient-notes` (the patient's comments; nothing
+added, and no error, when there are none) and `regenerate-narrative`. The copy is made as the
+web page makes it: any patient notes section (LOINC 51855-5) removed, the narrative regenerated,
+signed, then the patient's comments added as the first section (not signed). What comes back is
+chosen by `Accept`, or `_format` (a short name or the mime type): `application/fhir+json` or
+`application/json` (`json`, the default), `application/zip` (`zip`), `application/pdf`
+(`pdf`), `application/smart-health-link` (`shl`) or `application/verified-health-link`
+(`vhl`); anything else is 406. The ZIP and the PDF are made on the server (`ips/export.js`):
+the PDF is the same content as the browser's - the title, the patient, the date and each
+section's narrative, with the document attached - laid out as text in the standard PDF fonts
+(tables as rows of cells, no images; characters outside Windows-1252 show as `?`). An SHL or
+VHL answer is the QR code as a PNG, with the link it carries in `X-Health-Link`, the manifest in
+`X-Health-Link-Manifest` and the expiry in `X-Health-Link-Expires`. `$document` shares the
+rate limit of sharing and of the web page's signed downloads.
+
 A browser (or `_format=html`) gets pages: `/ips/{code}` is the project's page - its name
 and description in a banner, "Submit a document" (and, for managers, "Settings") buttons,
 the filterable list (patient name, gender, document date, document id or patient identifier,
@@ -241,6 +265,15 @@ the user's, that they asked for it to be signed, and it names them (`sign()` get
 seconds; `sign()` has 30. `sign()` is not written yet: it gives the document back as it was. They don't go into the document's
 status line, and a check that fails is an error outcome, not a failed step. `verify()` itself is not written yet: it
 says so, as an information outcome.
+
+Patient notes: `verify()` gets the document without any patient notes section (LOINC 51855-5),
+since a copy downloaded or shared with the patient's comments has them added there after
+signing. And a patient notes section the document arrives with becomes its patient comment (the
+Patient Comments tab), its narrative converted to markdown with
+[turndown](https://github.com/mixmark-io/turndown) (`ips/patient-comments.js`): pure markdown -
+text that looks like HTML is escaped, a table row becomes its cells with ` | ` between, images are
+dropped - and at most 30000 characters. Only when the document has no comment yet: one written
+on the tab isn't overwritten by processing again.
 
 ### Jurisdiction
 
@@ -412,7 +445,7 @@ fatal issues). A profile whose package can't be loaded, or that the validator ca
 reason and counts as not checked; it doesn't stop the pipeline. With no national profiles there is nothing to do, and no
 validator is needed; with some, the step fails, as validation does, without a configured, running validator.
 
-The document's **National Profiles** view lists the profiles as they were when the document was processed, with the
+The document's **Jurisdictional Profiles** view lists the profiles as they were when the document was processed, with the
 outcome (passed, failed, or not checked) and the issue counts for each; a profile's page shows its validation as the
 validation view shows the base validation (`?view=national&np={n}`). The packages loaded for national profiles stay
 loaded in the validator alongside its own (`packages`), so two national IGs that define the same things differently can

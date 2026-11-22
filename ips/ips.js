@@ -66,8 +66,10 @@ const { IpsStore } = require('./store');
 const patients = require('./patients');
 const { parseSearch, listQueryToSearch, capabilitySearchParams, compositionOf, patientOf } = require('./search');
 const render = require('./render');
+const patientComments = require('./patient-comments');
+const exporter = require('./export');
 const { TxClient } = require('./tx-client');
-const { STEPS, stripChecks, withTimeout } = require('./pipeline');
+const { STEPS, stripChecks, withTimeout, generateNarrative } = require('./pipeline');
 const signatures = require('./signatures');
 const { KeyStoreKeyProvider } = require('./signature-keys');
 const keystore = require('../library/keystore');
@@ -77,7 +79,7 @@ const { Reports, SOURCES: REPORT_SOURCES } = require('./reports');
 const MAX_CACHED_EXTENSIONS = 5000;
 const { IpsValueSets } = require('./ips-valuesets');
 const aiClient = require('./ai-client');
-const { ShlClient } = require('./share');
+const { ShlClient, qrPng } = require('./share');
 const { ShlViewer, Trace } = require('./viewer');
 const composer = require('./composer');
 const editorSchema = require('./editor-schema');
@@ -94,6 +96,103 @@ const SIGN_TIMEOUT_MS = 30000;
 /** A form's checkbox-like field: on? */
 function isOn(v) {
   return v === true || v === '1' || v === 'on' || v === 'true';
+}
+
+// ---- $document: its parameters and formats ----
+
+// its OperationDefinition (ips/OperationDefinition-ips-document.json), where it is on GitHub
+const DOCUMENT_OPERATION_DEFINITION = 'https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json';
+
+// what $document gives, by the name _format takes (a short name, or the mime type)
+const DOCUMENT_FORMATS = {
+  json: 'application/fhir+json',
+  zip: 'application/zip',
+  pdf: 'application/pdf',
+  shl: 'application/smart-health-link',
+  vhl: 'application/verified-health-link'
+};
+const DOCUMENT_MIME = {
+  'application/fhir+json': 'json', 'application/json': 'json', 'fhir+json': 'json', '*/*': 'json', 'application/*': 'json',
+  'application/zip': 'zip', 'application/pdf': 'pdf',
+  'application/smart-health-link': 'shl', 'application/verified-health-link': 'vhl'
+};
+const DOCUMENT_BOOLEANS = { 'user-sign': 'userSign', 'system-sign': 'systemSign', 'patient-notes': 'patientNotes', 'regenerate-narrative': 'regenerateNarrative' };
+// the outcome code for each status a copy can fail with
+const OUTCOME_CODES = { 401: 'login', 404: 'not-supported', 409: 'conflict', 422: 'processing', 429: 'throttled', 503: 'transient' };
+
+/**
+ * $document's parameters: from the query (GET), or a Parameters resource (POST).
+ * @returns {{source: string, userSign: boolean, systemSign: boolean, patientNotes: boolean, regenerateNarrative: boolean, problems: string[]}}
+ */
+function documentParameters(req) {
+  const out = { source: 'original', userSign: false, systemSign: false, patientNotes: false, regenerateNarrative: false, problems: [] };
+  const given = [];
+  if (req.method === 'POST') {
+    let b = req.body;
+    // a parser in front of the module may have left it as it came
+    if (Buffer.isBuffer(b)) {
+      try {
+        b = JSON.parse(b.toString('utf8'));
+      } catch {
+        b = null;
+      }
+    }
+    if (!b || typeof b !== 'object' || b.resourceType !== 'Parameters') {
+      out.problems.push('POST $document with a Parameters resource (application/fhir+json)');
+      return out;
+    }
+    for (const prm of Array.isArray(b.parameter) ? b.parameter : []) {
+      const v = prm?.valueBoolean !== undefined ? prm.valueBoolean : prm?.valueCode !== undefined ? prm.valueCode : prm?.valueString;
+      given.push([prm?.name, v]);
+    }
+  } else {
+    for (const [k, v] of Object.entries(req.query || {})) {
+      if (k !== '_format') {
+        given.push([k, Array.isArray(v) ? v[v.length - 1] : v]);
+      }
+    }
+  }
+  for (const [k, v] of given) {
+    if (k === 'source') {
+      if (v === 'original' || v === 'modified') {
+        out.source = v;
+      } else {
+        out.problems.push(`source is original or modified, not '${v}'`);
+      }
+    } else if (DOCUMENT_BOOLEANS[k]) {
+      if (v === true || v === 'true') {
+        out[DOCUMENT_BOOLEANS[k]] = true;
+      } else if (!(v === false || v === 'false')) {
+        out.problems.push(`${k} is true or false, not '${v}'`);
+      }
+    } else {
+      out.problems.push(`$document has no parameter '${k}' (it takes source, ${Object.keys(DOCUMENT_BOOLEANS).join(', ')})`);
+    }
+  }
+  return out;
+}
+
+/** What $document should give: _format (a short name or mime type), else Accept (by preference). @returns {string|null} */
+function documentFormat(req) {
+  const f = typeof req.query._format === 'string' ? req.query._format.trim().toLowerCase().replace(/ /g, '+') : '';
+  if (f) {
+    return DOCUMENT_FORMATS[f] ? f : (DOCUMENT_MIME[f] || null);
+  }
+  const accept = req.get('Accept');
+  if (!accept) {
+    return 'json';
+  }
+  const wanted = accept.split(',').map((part, i) => {
+    const [type, ...params] = part.trim().toLowerCase().split(';').map(x => x.trim());
+    const q = params.find(x => x.startsWith('q='));
+    return { type, q: q ? Number(q.substring(2)) : 1, i };
+  }).filter(w => w.q > 0).sort((a, b) => b.q - a.q || a.i - b.i);
+  for (const w of wanted) {
+    if (DOCUMENT_MIME[w.type]) {
+      return DOCUMENT_MIME[w.type];
+    }
+  }
+  return null;
 }
 const DEFAULT_MAX_SIZE = 10 * 1024 * 1024;
 const DEFAULT_INTERVAL_SECONDS = 5;
@@ -712,6 +811,17 @@ class IpsModule {
       next();
     };
 
+    // anyone logged in
+    const loggedIn = (req, res, next) => {
+      auth.denyFraming(res);
+      const user = this.currentUser(req);
+      if (!user) {
+        return res.redirect(auth.loginUrl(req));
+      }
+      req.user = user;
+      next();
+    };
+
     r.get('/editor.js', scripts.handler('editor.js'));
     r.get('/:code', project, ...this.web, h('list', (req, res) => this.htmlList(req, res)));
     r.get('/:code/metadata', project, h('metadata', (req, res) => this.metadata(req, res)));
@@ -772,6 +882,12 @@ class IpsModule {
     // a signed copy of the document (the original, or the modified copy), for the source view's downloads
     r.post('/:code/Bundle/:id/signed', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '16kb' }), auth.csrfIfLoggedIn,
       h('signed', (req, res) => this.signed(req, res)));
+    // the patient's comment on the document: anyone logged in can write it
+    r.post('/:code/Bundle/:id/comment', project, this.sameOrigin, this.session, this.form, this.csrf, loggedIn, h('comment', (req, res) => this.savePatientComment(req, res)));
+    // $document: the document as the source view's banner gives it, on the API (same rate limit as sharing)
+    const parameters = express.json({ type: ['application/fhir+json', 'application/json'], limit: '64kb' });
+    r.get('/:code/Bundle/:id/\\$document', project, ...posting, h('document', (req, res) => this.documentOperation(req, res)));
+    r.post('/:code/Bundle/:id/\\$document', project, ...posting, parameters, h('document', (req, res) => this.documentOperation(req, res)));
     r.post('/:code/Bundle/:id/delete', project, this.sameOrigin, this.session, this.form, this.csrf, manager, h('delete', (req, res) => {
       const id = docId(req.params.id);
       if (!this.store.delete(id, req.project.id)) {
@@ -1560,27 +1676,26 @@ class IpsModule {
     if (!doc) {
       return fail(409, `Document ${id} has not been processed yet, so there is no modified copy to share`);
     }
-    const label = row.patient_name ? `Patient Health Document for ${row.patient_name}` : 'Patient Health Document';
-    // signed, if the user asked (the source view's Sign choices)
-    const wanted = { user: isOn(req.body.signUser), system: isOn(req.body.signSystem) };
+    // signed, and with the patient's comments, if the user asked (the source view's choices)
+    const wanted = { user: isOn(req.body.signUser), system: isOn(req.body.signSystem), comments: isOn(req.body.comments), narrative: isOn(req.body.narrative) };
     let shared = doc;
-    if (wanted.user || wanted.system) {
+    if (wanted.user || wanted.system || wanted.comments || wanted.narrative) {
       try {
-        shared = await this.signedCopy(req, doc, wanted);
+        shared = await this.preparedCopy(req, row, doc, wanted);
       } catch (e) {
         return fail(e.status || 500, e.message);
       }
     }
     let out;
     try {
-      // the QR opens this server's viewer, unless the configuration names another
-      out = await this.shl.share(shared, { kind, host: req.get('host'), label, viewer: this.viewer ? this.viewerUrl(req) : undefined });
+      out = await this.shareCopy(req, row, shared, kind);
       out.source = source;
     } catch (e) {
       this.log.error(`IPS module: document ${id} could not be shared as ${kind}: ${e.message}`);
       return fail(502, e.message);
     }
-    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared (${source}${shared !== doc ? ', signed' : ''}) as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
+    const how = [wanted.narrative ? 'narrative regenerated' : null, wanted.user || wanted.system ? 'signed' : null, wanted.comments ? 'with patient comments' : null].filter(Boolean);
+    this.log.info(`IPS module: document ${id} in '${req.project.code}' shared (${[source, ...how].join(', ')}) as ${kind.toUpperCase()} (${out.bytes} bytes, until ${out.expires})`);
     if (json) {
       return res.json(out);
     }
@@ -1588,11 +1703,96 @@ class IpsModule {
       render.renderShare(req.project, row, out, this.ctx(req, res)), Date.now(), req);
   }
 
+  /** Share a copy of a document as an SHL or VHL (the shl module): {kind, link, qr (SVG), text, expires, bytes} */
+  async shareCopy(req, row, doc, kind) {
+    const label = row.patient_name ? `Patient Health Document for ${row.patient_name}` : 'Patient Health Document';
+    // the QR opens this server's viewer, unless the configuration names another
+    return this.shl.share(doc, { kind, host: req.get('host'), label, viewer: this.viewer ? this.viewerUrl(req) : undefined });
+  }
+
+  // ---- $document ----
+
+  /**
+   * $document on a stored document (GET, or POST with a Parameters resource): the document as the
+   * source view's banner gives it - signed, with the patient's comments, the narrative regenerated
+   * (preparedCopy) - as JSON, a ZIP, a PDF, or an SHL/VHL QR code (a PNG), by Accept or _format.
+   * Its OperationDefinition is ips/OperationDefinition-ips-document.json.
+   */
+  async documentOperation(req, res) {
+    const id = docId(req.params.id);
+    const row = this.store.read(id, req.project.id);
+    if (!row) {
+      return this.sendOutcome(res, 404, 'not-found', `No Bundle with id '${req.params.id}'`);
+    }
+    const p = documentParameters(req);
+    if (p.problems.length > 0) {
+      return this.sendOutcome(res, 400, 'invalid', p.problems);
+    }
+    const format = documentFormat(req);
+    if (!format) {
+      return this.sendOutcome(res, 406, 'not-supported', `$document gives ${Object.keys(DOCUMENT_FORMATS).map(k => DOCUMENT_FORMATS[k]).join(', ')}: not ${req.query._format || req.get('Accept')}`);
+    }
+    const modified = p.source === 'modified';
+    const doc = modified ? row.analysed : row.bundle;
+    if (!doc) {
+      return this.sendOutcome(res, 409, 'conflict', `Document ${id} has not been processed yet, so there is no modified copy`);
+    }
+    if ((format === 'shl' || format === 'vhl') && !this.shl) {
+      return this.sendOutcome(res, 404, 'not-supported', 'Sharing is not configured on this server (modules.ips.shl)');
+    }
+    // on the API, the user who signs is the owner of an API token: never a session cookie
+    let principal = null;
+    if (p.userSign) {
+      const who = await auth.principal(req);
+      principal = who && who.via === 'token' ? who : null;
+    }
+    const wanted = { user: p.userSign, system: p.systemSign, comments: p.patientNotes, commentsIfAny: true, narrative: p.regenerateNarrative, principal };
+    let out = doc;
+    if (wanted.user || wanted.system || wanted.comments || wanted.narrative) {
+      try {
+        out = await this.preparedCopy(req, row, doc, wanted);
+      } catch (e) {
+        const status = e.status || 500;
+        return this.sendOutcome(res, status, OUTCOME_CODES[status] || 'exception', e.message);
+      }
+    }
+    const signed = wanted.user || wanted.system;
+    const name = `ips-${req.project.code}-${row.id}${modified ? '-modified' : ''}${signed ? '-signed' : ''}`;
+    const how = [modified ? 'modified' : 'original', wanted.narrative ? 'narrative regenerated' : null, signed ? 'signed' : null, wanted.comments ? 'patient notes' : null].filter(Boolean).join(', ');
+    this.log.info(`IPS module: $document on ${row.id} in '${req.project.code}' as ${format} (${how})`);
+    res.set('Cache-Control', 'no-store');
+    if (format === 'json') {
+      return this.sendJson(res, 200, out);
+    }
+    const json = JSON.stringify(out, null, 2);
+    if (format === 'zip') {
+      res.set('Content-Disposition', `attachment; filename="${name}.zip"`);
+      return res.status(200).type('application/zip').send(exporter.zip([{ name: `${name}.json`, data: json }]));
+    }
+    if (format === 'pdf') {
+      res.set('Content-Disposition', `attachment; filename="${name}.pdf"`);
+      return res.status(200).type('application/pdf').send(await exporter.pdf(out, json, name));
+    }
+    // shl, vhl: the QR code as a PNG; what it carries, and until when, in headers
+    let shared;
+    try {
+      shared = await this.shareCopy(req, row, out, format);
+    } catch (e) {
+      this.log.error(`IPS module: $document on ${row.id} could not be shared as ${format}: ${e.message}`);
+      return this.sendOutcome(res, 502, 'transient', e.message);
+    }
+    res.set('X-Health-Link', shared.text);
+    res.set('X-Health-Link-Manifest', shared.link);
+    res.set('X-Health-Link-Expires', shared.expires);
+    return res.status(200).type('image/png').send(qrPng(shared.text));
+  }
+
   // ---- signing ----
 
   /**
-   * A signed copy of a document: {source: 'original' | 'modified', user: bool, system: bool}
-   * -> the signed document (JSON). Not kept.
+   * A copy of a document as the source view's choices ask: {source: 'original' | 'modified',
+   * user: bool, system: bool, comments: bool, narrative: bool} -> the document (JSON), with the
+   * narrative regenerated, signed, and/or with the patient's comments (preparedCopy). Not kept.
    */
   async signed(req, res) {
     const id = docId(req.params.id);
@@ -1606,19 +1806,63 @@ class IpsModule {
     if (!doc) {
       return res.status(409).json({ error: `Document ${id} has not been processed yet, so there is no modified copy to sign` });
     }
-    const wanted = { user: b.user === true, system: b.system === true };
-    if (!wanted.user && !wanted.system) {
-      return res.status(400).json({ error: 'Say who signs: the user, the system, or both' });
+    const wanted = { user: b.user === true, system: b.system === true, comments: b.comments === true, narrative: b.narrative === true };
+    if (!wanted.user && !wanted.system && !wanted.comments && !wanted.narrative) {
+      return res.status(400).json({ error: 'Say who signs (the user, the system, or both), or ask for the patient\'s comments, or the narrative regenerated' });
     }
     let signed;
     try {
-      signed = await this.signedCopy(req, doc, wanted);
+      signed = await this.preparedCopy(req, row, doc, wanted);
     } catch (e) {
       return res.status(e.status || 500).json({ error: e.message });
     }
-    this.log.info(`IPS module: document ${id} in '${req.project.code}' signed (${modified ? 'modified' : 'original'}) by ${[wanted.user ? 'the user' : null, wanted.system ? 'the system' : null].filter(Boolean).join(' and ')}`);
+    const signers = [wanted.user ? 'the user' : null, wanted.system ? 'the system' : null].filter(Boolean);
+    this.log.info(`IPS module: document ${id} in '${req.project.code}' copied (${modified ? 'modified' : 'original'})` + (wanted.narrative ? ', narrative regenerated' : '') +
+      (signers.length ? `, signed by ${signers.join(' and ')}` : '') + (wanted.comments ? ', with the patient\'s comments' : ''));
     res.set('Cache-Control', 'no-store');
     return this.sendJson(res, 200, signed);
+  }
+
+  /**
+   * A copy of a document for download or sharing, as the source view's choices ask, in this order:
+   * with the patient's comments (wanted.comments), any patient notes section (LOINC 51855-5) the
+   * document has is removed; the narrative is regenerated (wanted.narrative), as the narrative step
+   * does it; it is signed (wanted.user, wanted.system: signedCopy); then the comments go in as the
+   * first section - after signing, so they are not signed. Throws an error with a status as
+   * signedCopy does, 409 when comments are asked for and there are none (unless wanted.commentsIfAny:
+   * then there are none to add), and 422 when the narrative can't be generated. wanted.principal:
+   * who signs as the user (signedCopy)
+   */
+  async preparedCopy(req, row, doc, wanted) {
+    let comment = null;
+    if (wanted.comments) {
+      comment = this.store.patientComment(row.id);
+      if (!comment && !wanted.commentsIfAny) {
+        throw Object.assign(new Error(`Document ${row.id} has no patient comments to include`), { status: 409 });
+      }
+      if (comment) {
+        doc = patientComments.removePatientNotes(doc);
+      }
+    }
+    if (wanted.narrative) {
+      doc = structuredClone(doc);
+      try {
+        await generateNarrative(doc, this);
+      } catch (e) {
+        throw Object.assign(new Error(`The narrative could not be generated: ${e.message}`), { status: 422 });
+      }
+    }
+    if (wanted.user || wanted.system) {
+      doc = await this.signedCopy(req, doc, wanted);
+    }
+    if (comment) {
+      try {
+        doc = patientComments.addPatientComments(doc, comment.markdown);
+      } catch (e) {
+        throw Object.assign(new Error(e.message), { status: 422 });
+      }
+    }
+    return doc;
   }
 
   /**
@@ -1672,10 +1916,11 @@ class IpsModule {
     const purpose = 'ips:sign-document';
     let user = null;
     let system = null;
-    const me = wanted.user ? auth.currentUser(req) : null;
+    // the user: the session's (the web page), or the one the API names (wanted.principal: the owner of an API token, or null)
+    const me = wanted.user ? (wanted.principal !== undefined ? wanted.principal : auth.currentUser(req)) : null;
     if (wanted.user) {
       if (!me) {
-        throw err(401, 'Log in to sign as yourself');
+        throw err(401, wanted.principal !== undefined ? 'user-sign needs an API token (Authorization: Bearer ...) for the user who signs' : 'Log in to sign as yourself');
       }
       const loaded = keystore.loadPrivateKey({ owner: me.id, types, purpose, actor: me.id });
       if (!loaded) {
@@ -2223,7 +2468,7 @@ class IpsModule {
       return res.json(list.map(np => ({ jurisdiction: np.jurisdiction, packageId: np.packageId, version: np.version, url: np.url,
         ...(np.snomedEdition ? { snomedEdition: np.snomedEdition } : {}) })));
     }
-    this.sendHtml(res, 'National Profiles', render.renderNationalProfiles(list, this.ctx(req, res), message), Date.now(), req);
+    this.sendHtml(res, 'Jurisdictional Profiles', render.renderNationalProfiles(list, this.ctx(req, res), message), Date.now(), req);
   }
 
   /** Add (id null) or change a national profile, from the form: jurisdiction, packageId, version, url, snomedEdition (optional). */
@@ -2790,6 +3035,7 @@ class IpsModule {
         return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
       }
       const { view, narrative, source } = render.viewOf(req.query);
+      row.comment = this.store.patientComment(row.id);
       row.results = {};
       for (const step of this.steps) {
         row.results[step.name] = this.store.readResult(row.id, step.name);
@@ -2802,6 +3048,7 @@ class IpsModule {
         problemsOnly: req.query.problems === '1',
         narrative,
         source,
+        saved: req.query.saved === '1',
         signing: view === 'source' ? this.signingState(req) : null
       };
       return this.sendHtml(res, documentPageTitle(row), render.renderDocument(req.project, row, view, ctx), start, req);
@@ -2819,6 +3066,26 @@ class IpsModule {
       res.set('Content-Disposition', `attachment; filename="ips-${req.project.code}-${row.id}${modified ? '-modified' : ''}.json"`);
     }
     return this.sendJson(res, 200, modified ? row.analysed : row.bundle);
+  }
+
+  /** The patient's comment on a document (the Patient Comments tab): replaced, or removed when empty. */
+  savePatientComment(req, res) {
+    const id = docId(req.params.id);
+    if (!this.store.read(id, req.project.id)) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`No document with id '${req.params.id}'`), 404);
+    }
+    const text = typeof req.body?.comment === 'string' ? req.body.comment.replace(/\r\n/g, '\n') : '';
+    if (text.length > render.PATIENT_COMMENT_MAX) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`The comment is too long: it can hold at most ${render.PATIENT_COMMENT_MAX} characters`), 400);
+    }
+    // pure markdown only: no HTML at all
+    const html = patientComments.markdownHtmlParts(text);
+    if (html.length > 0) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`The comment has HTML in it (${html[0].length > 60 ? html[0].slice(0, 60) + '...' : html[0]}): only pure markdown is allowed`), 400);
+    }
+    this.store.savePatientComment(id, text, req.user.name || req.user.login);
+    this.log.info(`IPS module: patient comment on document ${id} in '${req.project.code}' ${text.trim() ? 'saved' : 'removed'} by ${req.user.login}`);
+    res.redirect(`${req.baseUrl}/${encodeURIComponent(req.project.code)}/Bundle/${id}?view=comments&saved=1`);
   }
 
   // ---- patients ----
@@ -3074,7 +3341,8 @@ class IpsModule {
           versioning: 'no-version',
           readHistory: false,
           updateCreate: false,
-          searchParam: capabilitySearchParams()
+          searchParam: capabilitySearchParams(),
+          operation: [{ name: 'document', definition: DOCUMENT_OPERATION_DEFINITION }]
         }, {
           type: 'Patient',
           documentation: 'The patients of the documents received: each document\'s Patient is matched to one seen before ' +
