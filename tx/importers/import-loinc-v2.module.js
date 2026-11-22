@@ -1,37 +1,42 @@
 'use strict';
 
-// LOINC CSV release -> sqlite-v2 (tx/importers/sqlite-v2/schema-v2.sql).
-//
-// Source-specific parsing only; the shared final stage (V2Builder.finish) numbers, rewrites,
-// builds the sets and indexes. What is read (paths relative to the release root):
-//   LoincTable/Loinc.csv          LOINC terms: display LONG_COMMON_NAME; inactive iff STATUS is
-//                                 DISCOURAGED (as tx/cs/cs-loinc.js); literal properties; CLASS
-//                                 link to the CLASS part; designations LONG_COMMON_NAME (preferred),
-//                                 SHORTNAME, RELATEDNAMES2.
-//   PartFile/Part.csv             parts: display PartName, DisplayName designation, STATUS.
-//   PartFile/LoincPartLink_Primary.csv   COMPONENT, PROPERTY, ... links (term -> part).
-//   ComponentHierarchyBySystem/ComponentHierarchyBySystem.csv
-//                                 `parent` hierarchy links (child -> parent) and, from
-//                                 PATH_TO_ROOT, the explicit ancestor pairs that define the
-//                                 descendant sets. (2.83 ships this file instead of
-//                                 MultiAxialHierarchy.csv.) The path closure is what tx.fhir.org
-//                                 serves; the edge closure over-connects codes that appear under
-//                                 several paths.
-//   AnswerFile/AnswerList.csv     answer lists and answers; `Answer` links (list -> answer); the
-//                                 list's members as a refset set; external answer codes.
-//   AnswerFile/LoincAnswerListLink.csv   `answers-for` links (list -> term).
-//   ConsumerName/ConsumerName.csv, LinguisticVariants/*LinguisticVariant.csv   designations; the
-//                                 variants' axis columns give PartName designations on the parts.
-//   PartFile/PartRelatedCodeMapping.csv,
-//   LoincIeeeMedicalDeviceCodeMappingTable/*.csv   external_map rows.
-// Not stored: the inverse properties `child` (of parent) and `AnswerList` (of Answer and
-// answers-for); cs_config inverseProperties names them, their sets are the prop sets.
+// LOINC CSV release -> a terminology file (tx/importers/sqlite-v2/schema.sql). The files read
+// (paths relative to the release root): LoincTable/Loinc.csv, AccessoryFiles/PartFile/{Part,
+// LoincPartLink_Primary,PartRelatedCodeMapping}.csv, ComponentHierarchyBySystem/
+// ComponentHierarchyBySystem.csv, AnswerFile/{AnswerList,LoincAnswerListLink}.csv,
+// ConsumerName/ConsumerName.csv, LinguisticVariants/*LinguisticVariant.csv and the IEEE device
+// code table. Where each fact goes:
+//   concept      terms, parts, answer lists, answers, hierarchy-only nodes; display; inactive iff
+//                STATUS is DISCOURAGED; sort keys by kind (the builder's numbering)
+//   item         every designation (LONG_COMMON_NAME preferred, SHORTNAME, RELATEDNAMES2, the part's
+//                DisplayName, ConsumerName, the linguistic variants and their PartName translations)
+//   link         part links (LoincPartLink_Primary, seq = its row), CLASS (Loinc.csv, seq = the term's
+//                row), parent (ComponentHierarchyBySystem, seq = the first row of the pair: the
+//                hierarchy order upstream lists parents and children in, see below), Answer (list ->
+//                answer, seq = the answer's SequenceNumber in the list: answer lists are ordered),
+//                answers-for (list -> term, seq = its LoincAnswerListLink row), ancestor (PATH_TO_ROOT
+//                pairs, descendant -> ancestor; the closure of `parent`, catalog closure_from)
+//   literal      the Loinc.csv properties and the part's STATUS
+//   value_label  CLASSTYPE 1-4 names
+//   mapping      PartRelatedCodeMapping, the IEEE device code table, answers' external codes
+//   catalog      loincCatalog: the link and literal properties, then `child` (inverse_of parent),
+//                `Answer|answers-for` (a union, filterable 0), `AnswerList` (inverse_of that union) and
+//                `ancestor` (the closure source, filterable through the hierarchy's sets only)
+//   ix_order     derived-by-importer: rank / ids (upstream's code key order: Part.csv's parts,
+//                Loinc.csv's terms, AnswerList.csv's lists and answers as they first appear, then
+//                hierarchy-only codes) and walk (the whole system in upstream's walk of that order).
+//                They are the upstream importer's numbering, not a release fact, and need its file
+//                sequence to compute: the importer writes them. hier_start / hier (upstream's
+//                parent / child entry order) only when the parent links' seq does not reproduce it.
 
 const fs = require('fs');
 const path = require('path');
-const { BaseTerminologyModule } = require('./tx-import-base');
-const { V2Builder } = require('./sqlite-v2/builder');
+const Database = require('better-sqlite3');
+const { TerminologyBuilder, vacuumFile, analyze } = require('./sqlite-v2/builder');
+const { writeOrderArray, writeActiveOrder } = require('./sqlite-v2/indexes');
 const { csvObjects } = require('./sqlite-v2/text');
+const { hierarchyArrays } = require('../sqlite-v2/orders');
+const { BaseTerminologyModule } = require('./tx-import-base');
 
 const LOINC = 'http://loinc.org';
 const PROP = `${LOINC}/property`;
@@ -79,7 +84,7 @@ const KIND = { term: 0, part: 1, list: 2, answer: 3, node: 4 };
 // inserts it): Part.csv's parts, then Loinc.csv's terms, then AnswerList.csv's lists and answers
 // as they first appear, then the ComponentHierarchyBySystem codes not seen yet. cs-loinc.js lists
 // filter results by that key, and the whole system by type (its Codes.Type), then key. Kept in
-// concept_order as (type, stage * ORDER_STAGE + row)
+// as (type, stage * ORDER_STAGE + row): the ix_order rank / ids the importer writes (writeOrders)
 const ORDER_TYPE = { term: 1, part: 2, list: 3, answer: 4 };
 const ORDER_STAGE = 1e7;
 const ORDER = { parts: 0, terms: 1, answers: 2, hierarchy: 3, unkeyed: 4 };
@@ -137,52 +142,67 @@ function files(root) {
   return f;
 }
 
-/** The LOINC property definitions, in a fixed order (shared with import-loinc-v2-classic). */
-function loincProperties(b) {
-  const prop = (code, valueKind, isHierarchy = false) =>
-    b.property({ code, uri: `${PROP}/${code}`, fhirType: valueKind === 'concept' ? 'code' : 'string', valueKind, isHierarchy, display: code });
-  const parent = prop('parent', 'concept', true);
-  const partProp = Object.fromEntries([...new Set(Object.values(PART_LINK)), 'CLASS'].map(c => [c, prop(c, 'concept')]));
-  const lit = Object.fromEntries(LITERALS.map(([c]) => [c, prop(c, 'literal')]));
-  const answer = prop('Answer', 'concept');
-  const answersFor = prop('answers-for', 'concept');
-  return { prop, parent, partProp, lit, answer, answersFor };
+
+const CLASSTYPE = { 1: 'Laboratory class', 2: 'Clinical class', 3: 'Claims attachment', 4: 'Surveys' };
+
+/**
+ * The LOINC catalog (shared with the classic-db importer): the hierarchy, the part axes and CLASS,
+ * the Loinc.csv literals, Answer (ordered: link.seq is the answer's place in its list) and
+ * answers-for; the inverse rows cs-loinc.js names (`child` of parent; `AnswerList` of the union of
+ * Answer and answers-for, which no filter names); `ancestor`, the PATH_TO_ROOT pairs the
+ * hierarchy's descendants come from (closure_from); the CLASSTYPE value labels.
+ */
+function loincCatalog(b) {
+  const link = (code, extra = {}) => b.property({ code, uri: `${PROP}/${code}`, shape: 'link', display: code, ...extra });
+  const parent = link('parent', { subsumption: true });
+  const partProp = Object.fromEntries([...new Set(Object.values(PART_LINK)), 'CLASS'].map((c) => [c, link(c)]));
+  const lit = Object.fromEntries(LITERALS.map(([c]) => [c, b.property({ code: c, uri: `${PROP}/${c}`, shape: 'literal', fhirType: 'string', display: c })]));
+  const answer = link('Answer', { ordered: true });
+  const answersFor = link('answers-for');
+  b.property({ code: 'child', uri: `${PROP}/child`, shape: 'link', display: 'child', inverseOf: parent });
+  const listLinks = b.property({ code: 'Answer|answers-for', shape: 'union', display: 'Answer and answers-for', filterable: false });
+  b.propertyMember(listLinks, answer);
+  b.propertyMember(listLinks, answersFor);
+  b.property({ code: 'AnswerList', uri: `${PROP}/AnswerList`, shape: 'link', display: 'AnswerList', inverseOf: listLinks });
+  const ancestor = b.property({ code: 'ancestor', uri: `${PROP}/ancestor`, shape: 'link', display: 'ancestor (PATH_TO_ROOT)' });
+  b.setClosureFrom(parent, ancestor);
+  for (const [v, d] of Object.entries(CLASSTYPE)) b.valueLabel(lit.CLASSTYPE, String(v), d);
+  return { link, parent, partProp, lit, answer, answersFor, ancestor };
 }
 
-/** cs_config for LOINC (shared with import-loinc-v2-classic). */
-function applyLoincConfig(b) {
-  b.setConfig('caseSensitive', 1);
-  b.setConfig('defaultLanguage', 'en-US');
-  b.setConfig('hierarchyMeaning', 'is-a');
-  b.setConfig('inverseProperties', { child: 'parent', AnswerList: ['Answer', 'answers-for'] });
-  b.setConfig('propertyValueDescriptions', { CLASSTYPE: { 1: 'Laboratory class', 2: 'Clinical class', 3: 'Claims attachment', 4: 'Surveys' } });
-  b.setConfig('designationsAsProperties', ['RELATEDNAMES2']);
-  b.setConfig('implicitValueSets', [
-    { pattern: `${LOINC}/vs`, kind: 'all' },
-    { pattern: `${LOINC}/vs/{code}`, kind: 'refset' },
-    { pattern: `${LOINC}/vs?fhir_vs=isa/{code}`, kind: 'isa' },
-  ]);
+/** the code system row of a LOINC file */
+function loincCodeSystem(b, version, description) {
+  b.codeSystem({ uri: LOINC, version, name: 'LOINC', title: 'Logical Observation Identifier Names and Codes (LOINC)',
+    description, caseSensitive: true, hierarchyMeaning: 'is-a', defaultLanguage: 'en-US' });
+  // as cs-loinc.js presents it: the stored order (main's key order and walk), $lookup's name the
+  // title, the description the name, versions compared naturally
+  b.setBehaviour('expansionOrder', 'stored');
+  b.setBehaviour('lookupName', 'title');
+  b.setBehaviour('description', 'name');
+  b.setBehaviour('versionAlgorithm', 'natural');
 }
 
-/** @param {object} cfg { source, dest, version, overwrite, log } */
+/** @param {object} cfg { source, dest, version, overwrite, log, hierarchyArrays: 'auto' | 'always' | 'never' } */
 async function importLoincV2(cfg) {
   const log = cfg.log || console.log;
   const f = files(cfg.source);
-  const b = new V2Builder(cfg.dest, { overwrite: cfg.overwrite, log, importer: 'loinc-v2' });
+  const b = new TerminologyBuilder(cfg.dest, { overwrite: cfg.overwrite, log, importer: 'loinc-v2' });
   for (const p of [f.loinc, f.part, f.partLink, f.hierarchy, f.answerList, f.answerLink, f.consumer, f.partMap, f.ieee, ...f.variants]) {
     if (fs.existsSync(p)) b.addSource(p);
   }
-  b.setCodeSystem({ uri: LOINC, version: cfg.version, name: 'LOINC',
-    title: 'Logical Observation Identifier Names and Codes (LOINC)', description: `LOINC ${cfg.version} (CSV release)` });
+  loincCodeSystem(b, cfg.version, `LOINC ${cfg.version} (CSV release)`);
+  const { parent, partProp, lit, answer, answersFor, ancestor } = loincCatalog(b);
 
-  const { parent, partProp, lit, answer, answersFor } = loincProperties(b);
   const use = (code) => ({ system: LOINC, code, display: code });
   // Designations stay active when the term is DISCOURAGED (as tx.fhir.org reports them).
   const desig = (i, language, code, term, preferred = false) =>
-    term && b.designation(i, { language, use: use(code), term: term.trim(), active: true, preferred });
+    term && b.item(i, { language, use: use(code), text: term.trim(), active: true, preferred });
   const stats = { classLinksMissing: 0, partLinksSkipped: 0, hierarchyNodes: 0, ancestorPairs: 0 };
 
-  // term -> { axis: part } for the axes a LinguisticVariant file translates (PartName below)
+  // upstream's code key order and walk, by concept handle
+  const sourceOrder = new Map();
+  const setOrder = (i, type, seq) => sourceOrder.set(i, [type, seq]);
+
   const axisParts = new Map();
   const noteAxisPart = (term, axis, part) => {
     let a = axisParts.get(term);
@@ -190,7 +210,6 @@ async function importLoincV2(cfg) {
     a[axis] = part;
   };
 
-  // Concepts: terms, parts, answer lists, answers, then hierarchy-only nodes.
   const terms = [];
   let termRow = 0;
   await b.stage('parse Loinc.csv', async () => {
@@ -199,14 +218,14 @@ async function importLoincV2(cfg) {
       if (!code) continue;
       const st = status(r.STATUS, 'ACTIVE');
       const i = b.concept(code, { active: st !== 'DISCOURAGED', display: r.LONG_COMMON_NAME.trim() || code, sortKey: KIND.term });
-      b.setSourceOrder(i, ORDER_TYPE.term, ORDER.terms * ORDER_STAGE + (++termRow));
+      setOrder(i, ORDER_TYPE.term, ORDER.terms * ORDER_STAGE + (++termRow));
       for (const [p, col] of LITERALS) b.literal(i, lit[p], p === 'STATUS' ? st : r[col].trim());
       desig(i, 'en-US', 'LONG_COMMON_NAME', r.LONG_COMMON_NAME, true);
       desig(i, 'en-US', 'SHORTNAME', r.SHORTNAME);
       desig(i, 'en-US', 'RELATEDNAMES2', r.RELATEDNAMES2);
-      if (r.CLASS.trim()) terms.push(i, r.CLASS.trim().toUpperCase());
+      if (r.CLASS.trim()) terms.push(i, r.CLASS.trim().toUpperCase(), termRow);
     }
-    return terms.length;
+    return termRow;
   });
 
   const classPart = new Map();
@@ -216,45 +235,41 @@ async function importLoincV2(cfg) {
       const code = r.PartNumber.trim();
       if (!code) continue;
       const st = status(r.Status, null);
-      const active = st !== 'DISCOURAGED';
-      const i = b.concept(code, { active, display: r.PartName.trim() || code, sortKey: KIND.part });
-      b.setSourceOrder(i, ORDER_TYPE.part, ORDER.parts * ORDER_STAGE + n + 1);
+      const i = b.concept(code, { active: st !== 'DISCOURAGED', display: r.PartName.trim() || code, sortKey: KIND.part });
+      setOrder(i, ORDER_TYPE.part, ORDER.parts * ORDER_STAGE + n + 1);
       if (r.PartTypeName.trim() === 'CLASS' && r.PartName.trim()) classPart.set(r.PartName.trim().toUpperCase(), i);
       desig(i, 'en-US', 'DisplayName', r.PartDisplayName);
       if (st) b.literal(i, lit.STATUS, st);
       n++;
     }
-    for (let k = 0; k < terms.length; k += 2) {
+    for (let k = 0; k < terms.length; k += 3) {
       const c = classPart.get(terms[k + 1]);
-      if (c === undefined) stats.classLinksMissing++; else { b.link(terms[k], partProp.CLASS, c); noteAxisPart(terms[k], 'CLASS', c); }
+      if (c === undefined) stats.classLinksMissing++;
+      else { b.link(terms[k], partProp.CLASS, c, { seq: terms[k + 2] }); noteAxisPart(terms[k], 'CLASS', c); }
     }
     terms.length = 0;
     return n;
   });
 
   await b.stage('parse AnswerList.csv', async () => {
-    let n = 0;
-    let row = 0;
-    let currentList = ''; // (the built-in importer gives a list a key at each run of its rows)
+    let n = 0, row = 0, currentList = '';
     for await (const r of csvObjects(f.answerList)) {
       const listCode = r.AnswerListId.trim(), answerCode = r.AnswerStringId.trim();
       const newRun = listCode !== currentList;
       currentList = listCode;
       if (!listCode) continue;
       const list = b.concept(listCode, { display: r.AnswerListName.trim() || listCode, sortKey: KIND.list });
-      if (newRun) b.setSourceOrder(list, ORDER_TYPE.list, ORDER.answers * ORDER_STAGE + (++row));
+      if (newRun) setOrder(list, ORDER_TYPE.list, ORDER.answers * ORDER_STAGE + (++row));
       if (!answerCode) continue;
       const known = b.idx(answerCode) !== undefined;
       const a = b.concept(answerCode, { display: r.DisplayText.trim() || answerCode, sortKey: KIND.answer });
-      if (!b.hasSourceOrder(a)) b.setSourceOrder(a, ORDER_TYPE.answer, ORDER.answers * ORDER_STAGE + (++row));
-      b.link(list, answer, a);
-      // the answer's position in the list: lists are ordered (ordinal scales, questionnaires)
-      b.refsetDef(list, ['sequence'], ['i']);
+      if (!sourceOrder.has(a)) setOrder(a, ORDER_TYPE.answer, ORDER.answers * ORDER_STAGE + (++row));
+      // the answer's position in the list (lists are ordered: ordinal scales, questionnaires)
       const seq = Number.parseInt(r.SequenceNumber, 10);
-      b.refsetMember(list, a, Number.isFinite(seq) ? [seq] : null);
+      b.link(list, answer, a, { seq: Number.isFinite(seq) ? seq : null });
       if (!known && r.ExtCodeId.trim() && r.ExtCodeSystem.trim()) {
-        b.externalMap(a, { system: EXTERNAL_SYSTEMS[r.ExtCodeSystem.trim()] || r.ExtCodeSystem.trim(),
-          version: r.ExtCodeSystemVersion.trim() || null, code: r.ExtCodeId.trim(), display: r.ExtCodeDisplayName.trim() || null });
+        b.mapping(a, { system: EXTERNAL_SYSTEMS[r.ExtCodeSystem.trim()] || r.ExtCodeSystem.trim(), version: r.ExtCodeSystemVersion.trim() || null,
+          code: r.ExtCodeId.trim(), display: r.ExtCodeDisplayName.trim() || null, relationship: 'equivalent' });
       }
       n++;
     }
@@ -262,41 +277,43 @@ async function importLoincV2(cfg) {
   });
 
   await b.stage('parse LoincAnswerListLink.csv', async () => {
-    let n = 0;
+    let n = 0, row = 0;
     for await (const r of csvObjects(f.answerLink)) {
+      row++;
       const t = b.idx(r.LoincNumber.trim()), l = b.idx(r.AnswerListId.trim());
       if (t === undefined || l === undefined) continue;
-      b.link(l, answersFor, t);
+      b.link(l, answersFor, t, { seq: row });
       n++;
     }
     return n;
   });
 
   await b.stage('parse LoincPartLink_Primary.csv', async () => {
-    let n = 0;
+    let n = 0, row = 0;
     for await (const r of csvObjects(f.partLink)) {
+      row++;
       const p = PART_LINK[r.PartTypeName.trim()];
       const s = b.idx(r.LoincNumber.trim()), t = b.idx(r.PartNumber.trim());
       if (!p || s === undefined || t === undefined) { stats.partLinksSkipped++; continue; }
-      b.link(s, partProp[p], t);
+      b.link(s, partProp[p], t, { seq: row });
       if (VARIANT_AXES.includes(p)) noteAxisPart(s, p, t);
       n++;
     }
     return n;
   });
 
-  // A node can be named as a parent before its own row: placeholder display until then.
   const placeholder = new Set();
-  // the built-in importer's child links (for the walk): a row's link only when its parent
-  // already has a key, each (parent, child) once, in row order
-  const childLinks = new Map();
+  const childLinks = new Map();   // upstream's child links (for the walk)
   const hierPairs = new Set();
+  const hier = { xs: [], others: [], child: [] };   // upstream's entries, in order (v2 hierarchyEntry)
   const node = (code) => {
     const before = b.codes.length;
     const i = b.concept(code, { display: code, sortKey: KIND.node });
     if (b.codes.length > before) { placeholder.add(i); stats.hierarchyNodes++; }
     return i;
   };
+  const parentLinks = [];         // [child, parent, first row] of each parent link, for the order check
+  const parentSeen = new Set();
   await b.stage('parse ComponentHierarchyBySystem.csv', async () => {
     let n = 0;
     for await (const r of csvObjects(f.hierarchy)) {
@@ -304,32 +321,32 @@ async function importLoincV2(cfg) {
       if (!code) continue;
       const before = b.codes.length;
       const c = b.concept(code, { display: r.CODE_TEXT.trim() || code, sortKey: KIND.node });
-      if (!b.hasSourceOrder(c)) b.setSourceOrder(c, ORDER_TYPE.part, ORDER.hierarchy * ORDER_STAGE + n + 1);
+      if (!sourceOrder.has(c)) setOrder(c, ORDER_TYPE.part, ORDER.hierarchy * ORDER_STAGE + n + 1);
       if (b.codes.length > before) stats.hierarchyNodes++;
       else if (placeholder.delete(c)) b.setDisplay(c, r.CODE_TEXT.trim() || code);
       const parentCode = r.IMMEDIATE_PARENT.trim();
-      if (parentCode && b.idx(parentCode) !== undefined && b.hasSourceOrder(b.idx(parentCode))) {
+      if (parentCode && b.idx(parentCode) !== undefined && sourceOrder.has(b.idx(parentCode))) {
         const p = b.idx(parentCode);
         let kids = childLinks.get(p);
         if (!kids) childLinks.set(p, kids = []);
         if (!kids.includes(c)) kids.push(c);
-        // the built-in importer's Relationships rows for this row: the code's parent, then the
-        // parent's child, each pair once (its $lookup lists them in that order)
         const pair = c + ':' + p;
         if (!hierPairs.has(pair)) {
           hierPairs.add(pair);
-          b.hierarchyEntry(c, p, false);
-          b.hierarchyEntry(p, c, true);
+          hier.xs.push(c, p); hier.others.push(p, c); hier.child.push(0, 1);
         }
       }
       if (parentCode && parentCode !== code) {
         const p = node(parentCode);
-        b.link(c, parent, p);
+        // seq: the hierarchy row (the builder keeps a pair's first)
+        b.link(c, parent, p, { seq: n + 1 });
+        const k = c + ':' + p;
+        if (!parentSeen.has(k)) { parentSeen.add(k); parentLinks.push(c, p, n + 1); }
       }
       for (const a of r.PATH_TO_ROOT.split('.')) {
         const ac = a.trim();
         if (!ac || ac === code) continue;
-        b.ancestor(c, node(ac));
+        b.link(c, ancestor, node(ac));
         stats.ancestorPairs++;
       }
       n++;
@@ -354,10 +371,6 @@ async function importLoincV2(cfg) {
         desig(i, lang, 'SHORTNAME', r.SHORTNAME);
         desig(i, lang, 'LinguisticVariantDisplayName', r.LinguisticVariantDisplayName);
         desig(i, lang, 'RELATEDNAMES2', r.RELATEDNAMES2);
-        // The axis columns (COMPONENT ... CLASS) translate the term's Parts: each becomes a
-        // PartName designation on the Part the term links to for that axis - for some languages
-        // (ko-KR, most of fr-CA) the only translations LOINC has. Each distinct name once (as
-        // import-loinc.module.js)
         const axes = axisParts.get(i);
         if (axes) {
           for (const axis of VARIANT_AXES) {
@@ -382,10 +395,9 @@ async function importLoincV2(cfg) {
       for await (const r of csvObjects(f.partMap)) {
         const i = b.idx(r.PartNumber.trim());
         const system = r.ExtCodeSystem.trim();
-        // RadLex mappings are not code-to-code maps (as import-loinc.module.js)
         if (i === undefined || !r.ExtCodeId.trim() || !system || system === 'http://www.radlex.org') continue;
-        b.externalMap(i, { system: EXTERNAL_SYSTEMS[system] || system, version: r.ExtCodeSystemVersion.trim() || null,
-          code: r.ExtCodeId.trim(), display: r.ExtCodeDisplayName.trim() || null, equivalence: r.Equivalence.trim() || 'equivalent' });
+        b.mapping(i, { system: EXTERNAL_SYSTEMS[system] || system, version: r.ExtCodeSystemVersion.trim() || null,
+          code: r.ExtCodeId.trim(), display: r.ExtCodeDisplayName.trim() || null, relationship: r.Equivalence.trim() || 'equivalent' });
         n++;
       }
     }
@@ -394,47 +406,127 @@ async function importLoincV2(cfg) {
         const i = b.idx(r.LOINC_NUM.trim());
         if (i === undefined || !r.IEEE_CF_CODE10.trim()) continue;
         const eq = r.EQUIVALENCE.trim();
-        b.externalMap(i, { system: 'urn:iso:std:iso:11073:10101', code: r.IEEE_CF_CODE10.trim(),
-          display: r.IEEE_REFID.trim() || null, equivalence: IEEE_EQUIVALENCE[eq] || eq });
+        b.mapping(i, { system: 'urn:iso:std:iso:11073:10101', code: r.IEEE_CF_CODE10.trim(),
+          display: r.IEEE_REFID.trim() || null, relationship: IEEE_EQUIVALENCE[eq] || eq });
         n++;
       }
     }
     return n;
   });
 
-  // codes the built-in importer gives no key (a hierarchy parent with no row of its own): last
   stats.unkeyed = 0;
-  for (let i = 0; i < b.codes.length; i++) {
-    if (!b.hasSourceOrder(i)) b.setSourceOrder(i, ORDER_TYPE.part, ORDER.unkeyed * ORDER_STAGE + (++stats.unkeyed));
-  }
-  await b.stage('whole-system walk', async () => {
-    const place = loincWalk(b.sourceOrder, childLinks);
-    for (const [i, w] of place) b.setSourceWalk(i, w);
-    return place.size;
-  });
+  for (let i = 0; i < b.codes.length; i++) if (!sourceOrder.has(i)) setOrder(i, ORDER_TYPE.part, ORDER.unkeyed * ORDER_STAGE + (++stats.unkeyed));
+  const walkPlace = await b.stage('whole-system walk', async () => loincWalk(sourceOrder, childLinks));
 
-  applyLoincConfig(b);
-  return b.finish(stats);
+  // does the parent links' seq give upstream's entry order? (then the reader merges a concept's
+  // parent links and its children's links by seq, and no array is stored)
+  const order = await b.stage('hierarchy order check', async () => hierarchyCheck(b.codes.length, hier, parentLinks));
+  stats.hierarchyOrder = order.stats;
+  const storeHier = cfg.hierarchyArrays === 'always' || (cfg.hierarchyArrays !== 'never' && order.stats.conceptsDiffering > 0);
+  const derived = [{ table: 'ix_order', name: 'rank' }, { table: 'ix_order', name: 'ids' }, { table: 'ix_order', name: 'walk' }];
+  if (storeHier) derived.push({ table: 'ix_order', name: 'hier_start' }, { table: 'ix_order', name: 'hier' });
+  b.setMeta('derived-by-importer', derived);
+  stats.hierarchyArraysStored = storeHier;
+
+  const summary = b.finish(stats, { vacuum: false });
+  const t0 = Date.now();
+  writeOrders(cfg.dest, b, sourceOrder, walkPlace, storeHier ? hier : null);
+  summary.timings.derived = { s: (Date.now() - t0) / 1000, peakRssMiB: Math.round(process.resourceUsage().maxRSS / 1024) };
+  const t1 = Date.now();
+  vacuumFile(cfg.dest);
+  summary.timings.vacuum = { s: (Date.now() - t1) / 1000 };
+  summary.fileBytes = fs.statSync(cfg.dest).size;
+  return summary;
+}
+
+/**
+ * Upstream's entries (per concept: its parent and child relations in hierarchy-file row order,
+ * only pairs whose parent had a key at that row, each once) against the parent links ordered by
+ * the first row of each pair. Counts concepts whose lists differ (by handle).
+ */
+function hierarchyCheck(n, hier, parentLinks) {
+  const key = (other, isChild) => `${isChild ? 'c' : 'p'}${other}`;
+  const up = new Map();
+  for (let k = 0; k < hier.xs.length; k++) {
+    let l = up.get(hier.xs[k]);
+    if (!l) up.set(hier.xs[k], l = []);
+    l.push(key(hier.others[k], hier.child[k]));
+  }
+  const fromLinks = new Map();
+  const add = (x, e, seq) => { let l = fromLinks.get(x); if (!l) fromLinks.set(x, l = []); l.push([seq, e]); };
+  for (let k = 0; k < parentLinks.length; k += 3) {
+    const [c, p, seq] = [parentLinks[k], parentLinks[k + 1], parentLinks[k + 2]];
+    add(c, key(p, 0), seq);
+    add(p, key(c, 1), seq);
+  }
+  let differ = 0, extra = 0, missing = 0;
+  const examples = [];
+  for (let x = 0; x < n; x++) {
+    const a = up.get(x) || [];
+    const l = (fromLinks.get(x) || []).sort((u, v) => u[0] - v[0]).map((e) => e[1]);
+    if (a.length !== l.length || a.some((e, i) => e !== l[i])) {
+      differ++;
+      if (l.length > a.length) extra++; else if (l.length < a.length) missing++;
+      if (examples.length < 5) examples.push({ handle: x, upstream: a.slice(0, 6), links: l.slice(0, 6) });
+    }
+  }
+  return { stats: { concepts: n, upstreamEntries: hier.xs.length, conceptsDiffering: differ, withExtraLinks: extra, withMissingLinks: missing, examples } };
+}
+
+/** the derived-by-importer ix_order rows: rank, ids, walk (and hier_start / hier when asked) */
+function writeOrders(file, b, sourceOrder, walkPlace, hier) {
+  const db = new Database(file);
+  db.pragma('journal_mode = OFF');
+  db.pragma('synchronous = OFF');
+  try {
+    const n = db.prepare('SELECT concept_count FROM main.code_system WHERE served = 1').pluck().get();
+    const idOf = new Uint32Array(b.codes.length);
+    for (const [id, code] of db.prepare('SELECT id, code FROM main.concept').raw().iterate()) idOf[b.idx(code)] = id;
+    const rows = [...sourceOrder].map(([i, [type, seq]]) => [idOf[i], type, seq, walkPlace.get(i)]);
+    // rank by key, the walk by its place (or, without a walk, by type then key)
+    rows.sort((x, y) => x[2] - y[2]);
+    const rank = new Uint32Array(n + 1), ids = new Uint32Array(n + 1);
+    rows.forEach((r, k) => { rank[r[0]] = k; ids[k] = r[0]; });
+    const byWalk = rows.every((r) => r[3] != null);
+    const walk = Uint32Array.from(rows.slice().sort(byWalk ? (x, y) => x[3] - y[3] : (x, y) => x[1] - y[1]).map((r) => r[0]));
+    db.exec('BEGIN');
+    db.prepare("DELETE FROM main.ix_order WHERE name IN ('rank', 'ids', 'walk', 'hier_start', 'hier')").run();
+    const ins = db.prepare('INSERT INTO main.ix_order VALUES (?, ?, ?)');
+    writeOrderArray(db, 'rank', rank, ins);
+    writeOrderArray(db, 'ids', ids, ins);
+    writeOrderArray(db, 'walk', walk, ins);
+    writeActiveOrder(db);
+    if (hier) {
+      const arrays = hierarchyArrays(n, hier.xs.map((i) => idOf[i]), hier.others.map((i) => idOf[i]), hier.child);
+      writeOrderArray(db, 'hier_start', arrays.start, ins);
+      writeOrderArray(db, 'hier', arrays.entries, ins);
+    }
+    db.exec('COMMIT');
+    analyze(db, 'main.ix_order');
+    db.pragma('journal_mode = DELETE');
+  } finally {
+    db.close();
+  }
 }
 
 class LoincV2Module extends BaseTerminologyModule {
   getName() { return 'loinc-v2'; }
-  getDescription() { return 'LOINC CSV release -> SQLite (sqlite-v2 schema with stored Roaring sets)'; }
+  getDescription() { return 'LOINC CSV release -> SQLite terminology file (sqlite-v2 provider)'; }
   getSupportedFormats() { return ['directory']; }
 
   registerCommands(cmd) {
     cmd.command('import')
-      .description('Import an unzipped LOINC release into a sqlite-v2 database')
+      .description('Import an unzipped LOINC release into a terminology file')
       .requiredOption('-s, --source <dir>', 'release root (contains LoincTable/ and AccessoryFiles/)')
       .requiredOption('-d, --dest <file>', 'destination .db')
       .requiredOption('-v, --loinc-version <version>', 'e.g. 2.83')
       .option('--overwrite', 'replace the destination')
       .action(async (o) => {
-        const s = await importLoincV2({ source: o.source, dest: o.dest, version: o.loincVersion,
-          overwrite: !!o.overwrite, log: (m) => this.logInfo(m) });
+        const s = await importLoincV2({ source: o.source, dest: o.dest, version: o.loincVersion, overwrite: !!o.overwrite, log: (m) => this.logInfo(m) });
         this.logSuccess(`${s.concepts.toLocaleString()} concepts -> ${o.dest}`);
       });
   }
 }
 
-module.exports = { LoincV2Module, importLoincV2, loincProperties, applyLoincConfig, loincWalk, STATUS, KIND, LITERALS, LOINC };
+module.exports = { LoincV2Module, importLoincV2, loincCatalog, loincCodeSystem, loincWalk, writeOrders, hierarchyCheck, files, status,
+  KIND, LOINC, ORDER_TYPE, ORDER_STAGE, ORDER, LITERALS, PART_LINK };

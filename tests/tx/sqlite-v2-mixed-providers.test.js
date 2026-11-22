@@ -12,7 +12,7 @@ const os = require('os');
 const path = require('path');
 const request = require('supertest');
 const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
-const { V2Builder } = require('../../tx/importers/sqlite-v2/builder');
+const { TerminologyBuilder } = require('../../tx/importers/sqlite-v2/builder');
 const { loadSqliteV2Factory } = require('../../tx/sqlite-v2');
 const { UcumService } = require('../../tx/library/ucum-service');
 const { UcumCodeSystemFactory } = require('../../tx/cs/cs-ucum');
@@ -31,26 +31,25 @@ const VALIDATE = '/tx/r5/ValueSet/$validate-code';
 //       │     └─ A3
 //       └─ B ─── B1
 function buildV2(dest) {
-  const b = new V2Builder(dest, { overwrite: true, importer: 'test' });
-  b.setCodeSystem({ uri: V2, version: '1' });
-  const isa = b.property({ code: 'parent', fhirType: 'code', valueKind: 'concept', isHierarchy: true });
+  const b = new TerminologyBuilder(dest, { overwrite: true, importer: 'test' });
+  b.codeSystem({ uri: V2, version: '1' });
+  const isa = b.property({ code: 'parent', shape: 'link', subsumption: true });
   const c = {};
   for (const code of ['root', 'A', 'A1', 'A2', 'A3', 'B', 'B1']) {
     c[code] = b.concept(code, { active: code !== 'A2', display: `display ${code}` });
   }
   for (const [ch, pa] of [['A', 'root'], ['B', 'root'], ['A1', 'A'], ['A2', 'A'], ['A3', 'A'], ['B1', 'B']]) b.link(c[ch], isa, c[pa]);
-  b.designation(c.A1, { language: 'de', term: 'Anzeige A1' });
+  b.item(c.A1, { language: 'de', text: 'Anzeige A1' });
   b.finish();
 }
 
-// a v2 system that is not closed (as SNOMED CT is: post-coordination), and a supplement that
-// defines a property on it
+// a v2 system that is not closed (compositional, as SNOMED CT is: post-coordination), and a
+// supplement that defines a property on it
 const V2OPEN = 'http://example.org/fhir/CodeSystem/v2-open';
 function buildV2Open(dest) {
-  const b = new V2Builder(dest, { overwrite: true, importer: 'test' });
-  b.setCodeSystem({ uri: V2OPEN, version: '1' });
-  b.setConfig('notClosed', true);
-  const isa = b.property({ code: 'parent', fhirType: 'code', valueKind: 'concept', isHierarchy: true });
+  const b = new TerminologyBuilder(dest, { overwrite: true, importer: 'test' });
+  b.codeSystem({ uri: V2OPEN, version: '1', compositional: true });
+  const isa = b.property({ code: 'parent', shape: 'link', subsumption: true });
   const c = {};
   for (const code of ['X', 'X1', 'X2', 'X3']) c[code] = b.concept(code, { active: true, display: `display ${code}` });
   for (const ch of ['X1', 'X2', 'X3']) b.link(c[ch], isa, c.X);

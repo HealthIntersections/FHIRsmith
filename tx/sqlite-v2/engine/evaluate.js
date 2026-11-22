@@ -23,7 +23,7 @@
 // are few of them, or by materialising the input when that is cheaper.
 
 const { RoaringBitmap32 } = require('roaring');
-const { KIND, count } = require('../store');
+const { KIND } = require('../store');
 const regexUtilities = require('../../../library/regex-utilities');
 const { ftsQuery, stripAnyAffixes } = require('./regex-literals');
 const { settings, TooCostly } = require('../settings');
@@ -117,7 +117,7 @@ function label(node) {
 
 class Evaluator {
   /**
-   * @param {V2Store} store
+   * @param {Store} store
    * @param {object} [opts] { trace: Tracer|null }
    */
   constructor(store, opts = {}) {
@@ -154,8 +154,8 @@ class Evaluator {
       if (!n || typeof n !== 'object') return;
       if (n.t === 'layer' || n.t === 'xlate') return;
       if (n.t === 'set') {
-        const k = n.kind + ':' + n.pid;
-        if (!want.has(k)) want.set(k, { kind: n.kind, pid: n.pid, values: new Set() });
+        const k = n.kind + ':' + n.pid + ':' + (n.vk || 0);
+        if (!want.has(k)) want.set(k, { kind: n.kind, pid: n.pid, vk: n.vk || 0, values: new Set() });
         want.get(k).values.add(n.value);
         return;
       }
@@ -167,7 +167,7 @@ class Evaluator {
     nodes.forEach(walk);
     if (!want.size) return;
     const run = () => {
-      for (const w of want.values()) this.store.loadSets(w.kind, w.pid, [...w.values], this.stats, this.local);
+      for (const w of want.values()) this.store.loadSets(w.kind, w.pid, [...w.values], this.stats, this.local, w.vk);
     };
     if (this.trace) this.trace.span('load stored sets (' + [...want.values()].reduce((n, w) => n + w.values.size, 0) + ' keys, ' + want.size + ' statements)', 'set', this.store.system, run);
     else run();
@@ -201,7 +201,7 @@ class Evaluator {
       case 'inactive': return RoaringBitmap32.andNot(S.all(st, this.local), S.active(st, this.local));
       case 'leaf': return S.leaf(st, this.local);
       case 'ids': return new RoaringBitmap32(node.ids);
-      case 'set': return S.getSet(node.kind, node.pid, node.value, st, this.local);
+      case 'set': return S.getSet(node.kind, node.pid, node.value, st, this.local, node.vk || 0);
       case 'self': {
         const r = (yield* this.matG(node.of)).clone();
         r.add(node.id);
@@ -248,13 +248,16 @@ class Evaluator {
         return sets.length ? RoaringBitmap32.orMany(sets) : new RoaringBitmap32();
       }
       case 'descFilter': {
+        if (node.ids) {
+          // {{ D id = ... }}: the concepts of those descriptions, then the block's filters on them
+          const cand = new RoaringBitmap32();
+          for (const v of node.ids) for (const r of S.itemsByExternalId(v)) cand.add(r.concept);
+          return yield* this._descFilter(node, cand);
+        }
         if (node.words.length) {
           // full-text pre-selection, then the exact test on the candidates
           const q = node.words.map((w) => '"' + w.replace(/"/g, '""') + '"').join(' AND ');
-          const sq = S.stmt('SELECT DISTINCT d.concept_id AS id FROM search_designation s JOIN designation d ON d.designation_id = s.rowid WHERE search_designation MATCH ? AND d.concept_id BETWEEN ? AND ?');
-          const rows = sq.all(q, S.lo, S.hi);
-          if (st) count(st, S, sq, rows.length);
-          return yield* this._descFilter(node, new RoaringBitmap32(rows.map((r) => r.id)));
+          return yield* this._descFilter(node, new RoaringBitmap32(S.ftsDesignationConcepts(q, st)));
         }
         this.spend(S.conceptCount * 3, 'description scan');
         return yield* this._descFilter(node, S.all(st, this.local));
@@ -339,7 +342,7 @@ class Evaluator {
     const parts = [];
     for (const pid of node.pids) {
       // one statement for all the values: stored prop sets keyed by target concept_id
-      const sets = this.store.loadSets(KIND.prop, pid, vals, this.stats, this.local);
+      const sets = this.store.loadSets(KIND.prop, pid, vals, this.stats, this.local, node.vk || 0);
       for (const b of sets.values()) if (b.size) parts.push(b);
     }
     return parts.length ? RoaringBitmap32.orMany(parts) : new RoaringBitmap32();
@@ -355,7 +358,7 @@ class Evaluator {
     if (this.isFree(node.values)) return yield* this.matG(node.values);
     let targets = null;
     for (const pid of node.pids) {
-      const keys = new RoaringBitmap32(this.store.propValues(pid, this.stats).map((r) => r.value).filter((v) => Number.isInteger(v)));
+      const keys = new RoaringBitmap32(this.store.propValues(pid, this.stats, node.vk || 0).map((r) => r.value).filter((v) => Number.isInteger(v)));
       targets = targets ? RoaringBitmap32.or(targets, keys) : keys;
     }
     return yield* this.filterG(node.values, targets);
@@ -454,7 +457,7 @@ class Evaluator {
     const activeFilter = node.filters.find((f) => f.field === 'active');
     // a dialect filter reads the acceptability rows (a file with designation.rank does not read them
     // otherwise)
-    const opts = { withAcc: node.filters.some((f) => f.field === 'dialect' || f.field === 'dialectid') };
+    const opts = { withAcc: node.filters.some((f) => f.field === 'dialect' || f.field === 'dialectid'), withExternalId: node.filters.some((f) => f.field === 'id') };
     for (let i = 0; i < ids.length; i += ROW_CHUNK) {
       if (i) yield;
       const rows = S.designationRows(ids.slice(i, i + ROW_CHUNK), this.stats, opts);
@@ -472,27 +475,18 @@ class Evaluator {
     if (!cand && node.eq != null && node.eq.length >= 3 && S.hasFts) {
       // full-text candidates, then the exact test
       const q = '"' + node.eq.replace(/"/g, '""') + '"';
-      const ids = new Set();
-      const q1 = S.stmt('SELECT rowid AS id FROM search_display WHERE search_display MATCH ? AND rowid BETWEEN ? AND ?');
-      const q2 = S.stmt('SELECT d.concept_id AS id FROM search_designation s JOIN designation d ON d.designation_id = s.rowid WHERE search_designation MATCH ? AND d.concept_id BETWEEN ? AND ?');
-      const r1 = q1.all(q, S.lo, S.hi);
-      const r2 = q2.all(q, S.lo, S.hi);
-      for (const r of r1) ids.add(r.id);
-      for (const r of r2) ids.add(r.id);
-      if (this.stats) { count(this.stats, S, q1, r1.length); count(this.stats, S, q2, r2.length); }
-      cand = new RoaringBitmap32([...ids]);
+      cand = S.ftsDisplayIds(q, this.stats);
+      cand.addMany(S.ftsDesignationConcepts(q, this.stats));
     }
     const out = new RoaringBitmap32();
     if (!cand) {
       this.spend(S.conceptCount * 4, 'designation scan');
-      const q1 = S.stmt('SELECT concept_id, display FROM concept WHERE concept_id BETWEEN ? AND ?').raw();
       for (const [a, b] of idRanges(S)) {
-        for (const [id, display] of q1.all(a, b)) if (test(display)) out.add(id);
+        for (const [id, display] of S.conceptColumn('display', a, b)) if (test(display)) out.add(id);
         yield;
       }
-      const q2 = S.stmt('SELECT concept_id, term FROM designation WHERE active = 1 AND concept_id BETWEEN ? AND ?').raw();
       for (const [a, b] of idRanges(S)) {
-        for (const [id, term] of q2.all(a, b)) if (test(term)) out.add(id);
+        for (const [id, term] of S.designationRange(a, b)) if (test(term)) out.add(id);
         yield;
       }
       return out;
@@ -529,21 +523,17 @@ class Evaluator {
     if (cand && (cand.size <= 2000 || (!node.lits && cand.size <= 200000))) {
       this.spend(cand.size * 4, 'description regex probe');
       const ids = cand.toArray();
-      const st = S.stmt('SELECT concept_id, term, language, use_id, active FROM designation WHERE concept_id IN (SELECT value FROM json_each(?))').raw();
       for (let i = 0; i < ids.length; i += ROW_CHUNK) {
         if (i) yield;
-        const rows = st.all(JSON.stringify(ids.slice(i, i + ROW_CHUNK)));
-        if (this.stats) count(this.stats, S, st, rows.length);
+        const rows = S.designationsRaw(ids.slice(i, i + ROW_CHUNK), this.stats);
         for (const [cid, term, language, use, active] of rows) take(cid, term, language, use, active);
       }
       return out;
     }
     if (node.lits && S.hasFts) {
       // one statement (each chunk would run the trigram query again); the rows tested in chunks
-      const q = S.stmt('SELECT d.concept_id, d.term, d.language, d.use_id, d.active FROM search_designation s JOIN designation d ON d.designation_id = s.rowid WHERE search_designation MATCH ? AND d.concept_id BETWEEN ? AND ?');
-      const rows = q.raw().all(ftsQuery(node.lits), S.lo, S.hi);
+      const rows = S.ftsDesignationRows(ftsQuery(node.lits), this.stats);
       this.spend(rows.length, 'description regex (trigram candidates)');
-      if (this.stats) count(this.stats, S, q, rows.length);
       for (let i = 0; i < rows.length; i++) {
         if (i && i % ROW_CHUNK === 0) yield;
         const [cid, term, language, use, active] = rows[i];
@@ -552,15 +542,14 @@ class Evaluator {
       return out;
     }
     this.spend(S.conceptCount * 4, 'description regex scan');
-    const q = S.stmt("SELECT concept_id, term, language, use_id, active FROM designation WHERE active = 1 AND concept_id BETWEEN ? AND ? AND (lower(language) = ? OR lower(language) LIKE ? || '-%')").raw();
     let n = 0;
     for (const [a, b] of idRanges(S)) {
-      const rows = q.all(a, b, lang, lang);
+      const rows = S.designationRange(a, b, lang);
       n += rows.length;
       for (const [cid, term, language, use, active] of rows) if (!cand || cand.has(cid)) take(cid, term, language, use, active);
       yield;
     }
-    if (this.stats) count(this.stats, S, q, n);
+    if (this.stats) { this.stats.statements++; this.stats.rows += n; }
     return out;
   }
 
@@ -570,7 +559,7 @@ class Evaluator {
     let m = this.history.get(refsetId);
     if (!m) {
       m = new Map();
-      const rows = S.stmt('SELECT concept_id, fields FROM refset_member WHERE refset_id = ?').all(refsetId);
+      const rows = S.refsetMemberRows(refsetId);
       const targets = S.resolveCodes([...new Set(rows.map((r) => JSON.parse(r.fields)[0]).filter(Boolean).map(String))]);
       for (const r of rows) {
         const t = targets.get(String(JSON.parse(r.fields)[0]));
@@ -667,15 +656,14 @@ class Evaluator {
     }
     let n = 0;
     // raw rows: no object per row; id ranges, one statement each, a pause between them
-    const q = this.store.stmt(`SELECT concept_id, ${col} AS v FROM concept WHERE concept_id BETWEEN ? AND ?`).raw();
     for (const [a, b] of idRanges(this.store)) {
-      for (const [id, v] of q.all(a, b)) {
+      for (const [id, v] of this.store.conceptColumn(col, a, b)) {
         n++;
         if (v != null && re.test(v)) out.add(id);
       }
       yield;
     }
-    if (this.stats) count(this.stats, this.store, q, n);
+    if (this.stats) { this.stats.statements++; this.stats.rows += n; }
     return out;
   }
 
@@ -727,7 +715,7 @@ class Evaluator {
   }
 }
 
-/** [lo, hi] id ranges covering the store's block, ROW_CHUNK ids each (a long scan in bounded statements) */
+/** [lo, hi] id ranges covering the store's concepts, ROW_CHUNK ids each (a long scan in bounded statements) */
 function* idRanges(S) {
   for (let a = S.lo; a <= S.hi; a += ROW_CHUNK) yield [a, Math.min(a + ROW_CHUNK - 1, S.hi)];
 }
@@ -746,6 +734,7 @@ function descMatches(d, f) {
     case 'language': r = f.values.includes(String(d.language || 'en').toLowerCase().split('-')[0]); break;
     case 'type': case 'typeid': r = !f.uses || (!!d.use && f.uses.includes(d.use.code)); break;
     case 'active': r = d.active === f.value; break;
+    case 'id': r = d.sctid != null && f.ids.includes(String(d.sctid)); break;
     case 'dialect': case 'dialectid': {
       const acc = (d.acc || '').split(',').filter(Boolean).map((a) => a.split(':').map(Number));
       r = f.dialects.some((dl) => acc.some(([rs, av]) => (!dl.refsets || dl.refsets.includes(rs)) && (!dl.acceptability || dl.acceptability.includes(av))));

@@ -1,14 +1,14 @@
 'use strict';
 
-// sqlite-v2 query engine and provider on a small fixture built with the v2 importer stage:
+// sqlite-v2 query engine and provider on a small fixture built with the file builder:
 // compose filters and ECL compile to set algebra over stored sets; results page by position;
 // membership by probing; statement counts; supplement layers; RxNorm REL filters.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { V2Builder } = require('../../tx/importers/sqlite-v2/builder');
-const { V2Store } = require('../../tx/sqlite-v2/store');
+const { TerminologyBuilder } = require('../../tx/importers/sqlite-v2/builder');
+const { openStore } = require('../../tx/sqlite-v2/store');
 const { Engine } = require('../../tx/sqlite-v2/engine/engine');
 const { Compiler } = require('../../tx/sqlite-v2/engine/compile');
 const { dialectFor } = require('../../tx/sqlite-v2/dialects');
@@ -27,12 +27,13 @@ let rx;
 // └── Z
 // Y: active, no parents; X: inactive
 function buildFixture(dest) {
-  const b = new V2Builder(dest, { overwrite: true, importer: 'test' });
-  b.setCodeSystem({ uri: 'http://example.org/cs', version: '1' });
-  const isa = b.property({ code: 'parent', fhirType: 'code', valueKind: 'concept', isHierarchy: true });
-  const colour = b.property({ code: 'colour', fhirType: 'string', valueKind: 'literal' });
-  const site = b.property({ code: 'site', fhirType: 'code', valueKind: 'concept' });
-  const lat = b.property({ code: 'laterality', fhirType: 'code', valueKind: 'concept' });
+  const b = new TerminologyBuilder(dest, { overwrite: true, importer: 'test' });
+  b.codeSystem({ uri: 'http://example.org/cs', version: '1' });
+  const isa = b.property({ code: 'parent', shape: 'link', subsumption: true });
+  const colour = b.property({ code: 'colour', shape: 'literal', fhirType: 'string' });
+  // attributes: ECL refinements name them
+  const site = b.property({ code: 'site', shape: 'link', refinable: true, wildcard: true });
+  const lat = b.property({ code: 'laterality', shape: 'link', refinable: true, wildcard: true });
   const c = {};
   for (const code of ['root', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'Z', 'Y', 'X', 'L', 'R']) {
     c[code] = b.concept(code, { active: !['H', 'X'].includes(code), display: `display ${code}` });
@@ -45,17 +46,17 @@ function buildFixture(dest) {
   b.literal(c.F, colour, 'red');
   b.literal(c.G, colour, 'Red');
   b.literal(c.D, colour, 'blue');
-  b.designation(c.F, { language: 'en', term: 'effervescent thing' });
+  b.item(c.F, { language: 'en', text: 'effervescent thing' });
   b.finish();
 }
 
 function buildRx(dest) {
-  const b = new V2Builder(dest, { overwrite: true, importer: 'test' });
-  b.setCodeSystem({ uri: 'http://www.nlm.nih.gov/research/umls/rxnorm', version: '1' });
-  const tty = b.property({ code: 'TTY', fhirType: 'code', valueKind: 'literal' });
-  const hpi = b.property({ code: 'has_precise_ingredient', fhirType: 'code', valueKind: 'concept' });
-  const hpiRN = b.property({ code: 'has_precise_ingredient@RN', fhirType: 'code', valueKind: 'concept' });
-  const hi = b.property({ code: 'has_ingredient', fhirType: 'code', valueKind: 'concept' });
+  const b = new TerminologyBuilder(dest, { overwrite: true, importer: 'test' });
+  b.codeSystem({ uri: 'http://www.nlm.nih.gov/research/umls/rxnorm', version: '1' });
+  const tty = b.property({ code: 'TTY', shape: 'literal', fhirType: 'code' });
+  const hpi = b.property({ code: 'has_precise_ingredient', shape: 'link', wildcard: true });
+  const hpiRN = b.property({ code: 'has_precise_ingredient@RN', shape: 'link', filterable: false });
+  const hi = b.property({ code: 'has_ingredient', shape: 'link', wildcard: true });
   const c = {};
   for (const code of ['1', '2', '3', '4', '5']) c[code] = b.concept(code, { active: code !== '5', display: 'drug ' + code });
   b.literal(c['2'], tty, 'SCD');
@@ -66,7 +67,12 @@ function buildRx(dest) {
   b.link(c['3'], hpi, c['1']); // the RO row: not RN
   b.link(c['4'], hi, c['1']);
   b.link(c['5'], hi, c['1']);
-  b.setConfig('relaByRel', { RN: ['has_precise_ingredient@RN'], RO: ['has_ingredient', 'has_precise_ingredient'] });
+  // a REL is the union of the RELAs its rows carry (RELA@REL where a RELA occurs under two RELs)
+  const rn = b.property({ code: 'RN', shape: 'union' });
+  const ro = b.property({ code: 'RO', shape: 'union' });
+  b.propertyMember(rn, hpiRN);
+  b.propertyMember(ro, hi);
+  b.propertyMember(ro, hpi);
   b.finish();
 }
 
@@ -74,8 +80,8 @@ beforeAll(() => {
   dir = fs.mkdtempSync(path.join(process.env.SQLITE_V2_TEST_TMP || os.tmpdir(), 'sqlite-v2-engine-'));
   buildFixture(path.join(dir, 'cs.db'));
   buildRx(path.join(dir, 'rx.db'));
-  store = new V2Store(path.join(dir, 'cs.db'));
-  rx = new V2Store(path.join(dir, 'rx.db'));
+  store = openStore(path.join(dir, 'cs.db'));
+  rx = openStore(path.join(dir, 'rx.db'));
 });
 afterAll(() => {
   store.close();
@@ -342,16 +348,18 @@ describe('sqlite-v2 SNOMED concept in / code in', () => {
   // a refset contributes its members, any other concept itself (tx-ecosystem sct/*-concept-in, *-code-in)
   let sct;
   beforeAll(() => {
-    const b = new V2Builder(path.join(dir, 'sct.db'), { overwrite: true, importer: 'test' });
-    b.setCodeSystem({ uri: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20250201' });
-    const isa = b.property({ code: 'parent', fhirType: 'code', valueKind: 'concept', isHierarchy: true });
+    const b = new TerminologyBuilder(path.join(dir, 'sct.db'), { overwrite: true, importer: 'test' });
+    b.codeSystem({ uri: 'http://snomed.info/sct', version: 'http://snomed.info/sct/900000000000207008/version/20250201', compositional: true });
+    const isa = b.property({ code: '116680003', shape: 'link', subsumption: true });
     const c = {};
     for (const code of ['138875005', '1001001', '1002001', '1003001', '1004001', '9001001']) c[code] = b.concept(code, { active: true, display: 'c ' + code });
     for (const k of ['1001001', '1002001', '1003001', '1004001', '9001001']) b.link(c[k], isa, c['138875005']);
-    b.refsetMember(c['9001001'], c['1001001']);
-    b.refsetMember(c['9001001'], c['1002001']);
+    // a simple reference set: a record relation with no columns, defined by its concept
+    const refset = b.property({ code: '9001001', shape: 'record', concept: c['9001001'], fields: [] });
+    b.record(refset, c['1001001']);
+    b.record(refset, c['1002001']);
     b.finish();
-    sct = new V2Store(path.join(dir, 'sct.db'));
+    sct = openStore(path.join(dir, 'sct.db'));
   });
   afterAll(() => sct.close());
   const sinc = (filter) => ({ system: 'http://snomed.info/sct', filter });
@@ -370,9 +378,9 @@ describe('sqlite-v2 SNOMED concept in / code in', () => {
 });
 
 describe('sqlite-v2 LOINC CLASSTYPE by code or name', () => {
-  test('a name maps to its code through propertyValueDescriptions (case-insensitive)', () => {
+  test('a name maps to its code through the value labels (case-insensitive)', () => {
     const { Compiler: C } = require('../../tx/sqlite-v2/engine/compile');
-    const fake = { store: { ...store, config: { propertyValueDescriptions: { colour: { red: 'Clinical class' } } }, propValues: store.propValues.bind(store), props: store.props, resolveCodes: store.resolveCodes.bind(store), idOf: store.idOf.bind(store), hierarchy: store.hierarchy, system: store.system }, dialect: {} };
+    const fake = { store: { ...store, valueLabels: (p) => (p.code === 'colour' ? { red: 'Clinical class' } : null), filterProp: (code) => store.props.get(code), propValues: store.propValues.bind(store), props: store.props, resolveCodes: store.resolveCodes.bind(store), idOf: store.idOf.bind(store), hierarchy: store.hierarchy, system: store.system }, dialect: {} };
     const c = new C(fake);
     const n = c.filter('colour', '=', 'clinical CLASS');
     expect(new Engine(store).evaluate(n).size).toBe(2); // 'red' (F) and 'Red' (G): literal values match without case, as upstream
@@ -627,16 +635,16 @@ describe('sqlite-v2 provider (cs-api contract)', () => {
 describe('text filter in one language (store.searchText)', () => {
   let ts;
   beforeAll(() => {
-    const b = new V2Builder(path.join(dir, 'text.db'), { overwrite: true, importer: 'test' });
-    b.setCodeSystem({ uri: 'http://example.org/text', version: '1' });
+    const b = new TerminologyBuilder(path.join(dir, 'text.db'), { overwrite: true, importer: 'test' });
+    b.codeSystem({ uri: 'http://example.org/text', version: '1' });
     const use = (code) => ({ system: 'http://loinc.org', code, display: code });
     const g = b.concept('G', { active: true, display: 'Glucose [Mass/volume] in Serum' });
     const h = b.concept('H', { active: true, display: 'Hemoglobin in Blood' });
-    b.designation(g, { language: 'de-DE', use: use('LONG_COMMON_NAME'), term: 'Glucose [Masse/Volumen] in Serum', active: true });
-    b.designation(h, { language: 'de-DE', use: use('RELATEDNAMES2'), term: 'Volumen; Blut', active: true });
-    b.designation(h, { language: 'en-US', use: use('SHORTNAME'), term: 'Hgb Bld', active: true });
+    b.item(g, { language: 'de-DE', use: use('LONG_COMMON_NAME'), text: 'Glucose [Masse/Volumen] in Serum', active: true });
+    b.item(h, { language: 'de-DE', use: use('RELATEDNAMES2'), text: 'Volumen; Blut', active: true });
+    b.item(h, { language: 'en-US', use: use('SHORTNAME'), text: 'Hgb Bld', active: true });
     b.finish();
-    ts = new V2Store(path.join(dir, 'text.db'));
+    ts = openStore(path.join(dir, 'text.db'));
   });
   afterAll(() => ts.close());
   const ids = (bm) => bm.toArray().map((id) => ts.conceptRows([id]).get(id).code).sort();

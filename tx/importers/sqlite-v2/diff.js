@@ -1,182 +1,146 @@
 #!/usr/bin/env node
 'use strict';
 
-// Compare two sqlite-v2 files of the same code system by codes (ids and property ids are local to a
-// file). Used to validate reverse-loaded SNOMED caches against RF2 builds.
+// Compare two terminology files of the same code system by codes (node and property ids are local
+// to a file). Used to check the reverse loaders (a SNOMED CT .cache, a classic LOINC .db) against
+// builds from the release.
 //
 //   node tx/importers/sqlite-v2/diff.js A.db B.db [--json out.json] [--examples N]
 //
-// Reports, per fact table, rows only in A / only in B (as code-keyed tuples, with grouped breakdowns
-// and examples), whether concept_id numbering is identical, and concept_set equality per
-// (kind, property code, value) - by bytes when the numbering is identical, else by translated members.
+// Reports, per fact table, rows only in A / only in B as code-keyed tuples (a node is 'c:<code>'
+// for a concept, 'i:<concept code>:<external id or text>' for an item; record node fields are
+// translated the same way), whether the concept numbering is identical, and ix_set equality per
+// (kind, property code, value kind, value): by bytes when the numbering is identical, else by
+// members translated to codes. Holds each file's keyed rows in memory: a tool for fixtures and
+// single editions.
 
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const sets = require('./sets'); // RoaringBitmap32 through sets: roaring loads on first use
 
+const FACTS = ['concept', 'item', 'item_use', 'property', 'property_member', 'link', 'literal', 'identifier', 'record', 'mapping', 'value_label'];
+
+/** node id -> key, property id -> code, and the keyed rows of every fact table, for one file */
+function keyed(db) {
+  const conceptCode = new Map(db.prepare('SELECT id, code FROM concept').raw().all());
+  const node = new Map();
+  for (const [id, code] of conceptCode) node.set(id, 'c:' + code);
+  for (const [id, c, x, t] of db.prepare('SELECT id, concept_id, CAST(external_id AS TEXT), text FROM item').raw().iterate()) {
+    node.set(id, 'i:' + conceptCode.get(c) + ':' + (x != null ? x : t));
+  }
+  const pcode = new Map(db.prepare('SELECT id, code FROM property').raw().all());
+  const key = (id) => (id == null ? null : node.get(id) ?? '?' + id);
+  const uses = new Map(db.prepare('SELECT use_id, code FROM item_use').raw().all());
+  const out = {};
+  const view = (name, sql, fn) => {
+    const m = new Map();
+    for (const r of db.prepare(sql).raw().iterate()) {
+      const k = JSON.stringify(fn(r));
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    out[name] = m;
+  };
+  view('concept', 'SELECT code, active, display FROM concept', (r) => r);
+  view('item', 'SELECT concept_id, kind, CAST(external_id AS TEXT), language, use_id, text, active, preferred, rank FROM item',
+    ([c, ...r]) => [conceptCode.get(c), r[0], r[1], r[2], uses.get(r[3]) ?? null, ...r.slice(4)]);
+  view('item_use', 'SELECT system, code, display FROM item_use', (r) => r);
+  view('property', `SELECT code, uri, display, concept_id, shape, role, fhir_type, subject_kind, target_kind, n_rows, subsumption,
+    closure_from, filterable, refinable, wildcard, inverse_of, by_target, by_subject, ordered, fields FROM property`,
+  (r) => { r[3] = key(r[3]); r[11] = r[11] == null ? null : pcode.get(r[11]); r[15] = r[15] == null ? null : pcode.get(r[15]); return r; });
+  view('property_member', 'SELECT parent_id, child_id FROM property_member', ([a, b]) => [pcode.get(a), pcode.get(b)]);
+  view('link', 'SELECT subject_id, property_id, group_id, target_id, active FROM link', ([s, p, g, t, a]) => [key(s), pcode.get(p), g, key(t), a]);
+  view('literal', 'SELECT subject_id, property_id, group_id, CAST(value AS TEXT), active FROM literal', ([s, p, g, v, a]) => [key(s), pcode.get(p), g, v, a]);
+  view('identifier', 'SELECT property_id, value, subject_id, resolves FROM identifier', ([p, v, s, r]) => [pcode.get(p), String(v), key(s), r]);
+  // record node fields (property.fields types c / n, not the target column): numbers are node ids
+  const nodeCols = new Map();
+  for (const [id, f] of db.prepare("SELECT id, fields FROM property WHERE shape = 'record'").raw().all()) {
+    const cols = (f ? JSON.parse(f) : []).filter((c) => !c.target);
+    nodeCols.set(id, new Set(cols.map((c, i) => (c.type === 'c' || c.type === 'n' ? i : -1)).filter((i) => i >= 0)));
+  }
+  view('record', 'SELECT relation_id, subject_id, target_id, active, fields FROM record', ([rel, s, t, a, f]) => {
+    const cols = nodeCols.get(rel) || new Set();
+    const fields = f ? JSON.parse(f).map((v, i) => (cols.has(i) && typeof v === 'number' ? key(v) : v)) : null;
+    return [pcode.get(rel), key(s), key(t), a, fields];
+  });
+  view('mapping', 'SELECT concept_id, property_id, system, version, code, display, relationship FROM mapping',
+    ([c, p, ...r]) => [key(c), p == null ? null : pcode.get(p), ...r]);
+  view('value_label', 'SELECT property_id, CAST(value AS TEXT), display FROM value_label', ([p, ...r]) => [pcode.get(p), ...r]);
+  return { out, conceptCode, node, pcode, key };
+}
+
 /**
  * @param {string} A first .db
  * @param {string} B second .db
  * @param {object} [o] { log (default: silent), examples (default 5) }
- * @returns report: tables (row counts), facts (per code-keyed view: onlyA/onlyB/groups/examples),
- *          sets (identicalNumbering, byKind)
+ * @returns report: tables (row counts), codeSystem_a / _b, facts (per view: onlyA, onlyB, examplesA,
+ *   examplesB: decoded tuples), sets (identicalNumbering, byKind: {same, differ, onlyA, onlyB})
  */
-function diffV2(A, B, o = {}) {
-const nEx = o.examples ?? 5;
-const log = o.log || (() => {});
-const db = new Database(':memory:');
-db.pragma('cache_size = -400000');
-db.prepare('ATTACH ? AS a').run(A);
-db.prepare('ATTACH ? AS b').run(B);
-db.exec('PRAGMA temp_store = FILE');
-const report = { a: A, b: B, tables: {}, facts: {}, sets: {} };
-
-for (const t of ['concept', 'concept_link', 'concept_literal', 'designation', 'designation_acceptability',
-  'refset_def', 'refset_member', 'alternate_identifier', 'external_map', 'concept_set', 'property_def']) {
-  const ca = db.prepare(`SELECT count(*) c FROM a.${t}`).get().c;
-  const cb = db.prepare(`SELECT count(*) c FROM b.${t}`).get().c;
-  report.tables[t] = { a: ca, b: cb };
-}
-log('rows (a / b):');
-for (const [t, v] of Object.entries(report.tables)) log(`  ${t.padEnd(28)} ${String(v.a).padStart(10)} ${String(v.b).padStart(10)}${v.a === v.b ? '' : '  *'}`);
-for (const s of ['a', 'b']) {
-  const cs = db.prepare(`SELECT version, concept_count, active_count FROM ${s}.code_system`).get();
-  report[`codeSystem_${s}`] = cs;
-}
-
-// code-keyed views of each fact table
-const V = {
-  concept: (s) => `SELECT code, active, display, definition FROM ${s}.concept`,
-  link: (s) => `SELECT cs.code src, p.code prop, l.group_id grp, ct.code tgt, l.active FROM ${s}.concept_link l
-    JOIN ${s}.concept cs ON cs.concept_id = l.source_id JOIN ${s}.concept ct ON ct.concept_id = l.target_id
-    JOIN ${s}.property_def p ON p.property_id = l.property_id`,
-  literal: (s) => `SELECT c.code src, p.code prop, l.group_id grp, CAST(l.value AS TEXT) value, l.active FROM ${s}.concept_literal l
-    JOIN ${s}.concept c ON c.concept_id = l.concept_id JOIN ${s}.property_def p ON p.property_id = l.property_id`,
-  designation: (s) => `SELECT c.code concept, d.language, u.code use, d.term, d.active, d.preferred FROM ${s}.designation d
-    JOIN ${s}.concept c ON c.concept_id = d.concept_id LEFT JOIN ${s}.designation_use u ON u.use_id = d.use_id`,
-  acceptability: (s) => `SELECT c.code concept, d.language, u.code use, d.term, d.active, r.code refset, v.code value
-    FROM ${s}.designation_acceptability x JOIN ${s}.designation d ON d.designation_id = x.designation_id
-    JOIN ${s}.concept c ON c.concept_id = d.concept_id LEFT JOIN ${s}.designation_use u ON u.use_id = d.use_id
-    JOIN ${s}.concept r ON r.concept_id = x.refset_id JOIN ${s}.concept v ON v.concept_id = x.acceptability_id`,
-  refset_member: (s) => `SELECT r.code refset, c.code concept, m.fields FROM ${s}.refset_member m
-    JOIN ${s}.concept r ON r.concept_id = m.refset_id JOIN ${s}.concept c ON c.concept_id = m.concept_id`,
-  refset_def: (s) => `SELECT r.code refset, d.field_names, d.field_types FROM ${s}.refset_def d JOIN ${s}.concept r ON r.concept_id = d.refset_id`,
-  alternate_identifier: (s) => `SELECT c.code concept, sc.code scheme, x.identifier FROM ${s}.alternate_identifier x
-    JOIN ${s}.concept c ON c.concept_id = x.concept_id JOIN ${s}.concept sc ON sc.concept_id = x.scheme_id`,
-  property_def: (s) => `SELECT code, uri, fhir_type, value_kind, is_hierarchy, display FROM ${s}.property_def`,
-};
-// how to break differences down (SQL expression over the view's columns)
-const GROUP = {
-  concept: "CASE WHEN x.code IN (SELECT code FROM other) THEN 'changed' ELSE 'missing' END",
-  link: 'prop || \' active=\' || active',
-  literal: 'prop',
-  designation: 'use || \' \' || language || \' active=\' || active || \' preferred=\' || preferred',
-  acceptability: 'refset || \' \' || value',
-  refset_member: 'refset',
-  refset_def: 'refset',
-  alternate_identifier: 'scheme',
-  property_def: 'code',
-};
-
-function cols(s) {
-  // column list of the view
-  return db.prepare(`SELECT * FROM (${V[s]('a')}) LIMIT 0`).columns().map((c) => c.name);
-}
-
-for (const name of Object.keys(V)) {
-  const t = Date.now();
-  db.exec(`DROP TABLE IF EXISTS temp.va; DROP TABLE IF EXISTS temp.vb;
-    CREATE TEMP TABLE va AS ${V[name]('a')}; CREATE TEMP TABLE vb AS ${V[name]('b')};`);
-  const c = cols(name).join(', ');
-  const res = { onlyA: 0, onlyB: 0, groupsA: {}, groupsB: {}, examplesA: [], examplesB: [] };
-  for (const [side, x, y] of [['A', 'va', 'vb'], ['B', 'vb', 'va']]) {
-    db.exec(`DROP TABLE IF EXISTS temp.d; CREATE TEMP TABLE d AS SELECT ${c} FROM ${x} EXCEPT SELECT ${c} FROM ${y};`);
-    res[`only${side}`] = db.prepare('SELECT count(*) c FROM d').get().c;
-    if (res[`only${side}`]) {
-      db.exec(`DROP VIEW IF EXISTS temp.other; CREATE TEMP VIEW other AS SELECT * FROM ${y}`);
-      for (const r of db.prepare(`SELECT ${GROUP[name]} g, count(*) n FROM d x GROUP BY 1 ORDER BY 2 DESC LIMIT 40`).all()) res[`groups${side}`][r.g] = r.n;
-      res[`examples${side}`] = db.prepare(`SELECT * FROM d LIMIT ${nEx}`).all();
+function diffFiles(A, B, o = {}) {
+  const nEx = o.examples ?? 5;
+  const log = o.log || (() => {});
+  const da = new Database(A, { readonly: true });
+  const dbb = new Database(B, { readonly: true });
+  try {
+    const report = { a: A, b: B, tables: {}, facts: {}, sets: {} };
+    for (const t of [...FACTS, 'ix_set']) {
+      report.tables[t] = { a: da.prepare(`SELECT count(*) FROM ${t}`).pluck().get(), b: dbb.prepare(`SELECT count(*) FROM ${t}`).pluck().get() };
     }
-  }
-  // multiset check: duplicates are collapsed by EXCEPT; compare raw counts too
-  res.countA = db.prepare('SELECT count(*) c FROM va').get().c;
-  res.countB = db.prepare('SELECT count(*) c FROM vb').get().c;
-  report.facts[name] = res;
-  log(`\n${name}: ${res.countA} / ${res.countB} rows; only in a ${res.onlyA}, only in b ${res.onlyB} (${((Date.now() - t) / 1000).toFixed(1)} s)`);
-  for (const side of ['A', 'B']) {
-    if (!res[`only${side}`]) continue;
-    log(`  only in ${side.toLowerCase()} by group: ${JSON.stringify(res[`groups${side}`])}`);
-    for (const e of res[`examples${side}`]) log(`    ${JSON.stringify(e)}`);
+    const cs = (d) => d.prepare('SELECT uri, version, concept_count, active_count FROM code_system WHERE served = 1').get();
+    report.codeSystem_a = cs(da);
+    report.codeSystem_b = cs(dbb);
+    const ka = keyed(da), kb = keyed(dbb);
+    for (const v of FACTS) {
+      const a = ka.out[v], b = kb.out[v];
+      const onlyA = [], onlyB = [];
+      for (const [k, n] of a) { const m = b.get(k) || 0; for (let i = m; i < n; i++) onlyA.push(k); }
+      for (const [k, n] of b) { const m = a.get(k) || 0; for (let i = m; i < n; i++) onlyB.push(k); }
+      report.facts[v] = { onlyA: onlyA.length, onlyB: onlyB.length,
+        examplesA: onlyA.slice(0, nEx).map((k) => JSON.parse(k)), examplesB: onlyB.slice(0, nEx).map((k) => JSON.parse(k)) };
+      log(`  ${v.padEnd(16)} onlyA ${onlyA.length} onlyB ${onlyB.length}`);
+    }
+    // sets
+    const order = (d) => d.prepare('SELECT code FROM concept ORDER BY id').pluck().all();
+    const oa = order(da), ob = order(dbb);
+    const identical = oa.length === ob.length && oa.every((c, i) => c === ob[i]);
+    report.sets.identicalNumbering = identical;
+    const setRows = (d, k) => {
+      const m = new Map();
+      for (const [kind, p, vk, value, data] of d.prepare('SELECT kind, property_id, value_kind, value, data FROM ix_set').raw().iterate()) {
+        const v = vk === 1 ? k.key(value) : typeof value === 'number' ? value : String(value);
+        const id = JSON.stringify([kind, p ? k.pcode.get(p) : 0, vk, v]);
+        let members;
+        if (identical) members = data.toString('hex');
+        else members = Array.from(sets.RoaringBitmap32.deserialize(data, 'portable')).map((x) => k.conceptCode.get(x)).sort().join(',');
+        m.set(id, { kind, members });
+      }
+      return m;
+    };
+    const sa = setRows(da, ka), sb = setRows(dbb, kb);
+    const byKind = {};
+    const of = (k) => byKind[k] || (byKind[k] = { same: 0, differ: 0, onlyA: 0, onlyB: 0, examples: [] });
+    for (const [id, x] of sa) {
+      const y = sb.get(id);
+      const s = of(x.kind);
+      if (!y) { s.onlyA++; if (s.examples.length < nEx) s.examples.push(['onlyA', JSON.parse(id)]); } else if (y.members === x.members) s.same++;
+      else { s.differ++; if (s.examples.length < nEx) s.examples.push(['differ', JSON.parse(id)]); }
+    }
+    for (const [id, y] of sb) if (!sa.has(id)) { const s = of(y.kind); s.onlyB++; if (s.examples.length < nEx) s.examples.push(['onlyB', JSON.parse(id)]); }
+    report.sets.byKind = byKind;
+    return report;
+  } finally {
+    da.close();
+    dbb.close();
   }
 }
-db.exec('DROP TABLE IF EXISTS temp.va; DROP TABLE IF EXISTS temp.vb; DROP TABLE IF EXISTS temp.d;');
 
-// ---- numbering and sets ---------------------------------------------------------------------
-const idsA = db.prepare('SELECT concept_id, code FROM a.concept').raw().all();
-const idB = new Map(db.prepare('SELECT code, concept_id FROM b.concept').raw().all());
-let sameIds = idsA.length === idB.size;
-const maxA = idsA.reduce((m, r) => Math.max(m, r[0]), 0);
-const tr = new Int32Array(maxA + 1).fill(-1);
-for (const [id, code] of idsA) {
-  const o = idB.get(code);
-  if (o === undefined) sameIds = false; else tr[id] = o;
-  if (o !== id) sameIds = false;
-}
-report.sets.identicalNumbering = sameIds;
-log(`\nconcept_id numbering identical: ${sameIds}`);
-
-const keyed = (s) => {
-  const props = new Map(db.prepare(`SELECT property_id, code, value_kind FROM ${s}.property_def`).raw().all().map((r) => [r[0], r]));
-  const codeOf = new Map(db.prepare(`SELECT concept_id, code FROM ${s}.concept`).raw().all());
-  const m = new Map();
-  for (const [kind, prop, value, card, data] of db.prepare(`SELECT kind, property_id, value, card, data FROM ${s}.concept_set`).raw().iterate()) {
-    const p = props.get(prop);
-    const conceptValued = kind === 4 || kind === 7 || (kind === 5 && p && p[2] === 'concept');
-    const k = `${kind}|${p ? p[1] : prop}|${conceptValued ? codeOf.get(value) : value}`;
-    m.set(k, { card, data });
-  }
-  return m;
-};
-const sa = keyed('a'), sb = keyed('b');
-const kinds = {};
-const K = (kind) => (kinds[kind] || (kinds[kind] = { a: 0, b: 0, onlyA: 0, onlyB: 0, equal: 0, differ: 0, examples: [] }));
-for (const [k, va] of sa) {
-  const kind = k.split('|')[0];
-  const s = K(kind); s.a++;
-  const vb = sb.get(k);
-  if (!vb) { s.onlyA++; if (s.examples.length < nEx) s.examples.push({ key: k, only: 'a', card: va.card }); continue; }
-  let eq;
-  if (sameIds) eq = Buffer.compare(va.data, vb.data) === 0;
-  else {
-    const ma = sets.RoaringBitmap32.deserialize(va.data, 'portable').toUint32Array();
-    const mb = sets.RoaringBitmap32.deserialize(vb.data, 'portable');
-    eq = ma.length === mb.size && ma.every((x) => mb.has(tr[x]));
-  }
-  if (eq) s.equal++; else { s.differ++; if (s.examples.length < nEx) s.examples.push({ key: k, cardA: va.card, cardB: vb.card }); }
-}
-for (const k of sb.keys()) {
-  const s = K(k.split('|')[0]); s.b++;
-  if (!sa.has(k)) { s.onlyB++; if (s.examples.length < nEx * 2) s.examples.push({ key: k, only: 'b', card: sb.get(k).card }); }
-}
-report.sets.byKind = kinds;
-log('concept_set by kind (1 all, 2 active, 3 leaf, 4 descendants, 5 prop, 6 hasProp, 7 refset):');
-for (const [k, s] of Object.entries(kinds)) {
-  log(`  kind ${k}: a ${s.a}, b ${s.b}, equal ${s.equal}, differ ${s.differ}, only a ${s.onlyA}, only b ${s.onlyB}`);
-  for (const e of s.examples) log(`    ${JSON.stringify(e)}`);
-}
-db.close();
-return report;
-}
+module.exports = { diffFiles };
 
 if (require.main === module) {
   const args = process.argv.slice(2);
-  const opt = (k, d) => { const i = args.indexOf(k); return i >= 0 ? args.splice(i, 2)[1] : d; };
-  const jsonOut = opt('--json', null);
-  const examples = Number(opt('--examples', 5));
-  const [A, B] = args;
-  if (!A || !B) { console.error('usage: diff.js A.db B.db [--json out.json] [--examples N]'); process.exit(2); }
-  const report = diffV2(A, B, { log: (...m) => console.log(...m), examples });
-  if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify(report, null, 1));
+  const [A, B] = args.filter((x) => !x.startsWith('--'));
+  const jsonAt = args.indexOf('--json');
+  const exAt = args.indexOf('--examples');
+  const r = diffFiles(A, B, { log: console.log, examples: exAt >= 0 ? Number(args[exAt + 1]) : 5 });
+  if (jsonAt >= 0) fs.writeFileSync(args[jsonAt + 1], JSON.stringify(r, null, 2));
+  else console.log(JSON.stringify({ tables: r.tables, sets: r.sets }, null, 2));
 }
-
-module.exports = { diffV2 };

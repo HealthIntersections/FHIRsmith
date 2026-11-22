@@ -69,8 +69,8 @@ describe('sqlite-v2 display regex (generic code system): prefilter on and off gi
   const fs = require('fs');
   const os = require('os');
   const path = require('path');
-  const { V2Builder } = require('../../tx/importers/sqlite-v2/builder');
-  const { V2Store } = require('../../tx/sqlite-v2/store');
+  const { TerminologyBuilder } = require('../../tx/importers/sqlite-v2/builder');
+  const { openStore } = require('../../tx/sqlite-v2/store');
   const { Engine } = require('../../tx/sqlite-v2/engine/engine');
   const { Compiler } = require('../../tx/sqlite-v2/engine/compile');
   const { dialectFor } = require('../../tx/sqlite-v2/dialects');
@@ -79,9 +79,9 @@ describe('sqlite-v2 display regex (generic code system): prefilter on and off gi
   let S;
   beforeAll(() => {
     dir = fs.mkdtempSync(path.join(process.env.SQLITE_V2_TEST_TMP || os.tmpdir(), 'sqlite-v2-regex-'));
-    const b = new V2Builder(path.join(dir, 'sct.db'), { overwrite: true, importer: 'test' });
-    b.setCodeSystem({ uri: SCT, version: '1' });
-    const isa = b.property({ code: 'parent', fhirType: 'code', valueKind: 'concept', isHierarchy: true });
+    const b = new TerminologyBuilder(path.join(dir, 'sct.db'), { overwrite: true, importer: 'test' });
+    b.codeSystem({ uri: SCT, version: '1' });
+    const isa = b.property({ code: 'parent', shape: 'link', subsumption: true });
     const root = b.concept('138875005', { active: true, display: 'SNOMED CT Concept' });
     const extra = ['Tumour of skin', 'Benign tumor of skin', 'TUMOUR', 'Fracture of shaft of femur', 'Closed fracture of femur',
       'Fracture of femur (disorder)', 'Diabetes mellitus type 2', 'Pre-diabetes', 'Heart attack', 'heart  attack', 'Herzinfarkt',
@@ -89,7 +89,7 @@ describe('sqlite-v2 display regex (generic code system): prefilter on and off gi
     const displays = [...new Set([...STRINGS, ...extra])].filter((d) => d !== '');
     displays.forEach((d, i) => b.link(b.concept(String(1000000 + i * 10 + 1), { active: true, display: d }), isa, root));
     b.finish();
-    S = new V2Store(path.join(dir, 'sct.db'));
+    S = openStore(path.join(dir, 'sct.db'));
   });
   afterAll(() => { S.close(); fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -104,7 +104,7 @@ describe('sqlite-v2 display regex (generic code system): prefilter on and off gi
 
   test('identical results (and the same as RE2 on every display)', () => {
     expect(S.hasFts).toBe(true);
-    const all = S.stmt('SELECT concept_id, display FROM concept').all();
+    const all = S.db.prepare('SELECT id AS concept_id, display FROM concept').all();
     for (const p of [...PATTERNS, '[Tt]umou?r', 'Fracture of.*femur', '(?i)HEART ATTACK', '\\d+ mg', 'Ödem', '(?i)ödem', 'tumour\\|x']) {
       const on = run(p, false);
       const off = run(p, true);
@@ -122,7 +122,7 @@ describe('sqlite-v2 display regex on the SNOMED CT test edition (tx/data/snomed 
   const os = require('os');
   const path = require('path');
   const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
-  const { V2Store } = require('../../tx/sqlite-v2/store');
+  const { openStore } = require('../../tx/sqlite-v2/store');
   const { Engine } = require('../../tx/sqlite-v2/engine/engine');
   const { Compiler } = require('../../tx/sqlite-v2/engine/compile');
   const { dialectFor } = require('../../tx/sqlite-v2/dialects');
@@ -153,7 +153,7 @@ describe('sqlite-v2 display regex on the SNOMED CT test edition (tx/data/snomed 
     dir = fs.mkdtempSync(path.join(process.env.SQLITE_V2_TEST_TMP || os.tmpdir(), 'sqlite-v2-regex-test-edition-'));
     mergeSnapshot(SRC, path.join(dir, 'Snapshot'));
     await importSnomedV2({ source: path.join(dir, 'Snapshot'), dest: path.join(dir, 'test.db'), edition: '31000003106', version: '20250909', overwrite: true, log: () => {} });
-    S = new V2Store(path.join(dir, 'test.db'));
+    S = openStore(path.join(dir, 'test.db'));
   }, 120000);
   afterAll(() => { if (S) S.close(); if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -161,7 +161,7 @@ describe('sqlite-v2 display regex on the SNOMED CT test edition (tx/data/snomed 
     const FSN = '900000000000003001';
     const SYN = '900000000000013009';
     const uses = new Set([...S.uses].filter(([, u]) => u && (u.code === FSN || u.code === SYN)).map(([id]) => id));
-    const all = S.stmt('SELECT concept_id, term AS display, language, use_id, active FROM designation').all()
+    const all = S.db.prepare('SELECT concept_id, text AS display, language, use_id, active FROM item').all()
       .filter((r) => r.active && uses.has(r.use_id) && String(r.language).toLowerCase().split('-')[0] === 'en');
     expect(all.length).toBeGreaterThan(1000);
     const pats = ['.*[Tt]umou?r.*', '^Fracture of.*femur.*', '^Diabetes.*', '.*e.*', '(?i)LIVER', 'syndrome$', '.*\\(disorder\\)$',

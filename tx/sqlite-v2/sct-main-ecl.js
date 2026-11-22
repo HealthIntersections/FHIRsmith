@@ -79,21 +79,21 @@ class V2View {
     this.desc = new Map();      // designation_id -> record
     const p = store.props;
     this.isAProp = p.get(IS_A);
-    this.moduleProp = p.get('module');
+    this.moduleProp = p.get('moduleId');
     this.defStatusProp = p.get('definitionStatusId');
     this.timeProp = p.get('effectiveTime');
     // attribute properties are the ones named by a concept id
     this.attrProps = new Map();
-    for (const [code, def] of p) if (/^\d+$/.test(code) && def.kind === 'concept') this.attrProps.set(def.id, code);
+    for (const [code, def] of p) if (def.attribute && def.kind === 'concept') this.attrProps.set(def.id, code);
     this.literalAttrProps = new Map();
-    for (const [code, def] of p) if (/^\d+$/.test(code) && def.kind !== 'concept') this.literalAttrProps.set(def.id, code);
+    for (const [code, def] of p) if (def.attribute && def.kind !== 'concept') this.literalAttrProps.set(def.id, code);
   }
 
   /** the reference sets a concept belongs to (concept indexes), from the stored refset sets */
   refsetsOf(id) {
     if (!this.refsetSets) {
       const S = this.store;
-      const rids = S.stmt('SELECT value FROM concept_set WHERE kind = ? AND property_id = 0').pluck().all(KIND.refset);
+      const rids = S.refsetIds();
       this.refsetSets = [...S.loadSets(KIND.refset, 0, rids)];
     }
     return this.refsetSets.filter(([, bm]) => bm.has(id)).map(([rid]) => this.idx(rid));
@@ -152,17 +152,18 @@ class V2View {
     let d = this.desc.get(did);
     if (d) return d;
     const S = this.store;
-    const r = S.stmt('SELECT designation_id, concept_id, language, use_id, term, active FROM designation WHERE designation_id = ?').get(did);
+    const r = S.designationById(did);
     if (!r) throw new Error('Wrong length index getting snomed Desc Details');
-    const acc = S.hasAcceptability ? S.stmt('SELECT refset_id, acceptability_id FROM designation_acceptability WHERE designation_id = ?').all(did) : [];
-    const use = r.use_id != null ? S.uses.get(r.use_id) : null;
+    const acc = r.accs;
+    const use = r.useId != null ? S.uses.get(r.useId) : null;
     const useId = use ? this.conceptId(use.code) : null;
     const lang = String(r.language || 'en').toLowerCase().split('-')[0];
     d = {
-      iDesc: this.h.value(r.term), active: !!r.active, id: BigInt(r.designation_id), concept: this.idx(r.concept_id),
+      // the description's SCTID where the file keeps it (item external_id), else the row id
+      iDesc: this.h.value(r.term), active: r.active, id: BigInt(r.sctid != null ? r.sctid : r.id), concept: this.idx(r.conceptId),
       module: 0, kind: useId ? this.idx(useId) : 0, caps: 0, date: 0, lang: languageByte(lang) || 1,
-      refsets: acc.length ? this.h.value(acc.map((a) => this.idx(a.refset_id))) : 0,
-      valueses: acc.length ? this.h.value(acc.map((a) => this.h.value([this.idx(a.acceptability_id), 1]))) : 0
+      refsets: acc.length ? this.h.value(acc.map((a) => this.idx(a[0]))) : 0,
+      valueses: acc.length ? this.h.value(acc.map((a) => this.h.value([this.idx(a[1]), 1]))) : 0
     };
     this.desc.set(did, d);
     return d;
@@ -226,7 +227,7 @@ function concepts(v) {
     },
     getDescriptions(index) {
       const id = v.idOf(index);
-      return v.h.lazy(() => S.stmt('SELECT designation_id FROM designation WHERE concept_id = +? ORDER BY designation_id').pluck().all(id).map((d) => d * DESC_SIZE));
+      return v.h.lazy(() => S.designationIdsOf(id).map((d) => d * DESC_SIZE));
     },
     getOutbounds(index) {
       const id = v.idOf(index);
@@ -234,8 +235,8 @@ function concepts(v) {
     },
     getInbounds(index) {
       const id = v.idOf(index);
-      return v.h.lazy(() => S.stmt('SELECT source_id, property_id, group_id, active FROM concept_link WHERE target_id = ?').all(id)
-        .filter((r) => v.attrProps.has(r.property_id)).map((r) => v.relIndex(r.source_id, r.property_id, r.group_id, id, r.active)));
+      return v.h.lazy(() => S.linksTo(id, false)
+        .filter((r) => v.attrProps.has(r.p)).map((r) => v.relIndex(r.s, r.p, r.g, id, r.active)));
     },
     getAllDesc(index) {
       const id = v.idOf(index);
@@ -299,26 +300,25 @@ function descriptions(v) {
 }
 
 function descriptionIndex() {
-  // description SCTIDs are not kept in sqlite-v2 files
+  // not built over the file: the engine answers {{ D id = ... }} itself (item external ids)
   return { findDescription: () => ({ found: false, index: 0 }), count: () => 0 };
 }
 
-/** reference sets: one record per refset in refset_def or refset_member, members sorted by ref */
+/** reference sets: one record per refset (record relation, or member set), members sorted by ref */
 function refSetIndexAndMembers(v) {
   const S = v.store;
   let list = null;
   const load = () => {
     if (list) return list;
-    const defs = new Map(S.stmt('SELECT refset_id, field_names, field_types FROM refset_def').all().map((r) => [r.refset_id, r]));
-    const ids = S.stmt('SELECT DISTINCT refset_id FROM refset_member').pluck().all();
-    for (const id of defs.keys()) if (!ids.includes(id)) ids.push(id);
-    // simple reference sets are kept only as stored sets (concept_set kind refset)
-    for (const id of S.stmt('SELECT value FROM concept_set WHERE kind = ? AND property_id = 0').pluck().all(KIND.refset)) if (!ids.includes(id)) ids.push(id);
-    const md = S.config.moduleDependencies;
+    const defs = S.refsetDefs();
+    const ids = [...defs.keys()];
+    // simple reference sets are kept only as stored sets (refset sets)
+    for (const id of S.refsetIds()) if (!ids.includes(id)) ids.push(id);
+    const md = S.moduleDependencies;
     list = ids.sort((a, b) => a - b).map((rid) => {
       const def = defs.get(rid);
-      const names = def ? JSON.parse(def.field_names) : [];
-      const types = def ? JSON.parse(def.field_types) : [];
+      const names = def ? def.names : [];
+      const types = def ? def.types : [];
       const code = v.code(rid);
       return {
         definition: v.idx(rid), filename: v.h.value(''), name: v.h.value(nameFor(code, names)),
@@ -329,7 +329,7 @@ function refSetIndexAndMembers(v) {
       };
     });
     if (md && md.length) {
-      // module dependencies (cs_config): main's ModuleDependency refset, members by the row's module
+      // module dependencies (meta moduleDependencies): main's ModuleDependency refset, members by the row's module
       list.push({
         definition: NO, filename: v.h.value(''), name: v.h.value('ModuleDependency'), fieldTypes: v.h.value([5, 5]),
         fieldNames: v.h.value([v.h.value('sourceEffectiveTime'), v.h.value('targetEffectiveTime')]),
@@ -345,10 +345,7 @@ function refSetIndexAndMembers(v) {
   };
   const members = (rid, names, types) => {
     // v4 files keep each row's effectiveTime, module and RF2 order
-    const v4 = S.stmt("SELECT 1 FROM pragma_table_info('refset_member') WHERE name = 'seq'").get();
-    let rows = v4
-      ? S.stmt('SELECT concept_id, fields, effective_time, module_id FROM refset_member WHERE refset_id = ? ORDER BY seq').all(rid)
-      : S.stmt('SELECT concept_id, fields FROM refset_member WHERE refset_id = ?').all(rid);
+    let rows = S.refsetMemberRows(rid);
     if (!rows.length) {
       const bm = S.loadSets(KIND.refset, 0, [rid]).get(rid);
       rows = bm ? bm.toArray().map((c) => ({ concept_id: c, fields: '[]' })) : [];
@@ -430,7 +427,7 @@ function servicesFor(factory) {
   const root = v.conceptId('138875005');
   sv.activeRoots = root ? [v.idx(root)] : [];
   sv.inactiveRoots = [];
-  sv.defaultLanguage = languageByte(store.config.defaultLanguage) || 1;
+  sv.defaultLanguage = languageByte(store.defaultLanguage) || 1;
   sv.isTesting = /\/xsct\//.test(sv.versionUri);
   sv.expressionServices = new SnomedExpressionServices({
     strings: sv.strings, words: sv.words, stems: sv.stems, refs: sv.refs, descriptions: sv.descriptions,
@@ -460,13 +457,13 @@ function lazyField(obj, names, load) {
   }
 }
 
-/** main's #loadIdentifiers, from alternate_identifier (the module is the concept's) */
+/** main's #loadIdentifiers, from the identifier rows (the module is the concept's) */
 function loadIdentifiers(sv, v) {
   sv.identifiersByConcept = new Map();
   sv.conceptsByIdentifier = new Map();
   sv.identifierModules = new Map();
   const S = v.store;
-  for (const r of S.stmt('SELECT concept_id, scheme_id, identifier FROM alternate_identifier').all()) {
+  for (const r of S.allAlternateIds()) {
     const conceptId = v.code(r.concept_id);
     const scheme = v.code(r.scheme_id);
     const modIdx = sv.concepts.getModuleId(v.idx(r.concept_id));
@@ -488,7 +485,7 @@ function loadConcreteValues(sv, v) {
   const S = v.store;
   if (!v.literalAttrProps.size) return;
   const pids = [...v.literalAttrProps.keys()];
-  const rows = S.stmt(`SELECT concept_id, property_id, group_id, value FROM concept_literal WHERE active = 1 AND property_id IN (${pids.map(() => '?').join(',')})`).all(...pids);
+  const rows = S.literalRows(pids);
   for (const r of rows) {
     const type = v.conceptId(v.literalAttrProps.get(r.property_id));
     if (!type) continue;

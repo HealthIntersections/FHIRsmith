@@ -16,8 +16,10 @@ const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
 // main's importer requires the license the edition is distributed under (cache format 21)
 const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
-const { importSnomedV2FromCache, cacheDefaultLanguage } = require('../../tx/importers/import-sct-v2-cache.module');
-const { importSnomedV2, rf2DefaultLanguage } = require('../../tx/importers/import-sct-v2.module');
+const { cacheDefaultLanguage } = require('../../tx/importers/import-sct-v2-cache.module');
+const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { rf2DefaultLanguage } = require('../../tx/importers/import-sct-v2.module');
+const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
 const { SnomedFileReader } = require('../../tx/sct/structures');
 const { languageByte } = require('../../tx/sct/languages');
 const { loadSqliteV2Factory } = require('../../tx/sqlite-v2');
@@ -56,7 +58,7 @@ async function mainCache(snap, dest, language) {
 
 const config = (file) => {
   const db = new Database(file, { readonly: true });
-  try { return db.prepare("SELECT value FROM cs_config WHERE key = 'defaultLanguage'").pluck().get(); } finally { db.close(); }
+  try { return db.prepare('SELECT default_language FROM code_system WHERE served = 1').pluck().get(); } finally { db.close(); }
 };
 
 beforeAll(async () => {

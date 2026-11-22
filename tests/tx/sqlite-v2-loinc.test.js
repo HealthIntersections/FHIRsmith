@@ -147,12 +147,12 @@ describe('LOINC v2 importer over the test fixture', () => {
     cdb = new Database(path.join(dir, 'classic.db'), { readonly: true });
   });
   afterAll(() => { db.close(); cdb.close(); });
-  const id = (code) => db.prepare('SELECT concept_id FROM concept WHERE code = ?').pluck().get(code);
-  const links = (code, prop) => db.prepare(`SELECT t.code FROM concept_link l JOIN concept s ON s.concept_id = l.source_id
-    JOIN concept t ON t.concept_id = l.target_id JOIN property_def p ON p.property_id = l.property_id WHERE s.code = ? AND p.code = ? ORDER BY t.code`).pluck().all(code, prop);
+  const id = (code) => db.prepare('SELECT id FROM concept WHERE code = ?').pluck().get(code);
+  const links = (code, prop) => db.prepare(`SELECT t.code FROM link l JOIN concept s ON s.id = l.subject_id
+    JOIN concept t ON t.id = l.target_id JOIN property p ON p.id = l.property_id WHERE s.code = ? AND p.code = ? ORDER BY t.code`).pluck().all(code, prop);
 
   test('every term, part, answer list, answer and hierarchy node once: the same codes as main', () => {
-    const cs = db.prepare('SELECT * FROM code_system WHERE id = 1').get();
+    const cs = db.prepare('SELECT * FROM code_system WHERE served = 1').get();
     // 322 terms + 147 parts + 4 answer lists (one externally defined) + 8 answers + 3 hierarchy-only nodes
     expect([cs.uri, cs.version, cs.concept_count, cs.active_count]).toEqual([L, VERSION, 484, 482]);
     const v2Codes = db.prepare('SELECT code FROM concept').pluck().all();
@@ -167,38 +167,49 @@ describe('LOINC v2 importer over the test fixture', () => {
     expect(db.prepare('SELECT display FROM concept WHERE code = ?').pluck().get(EXT_LIST)).toBe('ICD-9_ICD-10');
     expect(links(EXT_LIST, 'Answer')).toEqual([]);
     expect(links(EXT_LIST, 'answers-for')).toEqual(['10332-5']);
-    expect(db.prepare('SELECT count(*) FROM refset_member WHERE refset_id = ?').pluck().get(id(EXT_LIST))).toBe(0);
+    // a list's members are its Answer links
+    expect(db.prepare("SELECT count(*) FROM link WHERE subject_id = ? AND property_id = (SELECT id FROM property WHERE code = 'Answer')")
+      .pluck().get(id(EXT_LIST))).toBe(0);
   });
 
   test('inactive iff DISCOURAGED; STATUS literal on terms and parts', () => {
     expect(db.prepare('SELECT code FROM concept WHERE active = 0 ORDER BY code').pluck().all()).toEqual(['22760-3', '42569-4']);
-    const status = db.prepare(`SELECT l.value FROM concept_literal l JOIN property_def p ON p.property_id = l.property_id
-      WHERE l.concept_id = ? AND p.code = 'STATUS'`).pluck();
+    const status = db.prepare(`SELECT l.value FROM literal l JOIN property p ON p.id = l.property_id
+      WHERE l.subject_id = ? AND p.code = 'STATUS'`).pluck();
     expect(status.all(id('22760-3'))).toEqual(['DISCOURAGED']);
     expect(status.all(id('10550-2'))).toEqual(['DEPRECATED']);
     expect(status.all(id('LP7786-9'))).toEqual(['ACTIVE']);
   });
 
-  test('properties: part links, literals, hierarchy and answer properties', () => {
-    const defs = Object.fromEntries(db.prepare('SELECT code, value_kind, is_hierarchy FROM property_def').all().map((r) => [r.code, [r.value_kind, r.is_hierarchy]]));
-    for (const p of ['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP', 'CLASS', 'Answer', 'answers-for']) expect(defs[p]).toEqual(['concept', 0]);
+  test('properties: part links, literals, hierarchy and answer properties; the inverse and closure rows', () => {
+    const defs = Object.fromEntries(db.prepare('SELECT code, shape, subsumption FROM property').all().map((r) => [r.code, [r.shape, r.subsumption]]));
+    for (const p of ['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'METHOD_TYP', 'CLASS', 'Answer', 'answers-for']) expect(defs[p]).toEqual(['link', 0]);
     for (const p of ['CLASSTYPE', 'ORDER_OBS', 'EXAMPLE_UNITS', 'UNITSREQUIRED', 'Copyright', 'STATUS']) expect(defs[p]).toEqual(['literal', 0]);
-    expect(defs.parent).toEqual(['concept', 1]);
+    expect(defs.parent).toEqual(['link', 1]);
+    const row = (code) => db.prepare('SELECT p.code, i.code AS inverse_of, p.filterable, p.ordered, p.n_rows FROM property p LEFT JOIN property i ON i.id = p.inverse_of WHERE p.code = ?').get(code);
+    expect(row('child')).toEqual({ code: 'child', inverse_of: 'parent', filterable: 1, ordered: 0, n_rows: 0 });
+    expect(row('AnswerList')).toEqual({ code: 'AnswerList', inverse_of: 'Answer|answers-for', filterable: 1, ordered: 0, n_rows: 0 });
+    expect(db.prepare("SELECT c.code FROM property_member m JOIN property p ON p.id = m.parent_id JOIN property c ON c.id = m.child_id WHERE p.code = 'Answer|answers-for' ORDER BY c.code").pluck().all()).toEqual(['Answer', 'answers-for']);
+    expect(row('Answer').ordered).toBe(1);
+    expect(db.prepare("SELECT a.code FROM property h JOIN property a ON a.id = h.closure_from WHERE h.code = 'parent'").pluck().get()).toBe('ancestor');
+    expect(db.prepare("SELECT value, display FROM value_label WHERE property_id = (SELECT id FROM property WHERE code = 'CLASSTYPE') ORDER BY value").raw().all())
+      .toEqual([['1', 'Laboratory class'], ['2', 'Clinical class'], ['3', 'Claims attachment'], ['4', 'Surveys']]);
     // 10332-5: the six axes from LoincPartLink_Primary, CLASS from Loinc.csv
     const axes = Object.fromEntries(['COMPONENT', 'PROPERTY', 'TIME_ASPCT', 'SYSTEM', 'SCALE_TYP', 'CLASS'].map((p) => [p, links('10332-5', p)]));
     // (its CLASS, CHAL, has no CLASS part in the fixture: no link, as main)
     expect(axes).toEqual({ COMPONENT: ['LP305473-3'], PROPERTY: ['LP6827-2'], TIME_ASPCT: ['LP6960-1'], SYSTEM: ['LP7576-4'], SCALE_TYP: ['LP7753-9'], CLASS: [] });
     expect(links('6298-4', 'CLASS')).toEqual(['LP7786-9']);
     // the third-party notice, on that term only
-    expect(db.prepare(`SELECT c.code FROM concept_literal l JOIN concept c ON c.concept_id = l.concept_id
-      JOIN property_def p ON p.property_id = l.property_id WHERE p.code = 'Copyright' AND l.value != ''`).pluck().all()).toEqual([COPYRIGHT_TERM]);
+    expect(db.prepare(`SELECT c.code FROM literal l JOIN concept c ON c.id = l.subject_id
+      JOIN property p ON p.id = l.property_id WHERE p.code = 'Copyright' AND l.value != ''`).pluck().all()).toEqual([COPYRIGHT_TERM]);
   });
 
   test('answer lists: Answer links, members in SequenceNumber order, answers-for links', () => {
     expect(links('LL6136-7', 'Answer')).toEqual(['LA10105-7', 'LA32971-6', 'LA32972-4', 'LA9040-2']);
-    const members = db.prepare(`SELECT c.code, m.fields FROM refset_member m JOIN concept c ON c.concept_id = m.concept_id
-      WHERE m.refset_id = ? ORDER BY json_extract(m.fields, '$[0]')`).all(id('LL6136-7'));
-    expect(members.map((m) => [m.code, JSON.parse(m.fields)[0]])).toEqual([['LA32971-6', 1], ['LA32972-4', 2], ['LA9040-2', 3], ['LA10105-7', 4]]);
+    // the SequenceNumber is the Answer link's seq
+    const members = db.prepare(`SELECT c.code, l.seq FROM link l JOIN concept c ON c.id = l.target_id
+      WHERE l.subject_id = ? AND l.property_id = (SELECT id FROM property WHERE code = 'Answer') ORDER BY l.seq`).raw().all(id('LL6136-7'));
+    expect(members).toEqual([['LA32971-6', 1], ['LA32972-4', 2], ['LA9040-2', 3], ['LA10105-7', 4]]);
     expect(links('LL360-9', 'answers-for')).toEqual(['100041-3', '100865-5', '101448-9', '106016-9', '107188-5', '95675-5']);
   });
 
@@ -209,54 +220,49 @@ describe('LOINC v2 importer over the test fixture', () => {
   });
 
   test('designations: English names, consumer names, every linguistic variant language', () => {
-    const langs = db.prepare('SELECT DISTINCT language FROM designation ORDER BY language').pluck().all();
+    const langs = db.prepare('SELECT DISTINCT language FROM item ORDER BY language').pluck().all();
     const files = fs.readdirSync(path.join(SRC, 'AccessoryFiles', 'LinguisticVariants')).map((f) => /^([a-z]{2})([A-Z]{2})\d+LinguisticVariant/.exec(f)).filter(Boolean).map((m) => `${m[1]}-${m[2]}`);
     expect(files.length).toBeGreaterThan(10);
     expect(langs).toEqual(sorted(['en-US', ...files]));
-    const uses = db.prepare(`SELECT DISTINCT u.code FROM designation d JOIN designation_use u ON u.use_id = d.use_id WHERE d.concept_id = ? ORDER BY u.code`).pluck().all(id('10332-5'));
+    const uses = db.prepare(`SELECT DISTINCT u.code FROM item d JOIN item_use u ON u.use_id = d.use_id WHERE d.concept_id = ? ORDER BY u.code`).pluck().all(id('10332-5'));
     expect(uses).toEqual(expect.arrayContaining(['ConsumerName', 'LONG_COMMON_NAME', 'RELATEDNAMES2', 'SHORTNAME']));
   });
 
-  test('numbering: concept_id, not main\'s CodeKey; active ids first, ancestors before descendants', () => {
-    // concept_id is the importer's own numbering; main's CodeKey order is kept apart, in concept_order
+  test('numbering: concept ids, not main\'s CodeKey; active ids first, ancestors before descendants', () => {
+    // the id is the builder's own numbering; main's CodeKey order is kept apart, in ix_order
     expect(db.prepare("SELECT count(*) FROM pragma_table_info('concept') WHERE name IN ('code_key', 'main_seq', 'seq')").pluck().get()).toBe(0);
-    expect(db.prepare('SELECT max(concept_id) FROM concept WHERE active = 1').pluck().get()).toBe(482);
-    expect(db.prepare('SELECT min(concept_id) FROM concept WHERE active = 0').pluck().get()).toBe(483);
-    const bad = db.prepare(`SELECT count(*) FROM concept_link l JOIN property_def p ON p.property_id = l.property_id
-      JOIN concept s ON s.concept_id = l.source_id JOIN concept t ON t.concept_id = l.target_id
-      WHERE p.is_hierarchy = 1 AND s.active = 1 AND t.active = 1 AND t.concept_id >= s.concept_id`).pluck().get();
+    expect(db.prepare('SELECT max(id) FROM concept WHERE active = 1').pluck().get()).toBe(482);
+    expect(db.prepare('SELECT min(id) FROM concept WHERE active = 0').pluck().get()).toBe(483);
+    const bad = db.prepare(`SELECT count(*) FROM link l JOIN property p ON p.id = l.property_id
+      JOIN concept s ON s.id = l.subject_id JOIN concept t ON t.id = l.target_id
+      WHERE p.subsumption = 1 AND s.active = 1 AND t.active = 1 AND t.id >= s.id`).pluck().get();
     expect(bad).toBe(0);
   });
 
-  test('concept_order: main\'s CodeKey order (Part.csv, Loinc.csv, AnswerList.csv, hierarchy-only nodes) and its Type', () => {
-    const order = db.prepare('SELECT c.code, o.kind FROM concept_order o JOIN concept c ON c.concept_id = o.concept_id ORDER BY o.seq').raw().all();
-    expect(db.prepare('SELECT count(*) FROM concept_order WHERE walk IS NULL').pluck().get()).toBe(0);
-    const main = cdb.prepare('SELECT Code, Type FROM Codes ORDER BY CodeKey').raw().all();
-    expect(order).toEqual(main);
-    // parts before and after the terms, lists and answers interleaved
-    const kinds = order.map((r) => r[1]);
-    expect(kinds.indexOf(1)).toBeGreaterThan(0);
-    expect(kinds.lastIndexOf(2)).toBe(kinds.length - 1);
+  // main's CodeKey order is kept as the ix_order arrays (derived-by-importer)
+  test('ix_order ids: main\'s CodeKey order', () => {
+    const { fromBlobs } = { fromBlobs: (name) => { const b = Buffer.concat(db.prepare('SELECT data FROM main.ix_order WHERE name = ? ORDER BY block').pluck().all(name)); return new Uint32Array(b.buffer, b.byteOffset, b.length / 4); } };
+    const ids = fromBlobs('ids'), walk = fromBlobs('walk');
+    const code = new Map(db.prepare('SELECT id, code FROM main.concept').raw().all());
+    const main = cdb.prepare('SELECT Code FROM Codes ORDER BY CodeKey').pluck().all();
+    expect([...ids].slice(0, main.length).map((i) => code.get(i))).toEqual(main);
+    expect(new Set(walk).size).toBe(484);
   });
 
-  test('system_order: the answer orders are stored at import, and the provider reads them from the file', () => {
-    const { computeOrder } = require('../../tx/sqlite-v2/orders');
-    const rows = new Map(db.prepare('SELECT name, length, reached, data FROM system_order').raw().all().map((r) => [r[0], r]));
-    expect([...rows.keys()].sort()).toEqual(['hier', 'hier_start', 'ids', 'rank', 'walk']);
-    const want = computeOrder(db, 'loinc');
-    for (const k of ['rank', 'ids', 'walk']) {
-      const [, length, , data] = rows.get(k);
-      expect([k, length]).toEqual([k, want[k].length]);
-      expect(Buffer.compare(data, Buffer.from(want[k].buffer, want[k].byteOffset, want[k].byteLength))).toBe(0);
-    }
-    // walk: every concept, by type then key (concept_order.walk)
-    expect(new Set(want.walk).size).toBe(484);
+  test('ix_order: the answer orders are stored at import, and the provider reads them from the file', () => {
+    const rows = new Map(db.prepare('SELECT name, CAST(group_concat(data, \'\' ORDER BY block) AS BLOB) FROM main.ix_order GROUP BY name').raw().all());
+    // active: the walk's active concepts, stored as the DISCOURAGED terms are not at its end
+    expect([...rows.keys()].filter((k) => !k.startsWith('hier')).sort()).toEqual(['active', 'ids', 'rank', 'walk']);
+    const arr = (k) => { const b = rows.get(k); return [...new Uint32Array(b.buffer, b.byteOffset, b.length / 4)]; };
+    expect(arr('active')).toEqual(arr('walk').filter((id) => id <= 482));
     const o = v2.engine._order;
-    expect([o.stored, o.kind, o.selfFirst, o.hasWalk]).toEqual([true, 'loinc', false, true]);
-    expect([...o.rank]).toEqual([...want.rank]);
-    expect([...o.ids]).toEqual([...want.ids]);
-    expect([...o.walk]).toEqual([...want.walk]);
+    expect([o.stored, o.kind, o.selfFirst, o.hasWalk]).toEqual([true, 'stored', false, true]);
+    expect([...o.rank]).toEqual(arr('rank'));
+    expect([...o.ids]).toEqual(arr('ids'));
+    expect([...o.walk]).toEqual(arr('walk'));
+    expect(new Set(o.walk).size).toBe(484);
   });
+
 });
 
 // ---- the dialect, through the router, against main ----------------------------------------
@@ -478,7 +484,7 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     const all = await both(() => expand({ valueSet: vs([{ system: L }]), count: 1000 }));
     expect(all.v2.total).toBe(484);
     // main's order: expand.js's walk (by type, then CodeKey, each part followed by what is below
-    // it: concept_order.walk)
+    // it: ix_order walk)
     expect(codes(all.v2)).toEqual(codes(all.classic));
     const act = await both(() => expand({ valueSet: vs([{ system: L }]), count: 1000, activeOnly: true }));
     expect(sorted(codes(act.v2))).toEqual(sorted(codes(act.classic)));
@@ -586,7 +592,7 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     const p2 = await v2.build(op, []);
     const pc = await classic.build(op, []);
     // not the parts: a part's children are in id order here, in hierarchy-file order on main
-    const codes = v2.store.stmt("SELECT code FROM concept WHERE code NOT LIKE 'LP%' ORDER BY concept_id").pluck().all();
+    const codes = v2.store.db.prepare("SELECT code FROM concept WHERE code NOT LIKE 'LP%' ORDER BY id").pluck().all();
     let n = 0;
     for (const code of codes) {
       const c2 = (await p2.locate(code)).context;
@@ -608,7 +614,7 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     const op = new OperationContext('en', tx.i18n);
     const p2 = await v2.build(op, []);
     const pc = await classic.build(op, []);
-    const codes = v2.store.stmt("SELECT code FROM concept WHERE code LIKE 'LP%' ORDER BY concept_id").pluck().all();
+    const codes = v2.store.db.prepare("SELECT code FROM concept WHERE code LIKE 'LP%' ORDER BY id").pluck().all();
     let n = 0, withChildren = 0;
     for (const code of codes) {
       const c2 = (await p2.locate(code)).context;
@@ -627,34 +633,12 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     expect(withChildren).toBeGreaterThan(3);
   });
 
-  test('add-hierarchy-order.js gives an existing file the importer\'s hierarchy order, from the release or the classic db', async () => {
-    const { addHierarchyOrder } = require('../../tx/importers/sqlite-v2/add-hierarchy-order');
-    const rows = (f) => {
-      const db = new Database(f, { readonly: true });
-      try { return db.prepare("SELECT name, length, hex(data) FROM system_order WHERE name IN ('hier_start', 'hier') ORDER BY name").raw().all(); } finally { db.close(); }
-    };
-    const want = rows(path.join(dir, 'v2.db'));
-    expect(want.map((r) => r[0])).toEqual(['hier', 'hier_start']);
-    for (const source of [path.join(dir, 'src'), path.join(dir, 'classic.db')]) {
-      const copy = path.join(dir, 'hier-copy.db');
-      fs.copyFileSync(path.join(dir, 'v2.db'), copy);
-      const db = new Database(copy);
-      db.prepare("DELETE FROM system_order WHERE name IN ('hier_start', 'hier')").run();
-      db.close();
-      expect(rows(copy)).toEqual([]);
-      const r = await addHierarchyOrder(copy, source);
-      expect(r.entries).toBeGreaterThan(20);
-      expect(rows(copy)).toEqual(want);
-      fs.rmSync(copy);
-    }
-  });
-
   test('ancestorsOf: the same sets as main\'s (#388, the Closure table) for every code of the fixture', async () => {
     const { OperationContext } = require('../../tx/operation-context');
     const op = new OperationContext('en', tx.i18n);
     const p2 = await v2.build(op, []);
     const pc = await classic.build(op, []);
-    const codes = v2.store.stmt('SELECT code FROM concept ORDER BY concept_id').pluck().all();
+    const codes = v2.store.db.prepare('SELECT code FROM concept ORDER BY id').pluck().all();
     let withAncestors = 0;
     for (const code of codes) {
       const a2 = await p2.ancestorsOf(code);
@@ -673,7 +657,7 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     const { OperationContext } = require('../../tx/operation-context');
     const p2 = await v2.build(new OperationContext('en', tx.i18n), []);
     // the parts with children, and terms under them
-    const parts = v2.store.stmt('SELECT c.code FROM concept c JOIN concept_set s ON s.value = c.concept_id AND s.kind = 4 ORDER BY c.concept_id LIMIT 40').pluck().all();
+    const parts = v2.store.db.prepare('SELECT c.code FROM concept c JOIN ix_set s ON s.value = c.id AND s.kind = 4 ORDER BY c.id LIMIT 40').pluck().all();
     const terms = ['6298-4', '595-9', 'LP386601-1', 'LP14082-9', 'LP15098-4', 'LA6576-8'];
     for (const b of [...parts, ...terms]) {
       const anc = await p2.ancestorsOf(b);
@@ -701,7 +685,7 @@ describe('LOINC v2 provider filter API against main\'s', () => {
     const op = new OperationContext('en', tx.i18n);
     const p = await v2.build(op, []);
     const pcl = await classic.build(new OperationContext('en', tx.i18n), []);
-    const codes = v2.store.stmt('SELECT code FROM concept ORDER BY concept_id').pluck().all();
+    const codes = v2.store.db.prepare('SELECT code FROM concept ORDER BY id').pluck().all();
     let n = 0, partsWithBoth = 0;
     for (const code of codes) {
       const a = (await p.locate(code)).context;

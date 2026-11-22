@@ -16,14 +16,14 @@ const { CodeSystemFactoryProvider, CodeSystemProvider } = require('../cs/cs-api'
 const { BaseCSServices } = require('../cs/cs-base');
 const { CodeSystem } = require('../library/codesystem');
 const { Language } = require('../../library/languages');
-const { V2Store, KIND, count: countStatement } = require('./store');
+const { openStore, KIND } = require('./store');
 const { Engine } = require('./engine/engine');
 const { Compiler, FilterError } = require('./engine/compile');
 const { dialectFor, LOINC, RXNORM } = require('./dialects');
 const { SupplementLayers } = require('./layers');
-const { orderKind, computeOrder, storedOrder, builtOrder, hasTable, HIER_CHILD } = require('./orders');
+const { HIER_CHILD } = require('./orders');
 const { RoaringBitmap32 } = require('roaring');
-const { sctTextSearchG, sctTextLanguages, rxTextSearchG, loincTextSearchG, genericTextSearchG } = require('./text-index');
+const { sctTextSearchG, sctTextLanguages, rxTextSearchG, loincTextSearchG, genericTextSearchG, rxSearchable } = require('./text-index');
 const { runAsync: runPausing } = require('./engine/evaluate');
 const { SupplementTextIndex } = require('../library/supplement-text-index');
 const { languageByte, languageCode, languageBytesFor } = require('../sct/languages');
@@ -109,10 +109,10 @@ class SqliteV2Provider extends BaseCSServices {
     return excludeInactive ? this.store.active().size : this.totalCount();
   }
   hasParents() { return !!this.store.hierarchy || this.dialect.name === 'rxnorm'; }
-  isNotClosed() { return !!this.store.config.notClosed; }
+  isNotClosed() { return !!this.store.notClosed; }
   contentMode() { return this.store.cs.content || 'complete'; }
   versionAlgorithm() { return this.f.versionAlgorithm(); }
-  isCaseSensitive() { return this.store.config.caseSensitive !== 0 && this.store.config.caseSensitive !== '0'; }
+  isCaseSensitive() { return this.store.caseSensitive; }
   sourcePackage() { return null; }
 
   /**
@@ -298,7 +298,7 @@ class SqliteV2Provider extends BaseCSServices {
       c = this.byCode.get(n);
       if (c === undefined) {
         const row = this.store.rowForCode(n, this._stats());
-        c = row ? this._concept(row.concept_id, row) : null;
+        c = row ? this._concept(row.concept_id, row) : (this.store.hasCodeIdentifiers ? this._locateIdentifier(n) : null);
         this.byCode.set(n, c);
       }
     }
@@ -308,6 +308,20 @@ class SqliteV2Provider extends BaseCSServices {
   }
 
   normaliseCode(code) { return String(code); }
+
+  /**
+   * A code that is no concept code but an identifier the file accepts as a code (identifier
+   * resolves > 0; a concept code always wins): 1, an alias, is answered with the concept's own
+   * code; 2, a code in its own right, as written (the concept's row and designations otherwise).
+   */
+  _locateIdentifier(n) {
+    const hit = this.store.identifierAsCode(n, this._stats());
+    if (!hit) return null;
+    const c = this._concept(hit.concept_id, hit);
+    if (hit.resolves !== 2) return c;
+    const own = new V2Concept(c.id, n, { ...hit, code: n });
+    return own;
+  }
 
   /** a listed code that locate() finds as written, so processSelection can resolve it by code */
   _plainListedCode(code) { return typeof code === 'string' && code !== '' && this.normaliseCode(code) === code; }
@@ -427,11 +441,8 @@ class SqliteV2Provider extends BaseCSServices {
       if (c.status !== undefined) return c.status;
       const p = this.store.props.get('STATUS');
       if (!p) return null;
-      const q = this.store.stmt('SELECT value FROM concept_literal WHERE concept_id = +? AND property_id = ? AND active = 1 LIMIT 1');
-      const r = q.get(c.id, p.id);
-      const st = this._stats();
-      if (st) countStatement(st, this.store, q, r ? 1 : 0);
-      return r ? r.value : null;
+      const v = this.store.literalValues([c.id], p.id, this._stats()).get(c.id);
+      return v === undefined ? null : v;
     }
     if (this.dialect.name === 'rxnorm') return c.row.active ? null : (this._rxArchived(c) ? 'archived' : 'obsolete');
     return c.row.active ? 'active' : 'inactive';
@@ -467,12 +478,14 @@ class SqliteV2Provider extends BaseCSServices {
         displays.addDesignation(false, 'active', d.language, d.use ? { system: d.use.system, code: d.use.code, display: d.use.display } : null, d.term.trim());
       }
     } else if (this.dialect.name === 'rxnorm') {
-      // upstream: the display is the first non-SY atom; every other atom is a designation
+      // upstream: the display is the first non-SY atom; every other atom is a designation (with no
+      // use where the file says so: behaviour.designationUses)
+      const use = (d) => (this.store.behaviour.designationUses === 'drop' || !d.use ? null : { system: d.use.system, code: d.use.code, display: d.use.display });
       displays.addDesignation(true, 'active', 'en-US', null, c.row.display || '');
       let skipped = false;
       for (const d of c.desigs) {
         if (!skipped && d.term === c.row.display && !(d.use && d.use.code === 'SY')) { skipped = true; continue; }
-        displays.addDesignation(false, 'active', 'en-US', null, d.term);
+        displays.addDesignation(false, 'active', 'en-US', use(d), d.term);
       }
     } else {
       if (c.row.display) displays.addDesignation(true, 'active', this.defLang(), null, c.row.display);
@@ -630,12 +643,10 @@ class SqliteV2Provider extends BaseCSServices {
     // AnswerList.csv before LoincAnswerListLink.csv)
     const pos = (code) => { const i = AXES.indexOf(code); return i >= 0 ? i : code === 'parent' || code === 'child' ? 100 : code === 'answers-for' ? 60 : 50; };
     const links = S.linksFrom([c.id], null, true, st);
-    const inv = S.config.inverseProperties || {};
-    for (const [name, of] of Object.entries(inv)) {
-      for (const pc of [].concat(of)) {
-        const p = S.props.get(pc);
-        if (!p) continue;
-        for (const id of S.getSet(KIND.prop, p.id, c.id, st).toArray()) links.push({ t: id, name });
+    // the catalog's inverse names (child, AnswerList): the concepts whose reversed property points here
+    for (const inv of S.inverses()) {
+      for (const p of inv.reverses) {
+        for (const id of S.getSet(KIND.prop, p.id, c.id, st).toArray()) links.push({ t: id, name: inv.code });
       }
     }
     const rows = this._targetDisplays(links.map((l) => l.t));
@@ -673,7 +684,7 @@ class SqliteV2Provider extends BaseCSServices {
     for (const r of lits) {
       if (r.code === 'STATUS' || !this._hasProp(props, r.code, true)) continue;
       if (r.code === 'CLASSTYPE') {
-        const map = (S.config.propertyValueDescriptions || {}).CLASSTYPE || {};
+        const map = S.valueLabels(S.props.get('CLASSTYPE')) || {};
         const pr = this._addStringProperty(params, 'property', 'CLASSTYPE', String(r.v));
         if (map[r.v]) pr.part.push({ name: 'description', valueString: map[r.v] });
       } else {
@@ -686,7 +697,7 @@ class SqliteV2Provider extends BaseCSServices {
       const rel = c.desigsNoRelated ? (S.designationRows([c.id], st, { onlyUse: this._relatedUse() }).get(c.id) || []) : c.desigs;
       for (const d of rel) if (d.use && d.use.code === 'RELATEDNAMES2') this._addStringProperty(params, 'property', 'RELATEDNAMES2', d.term, d.language);
     }
-    const maps = S.stmt('SELECT system, version, code, display, equivalence FROM external_map WHERE concept_id = ? ORDER BY system, code').all(c.id);
+    const maps = S.externalMaps(c.id);
     for (const m of maps) {
       const key = loincMapKey(m.system);
       if (!key || !this._hasProp(props, key, true)) continue;
@@ -787,14 +798,14 @@ class SqliteV2Provider extends BaseCSServices {
     if (coding.system === this.system() && (!targetSystem || targetSystem === lm.system)) {
       const id = S.idOf(coding.code);
       if (id == null) return [];
-      for (const r of S.stmt('SELECT version, code, display, equivalence FROM external_map WHERE concept_id = ? AND system = ? ORDER BY code').all(id, lm.system)) {
+      for (const r of S.externalMaps(id, lm.system)) {
         const t = { map: map.vurl, system: lm.system, code: r.code, relationship: mapRelationship(r.equivalence, true) };
         if (r.version) t.version = r.version;
         if (r.display) t.display = r.display;
         out.push(t);
       }
     } else if (coding.system === lm.system && (!targetSystem || targetSystem === this.system())) {
-      for (const r of S.stmt('SELECT c.code, c.display, m.equivalence FROM external_map m JOIN concept c ON c.concept_id = m.concept_id WHERE m.system = ? AND m.code = ? ORDER BY c.code').all(lm.system, coding.code)) {
+      for (const r of S.mapsTo(lm.system, coding.code)) {
         out.push({ map: map.vurl, system: this.system(), version: this.version(), code: r.code, display: r.display, relationship: mapRelationship(r.equivalence, false) });
       }
     }
@@ -861,14 +872,14 @@ class SqliteV2Provider extends BaseCSServices {
       const p = primary(l && (l.code || l.language));
       if (p && p !== '*' && have.has(p)) return p;
     }
-    return primary(this.store.config.defaultLanguage) || 'en';
+    return primary(this.store.defaultLanguage) || 'en';
   }
 
   /**
    * The one language a SNOMED CT text or display regex filter searches, as cs-snomed.js
    * #filterLanguage chooses it: the first language named (each as tx/sct/languages.js
    * languageBytesFor has it: Norwegian under either "no" or "nb"/"nn") that the edition has active
-   * descriptions in; else the edition's default language (cs_config defaultLanguage, which the
+   * descriptions in; else the edition's default language (code_system default_language, which the
    * importers set as main's importer and server read the cache's default-language slot), if it
    * has active descriptions in it, or has none at all; else the edition's language with the lowest
    * language byte.
@@ -883,7 +894,7 @@ class SqliteV2Provider extends BaseCSServices {
         if (present.has(code)) return code;
       }
     }
-    const def = String(this.store.config.defaultLanguage || 'en').toLowerCase().split('-')[0];
+    const def = String(this.store.defaultLanguage || 'en').toLowerCase().split('-')[0];
     if (present.has(def) || present.size === 0) return def;
     const bytes = [...present].map(languageByte).filter((b) => b);
     return bytes.length ? languageCode(Math.min(...bytes)) : def;
@@ -948,7 +959,7 @@ class SqliteV2Provider extends BaseCSServices {
    * A text filter searches one language, as main does since #335 (CodeSystemProvider.searchLanguage):
    * the first language the request names (displayLanguage, else Accept-Language) that the file or
    * a supplement in use has text in, else the file's own language. The file's names in that
-   * language take part (V2Store.searchText, text-index.js), and, as each built-in provider adds
+   * language take part (Store.searchText, text-index.js), and, as each built-in provider adds
    * them, the codes a supplement in use gives a matching name in that language that the file's
    * own search does not find (_supplementSearchCodes; SNOMED CT: active ones; RxNorm: none). A
    * supplement that adds codes is noted on the filter context (prep.usedSupplements), for
@@ -1013,7 +1024,7 @@ class SqliteV2Provider extends BaseCSServices {
   async _searchOrder(bm, text, extras = null, lang = null) {
     const keep = (ids) => { const out = []; for (const id of ids) if (bm.has(id)) out.push(id); return out; };
     const mode = this.dialect.searchMode;
-    if (mode === 'rxnorm') return keep((await this._pausing(rxTextSearchG(this.store, text, this.store.rxSearchable(this._stats()), this._stats()))).ids);
+    if (mode === 'rxnorm') return keep((await this._pausing(rxTextSearchG(this.store, text, rxSearchable(this.store, this._stats()), this._stats()))).ids);
     if (mode !== 'designation' && mode !== 'display') {
       // cs-cs.js: a supplement's codes are rated 10, among the others
       const extra = extras && extras.length ? new Set(this.store.conceptRows(extras, this._stats()).values().map((r) => r.code)) : null;
@@ -1308,29 +1319,27 @@ class SqliteV2Factory extends CodeSystemFactoryProvider {
   }
 
   async load() {
-    this.store = new V2Store(this.file, this.opts);
+    this.store = openStore(this.file, this.opts);
     this.dialect = dialectFor(this.store.system);
-    const kind = orderKind(this.dialect.name);
-    const order = kind ? this._systemOrder(kind) : null;
+    // behaviour.expansionOrder: concept ids, or the stored order (ix_order)
+    const kind = this.store.behaviour.expansionOrder;
+    const order = kind !== 'ids' ? this._systemOrder(kind) : null;
     this.engine = new Engine(this.store, order ? { ...this.opts, order } : this.opts);
     // SNOMED CT text search ranks ties by the built-in concept order (text-index.js)
     if (order) this.store.ordinal = (id) => order.rank[id];
     this.layers = new SupplementLayers(this.store);
     this.propDefs = propertyDefinitionsFor(this.store, this.dialect);
     // data, not cache: read once when the file loads
-    this._langs = this.store.withoutMmap(() => this.store.db.prepare('SELECT DISTINCT language FROM designation WHERE language IS NOT NULL').all().map((r) => r.language));
+    this._langs = this.store.languages();
   }
 
   /**
-   * The built-in answer order of LOINC and SNOMED CT (orders.js): data the importer computed and
-   * stored in the file (system_order), read lazily, array by array. A file built before
-   * system_order computes it here, at load, from its rows.
+   * The built-in answer order of LOINC, SNOMED CT and RxNorm (orders.js): arrays stored in the
+   * file (ix_order), read lazily, array by array.
    */
   _systemOrder(kind) {
     const t0 = Date.now();
-    const order = hasTable(this.store.db, 'system_order')
-      ? storedOrder(this.store, kind)
-      : builtOrder(this.store.withoutMmap(() => computeOrder(this.store.db, kind, this.store.conceptCount)), kind);
+    const order = this.store.systemOrder(kind);
     this.orderBuildMs = Date.now() - t0;
     return order;
   }
@@ -1338,13 +1347,11 @@ class SqliteV2Factory extends CodeSystemFactoryProvider {
   system() { return this.store.system; }
   version() { return this.store.version; }
   defaultVersion() { return this.store.version; }
-  name() {
-    if (this.store.system === LOINC) return 'LOINC';
-    if (this.store.system === RXNORM) return 'RxNorm';
-    return this.store.cs.name || this.store.system;
-  }
-  description() { return this.store.system === LOINC ? 'LOINC' : (this.store.cs.title || this.name()); }
-  lookupName() { return this.store.system === LOINC ? 'Logical Observation Identifier Names and Codes (LOINC)' : this.name(); }
+  name() { return this.store.cs.name || this.store.system; }
+  // behaviour.description / lookupName: the code system's name or its title (LOINC: description
+  // 'LOINC', $lookup name the title, as cs-loinc.js)
+  description() { return this.store.behaviour.description === 'name' ? this.name() : (this.store.cs.title || this.name()); }
+  lookupName() { return this.store.behaviour.lookupName === 'title' ? (this.store.cs.title || this.name()) : this.name(); }
   defLang() { return 'en'; }
   /**
    * RxNorm: the concepts in RXNCONSO, as cs-rxnorm.js counts them (its totalCodeCount), not those
@@ -1358,11 +1365,7 @@ class SqliteV2Factory extends CodeSystemFactoryProvider {
     }
     return this._liveCount;
   }
-  versionAlgorithm() {
-    if (this.store.system === LOINC) return 'natural';
-    if (this.store.system === RXNORM) return 'date';
-    return null;
-  }
+  versionAlgorithm() { return this.store.behaviour.versionAlgorithm; }
   /**
    * The factory id, as main's provider for the same system forms it (read.js and search.js serve
    * it as CodeSystem/x-<id>; tx.fhir.org uses the same ids): LOINC 'loinc' + version
@@ -1433,9 +1436,7 @@ class SqliteV2Factory extends CodeSystemFactoryProvider {
     if (!lm || conceptMaps.some((m) => m.url === LOINC_MAP_BASE + lm.key)) return;
     if (code) {
       const id = this.store.idOf(code);
-      const has = (id != null && this.store.stmt('SELECT 1 FROM external_map WHERE concept_id = ? AND system = ? LIMIT 1').get(id, lm.system))
-        || this.store.stmt('SELECT 1 FROM external_map WHERE system = ? AND code = ? LIMIT 1').get(lm.system, code);
-      if (!has) return;
+      if (!this.store.hasMap(id, lm.system, code)) return;
     }
     conceptMaps.push(this._loincMap(lm));
   }

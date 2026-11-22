@@ -65,16 +65,7 @@ const loinc = {
   },
   /** a relationship filter value may be the target's code or its name (Codes.Description, no case): every match */
   valuesByName(c, v) {
-    const S = c.store;
-    let ids = null;
-    if (String(v).length >= 3) {
-      try {
-        ids = S.stmt('SELECT concept_id FROM concept WHERE concept_id IN (SELECT rowid FROM search_display WHERE search_display MATCH ?) AND display = ? COLLATE NOCASE AND concept_id BETWEEN ? AND ?')
-          .all('"' + String(v).replace(/"/g, '""') + '"', v, S.lo, S.hi).map((r) => r.concept_id);
-      } catch (e) { ids = null; }
-    }
-    if (!ids) ids = S.stmt('SELECT concept_id FROM concept WHERE display = ? COLLATE NOCASE AND concept_id BETWEEN ? AND ?').all(v, S.lo, S.hi).map((r) => r.concept_id);
-    return ids;
+    return c.store.displayIdsNoCase(v);
   },
   searchMode: 'display',
   filter(c, prop, op, value) {
@@ -111,42 +102,13 @@ const loinc = {
       const ans = S.props.get('Answer');
       return { t: 'set', kind: KIND.refset, pid: 0, value: id, ...(ans ? { order: 'firstSeen', via: ans.id } : {}) };
     }
-    if (prop === 'AnswerList' && !S.props.has(prop)) {
-      // upstream's AnswerList relationship (a term or an answer -> its answer lists): the
-      // inverse of Answer and answers-for (cs_config.inverseProperties). = and regex match the
-      // list's code or name, in its codes, exists true or false
-      const pids = ['Answer', 'answers-for'].map((n) => S.props.get(n)).filter(Boolean).map((p) => p.id);
-      // upstream's key order: terms, then answers where they first appear (engine.js _firstSeen)
+    if (prop === 'AnswerList' && S.filterProp(prop)) {
+      // upstream's AnswerList relationship (a term or an answer -> its answer lists): the catalog's
+      // inverse of Answer and answers-for (generic). Upstream's key order: terms, then answers
+      // where they first appear (engine.js _firstSeen, by the ordered Answer lists)
+      const n = c.propertyFilter(S.filterProp(prop), op, value);
       const ans = S.props.get('Answer');
-      const of = (sources) => ({ t: 'propOf', pids, sources, ...(ans ? { order: 'firstSeen', via: ans.id } : {}) });
-      if (op === '=') return of({ t: 'ids', ids: [...new Set(c.valueIds(value))].sort((a, b) => a - b) });
-      if (op === 'in') {
-        const m = c.ids(splitList(value));
-        return of({ t: 'ids', ids: [...new Set([...m.values()].filter((x) => x != null))].sort((a, b) => a - b) });
-      }
-      if (op === 'regex') return of({ t: 'text', field: 'display', re: value });
-      if (op === 'exists' && (value === 'true' || value === 'false')) {
-        const n = of({ t: 'all' });
-        return value === 'true' ? n : { t: 'minus', a: { t: 'all' }, b: n };
-      }
-      throw loinc.notSupported(prop, op, value);
-    }
-    if (prop === 'child' && !S.props.has(prop) && S.hierarchy) {
-      // upstream's child relationship (a part -> the parts and terms below it): the inverse of
-      // parent, so child = X is X's parents. = takes a code or a name, in codes only, regex the
-      // child's name, exists true or false (cs-loinc.js relationship filters)
-      const parents = (of) => ({ t: 'hier', dir: 'parents', self: false, of });
-      if (op === '=') return parents({ t: 'ids', ids: [...new Set(c.valueIds(value))].sort((a, b) => a - b) });
-      if (op === 'in') {
-        const m = c.ids(splitList(value));
-        return parents({ t: 'ids', ids: [...new Set([...m.values()].filter((x) => x != null))].sort((a, b) => a - b) });
-      }
-      if (op === 'regex') return parents({ t: 'text', field: 'display', re: value });
-      if (op === 'exists' && (value === 'true' || value === 'false')) {
-        const n = parents({ t: 'all' });
-        return value === 'true' ? n : { t: 'minus', a: { t: 'all' }, b: n };
-      }
-      throw loinc.notSupported(prop, op, value);
+      return ans && n.t !== 'minus' ? { ...n, order: 'firstSeen', via: ans.id } : n;
     }
     if (prop === 'ancestor' && op === '=') {
       // implicit part value sets (http://loinc.org/vs/LP...): the codes below the part
@@ -184,9 +146,9 @@ const loinc = {
       throw loinc.notSupported(prop, op, value);
     }
     // CLASSTYPE = takes the code (1-4) or its name ("Laboratory class", ...), as upstream does;
-    // the generic literal rule maps names through cs_config.propertyValueDescriptions. Upstream
-    // stores the name, and maps a code to it for = only: in and regex match the names
-    const names = S.config.propertyValueDescriptions && S.config.propertyValueDescriptions.CLASSTYPE;
+    // the generic literal rule maps names through the value labels. Upstream stores the name, and
+    // maps a code to it for = only: in and regex match the names
+    const names = S.props.has('CLASSTYPE') ? S.valueLabels(S.props.get('CLASSTYPE')) : null;
     if (prop === 'CLASSTYPE' && names && S.props.has(prop) && op === 'regex') {
       const re = regexUtilities.compile('^(?:' + value + ')$');
       const codes = Object.keys(names).filter((k) => re.test(String(names[k])));
@@ -195,7 +157,7 @@ const loinc = {
     // in, on a property the file has beyond cs-loinc.js's lists: only the values that are LOINC
     // codes (the rule cs-loinc.js had before #386; its own properties and relationships are the
     // union of = above)
-    if (op === 'in' && S.props.has(prop) && !(c.inverseOf && c.inverseOf(prop))) {
+    if (op === 'in' && S.props.has(prop)) {
       const p = S.props.get(prop);
       const m = c.ids(splitList(value));
       const known = [...m].filter(([, id]) => id != null).map(([v]) => v);
@@ -226,11 +188,11 @@ const rxnorm = {
   /**
    * cs-rxnorm.js doesFilter / filter: `=` and `in` only, with at least one value; on TTY, STY and
    * SAB (any case), on concept and code, and on a relationship - a REL or RELA that RXNREL has,
-   * from any source - whose values are all CUI:<rxcui>. Anything else is FILTER_NOT_UNDERSTOOD,
-   * 422, including an AUI:<rxaui> value, which cs-rxnorm.js follows over the atom-level rows of
-   * every source: the file holds no atom-level rows (a table rxnorm_atom_rel in a file built by an
-   * earlier importer is not read). A filter on a property a supplement in use defines is left to the
-   * supplement layer, as before.
+   * from any source - whose values are all CUI:<rxcui>, or AUI:<rxaui> in a file built with the
+   * atom-level relationships (importer option atomRelationships: identifier rows RXAUI1 -> the
+   * concept of RXAUI2 under AUI:<name>, every source's, as cs-rxnorm.js reads RXNREL). Without
+   * them an AUI: value is refused. Anything else is FILTER_NOT_UNDERSTOOD, 422. A
+   * filter on a property a supplement in use defines is left to the supplement layer, as before.
    */
   filter(c, prop, op, value) {
     const S = c.store;
@@ -240,7 +202,10 @@ const rxnorm = {
       if (n) return n;
       throw rxnorm.notSupported(prop, op, value);
     };
-    if (op !== '=' && op !== 'in') return refuse();
+    // the operators the catalog row takes (filter_ops; TTY, STY, SAB by any case); concept / code
+    // and the rest: = and in
+    const row = S.catalog.get(up === 'TTY' || up === 'STY' || up === 'SAB' ? up : prop);
+    if (!((row && row.filterOps) || ['=', 'in']).includes(op)) return refuse();
     // cs-rxnorm.js #filterValues
     const vals = op === 'in' ? splitList(value) : (value != null && String(value).trim() ? [String(value).trim()] : []);
     if (!vals.length) return refuse();
@@ -251,19 +216,21 @@ const rxnorm = {
       return null;
     }
     if (prop === 'concept' || prop === 'code') return null; // the generic rule: the codes listed
-    const rels = S.config.rxRels || Object.keys(S.config.relaByRel || {});
-    const relas = S.config.rxRelas || [...S.props.values()].filter((p) => p.kind === 'concept').map((p) => p.code);
-    const isRel = rels.includes(prop);
-    if (!isRel && !relas.includes(prop)) return refuse();
-    if (!vals.every((v) => v.startsWith('CUI:'))) return refuse();
-    // RxNorm's own concept-level rows (SAB = RXNORM), as concept-valued properties. A REL or RELA
-    // only other sources' or atom-level rows have names no property here, so selects nothing.
-    const relaMap = S.config.relaByRel || {};
-    const pids = (isRel ? (relaMap[prop] || []) : [prop]).map((a) => S.props.get(a)).filter((p) => p && p.kind === 'concept').map((p) => p.id);
-    const m = c.ids(vals.map((v) => v.substring(4)));
-    const ids = [...new Set([...m.values()].filter((x) => x != null))];
-    const items = pids.flatMap((pid) => ids.map((id) => ({ t: 'set', kind: KIND.prop, pid, value: id })));
-    return items.length === 0 ? { t: 'empty' } : items.length === 1 ? items[0] : { t: 'or', items };
+    // a relationship: a REL (the catalog's union of its RELAs) or a RELA, whatever source RXNREL
+    // has it from (a name only other sources' rows have selects nothing)
+    const p = S.filterProp(prop);
+    if (!p || p.kind !== 'concept') return refuse();
+    // CUI:<rxcui> names a concept; AUI:<rxaui> an atom of any source (the file's atom-level rows)
+    if (!vals.every((v) => v.startsWith('CUI:') || (v.startsWith('AUI:') && S.hasAtomRelationships))) return refuse();
+    const cuis = vals.filter((v) => v.startsWith('CUI:')).map((v) => v.substring(4));
+    const auis = vals.filter((v) => v.startsWith('AUI:')).map((v) => v.substring(4));
+    const items = [];
+    if (cuis.length) items.push(c.propertyFilter(p, 'in', cuis.join(',')));
+    if (auis.length) {
+      const atoms = S.catalog.get('AUI:' + p.code);
+      items.push(atoms ? { t: 'ids', ids: S.subjectsOfIdentifiers(atoms, auis, c.stats) } : { t: 'empty' });
+    }
+    return items.length === 1 ? items[0] : { t: 'or', items };
   }
 };
 
@@ -344,7 +311,7 @@ const snomed = {
       if (op !== '=') throw notUnderstood(prop, op, value);
       if (!sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);
       const id = c.id(value);
-      return id == null ? { t: 'empty' } : { t: 'set', kind: KIND.prop, pid: S.props.get('module').id, value: id };
+      return id == null ? { t: 'empty' } : { t: 'set', kind: KIND.prop, pid: S.props.get('moduleId').id, value: id };
     }
     if (prop === 'expressions' && op === '=') {
       // true: expressions are allowed as well (an expansion still lists only concepts; an
@@ -360,7 +327,7 @@ const snomed = {
       if (op !== 'exists') throw notUnderstood(prop, op, value);
       if (value !== 'true' && value !== 'false') throw new FilterError(`Invalid filter value: ${value}`);
       const sid = c.id(scheme);
-      const ids = sid == null ? [] : S.stmt('SELECT DISTINCT concept_id FROM alternate_identifier WHERE scheme_id = ? ORDER BY concept_id').pluck().all(sid);
+      const ids = sid == null ? [] : S.conceptsWithScheme(sid);
       const has = { t: 'ids', ids, label: `${prop} exists` };
       return value === 'true' ? has : { t: 'minus', a: { t: 'all' }, b: has };
     }
@@ -375,8 +342,11 @@ const snomed = {
     if (prop === 'display') throw notUnderstood(prop, op, value);
     if (sctId(prop)) {
       if (op !== '=') throw notUnderstood(prop, op, value);
+      const p = S.filterProp(String(prop).trim());
+      // a concrete attribute (literal values, or literals and links): its value is a number or a
+      // string (#n as ECL writes it), tried as a concept id first where it has links
+      if (p && p.kind !== 'concept') return c.propertyFilter(p, '=', String(value).trim().replace(/^#/, ''));
       if (!sctId(value)) throw new FilterError(`Invalid concept ID: ${value}`);
-      const p = S.props.get(String(prop).trim());
       const id = c.id(value);
       if (!p || id == null) return { t: 'empty' };
       return { t: 'set', kind: KIND.prop, pid: p.id, value: id };

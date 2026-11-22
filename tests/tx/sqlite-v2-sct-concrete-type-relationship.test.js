@@ -2,15 +2,16 @@
 
 // An inactive sct2_Relationship row whose typeId is also a concrete-value attribute, with a concept
 // target (the UK Edition has two: retired pre-concrete-domain drug rows of 149501000000101 typed
-// 1142139005 and 1142140007). A sqlite-v2 property has one value kind, so registering the type as
-// concept-valued for the relationship and literal for the concrete values stopped both importers
-// ("property 1142139005 defined as both concept and literal"). Main's provider never reads inactive
-// relationships, so both importers leave such a row out.
+// 1142139005 and 1142140007). Both importers keep the row, as a link of that attribute, whose
+// catalog row then has shape 'both' (links and literals). Main's provider never reads inactive
+// relationships, nor links of a concrete attribute: the reader leaves them out where no property
+// is named (READER_RULES unnamedLinksSkipBoth), so $lookup is main's.
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
+const { openStore } = require('../../tx/sqlite-v2/store');
 const { SnomedImporter } = require('../../tx/importers/import-sct.module');
 const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
 const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
@@ -43,14 +44,21 @@ function mergeSnapshot(src, dst) {
   }
 }
 
-function links(db, code) {
+/** the attribute's catalog shape, its rows, and the links the reader gives a $lookup of the source */
+function rows(db, code) {
   const d = new Database(db, { readonly: true });
+  let p, links, literals;
   try {
-    const kind = d.prepare('SELECT value_kind FROM property_def WHERE code = ?').get(code);
-    const n = d.prepare('SELECT count(*) AS n FROM concept_link l JOIN property_def p USING (property_id) WHERE p.code = ?').get(code).n;
-    const lit = d.prepare('SELECT count(*) AS n FROM concept_literal l JOIN property_def p USING (property_id) WHERE p.code = ?').get(code).n;
-    return { kind: kind && kind.value_kind, links: n, literals: lit };
+    p = d.prepare('SELECT id, shape FROM property WHERE code = ?').get(code);
+    links = d.prepare('SELECT count(*) FROM link WHERE property_id = ?').pluck().get(p.id);
+    literals = d.prepare('SELECT count(*) FROM literal WHERE property_id = ?').pluck().get(p.id);
   } finally { d.close(); }
+  const S = openStore(db, { unregistered: true });
+  try {
+    const unnamed = S.linksFrom([S.idOf(SOURCE)], null, false).filter((l) => l.p === p.id).length;
+    const named = S.linksFrom([S.idOf(SOURCE)], new Set([p.id]), false).length;
+    return { shape: p.shape, links, literals, unnamed, named };
+  } finally { S.close(); }
 }
 
 beforeAll(async () => {
@@ -64,15 +72,15 @@ beforeAll(async () => {
 
 afterAll(() => { if (dir) fs.rmSync(dir, { recursive: true, force: true }); });
 
-test('RF2: the inactive row is left out and the attribute stays literal', async () => {
+test('RF2: the inactive row is a link of the attribute (shape both), not read by an unnamed lookup', async () => {
   const db = path.join(dir, 'rf2.db');
   const summary = await importSnomedV2({ source: snap, dest: db, edition: '31000003106', version: '20250909', overwrite: true,
     normalForms: false, log: () => {} });
-  expect(summary.importer.inactiveConcreteTypeRelationshipsSkipped).toBe(1);
-  expect(links(db, COUNT_OF_BASE)).toEqual({ kind: 'literal', links: 0, literals: 4 });
+  expect(summary.importer.concreteTypeLinks).toBe(1);
+  expect(rows(db, COUNT_OF_BASE)).toEqual({ shape: 'both', links: 1, literals: 4, unnamed: 0, named: 1 });
 }, 120000);
 
-test('cache: the same row from main\'s cache is left out too', async () => {
+test('cache: the same row from main\'s cache, the same way', async () => {
   const cache = path.join(dir, 't.cache');
   const quiet = jest.spyOn(console, 'log').mockImplementation(() => {});
   try {
@@ -81,6 +89,6 @@ test('cache: the same row from main\'s cache is left out too', async () => {
   } finally { quiet.mockRestore(); }
   const db = path.join(dir, 'rev.db');
   const summary = await importSnomedV2FromCache({ source: cache, dest: db, overwrite: true, normalForms: false, log: () => {} });
-  expect(summary.importer.inactiveConcreteTypeRelationshipsSkipped).toBe(1);
-  expect(links(db, COUNT_OF_BASE)).toEqual({ kind: 'literal', links: 0, literals: 4 });
+  expect(summary.importer.concreteTypeLinks).toBe(1);
+  expect(rows(db, COUNT_OF_BASE)).toEqual({ shape: 'both', links: 1, literals: 4, unnamed: 0, named: 1 });
 }, 120000);

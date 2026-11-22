@@ -111,7 +111,9 @@ describe('sqlite-v2 SNOMED CT post-coordination (native) and ECL fallback', () =
 
   test('refset members keep effectiveTime, module and RF2 order; ECL member filters use them natively', async () => {
     const S = factory.store;
-    const meta = S.stmt('SELECT count(*) AS n, count(effective_time) AS t, count(module_id) AS m FROM refset_member').get();
+    // the decoded record rows, as the reader reads them
+    const rows = [...S.relations.keys()].flatMap((rid) => S.refsetMemberRows(rid));
+    const meta = { n: rows.length, t: rows.filter((r) => r.effective_time != null).length, m: rows.filter((r) => r.module_id != null).length };
     expect(meta.n).toBeGreaterThan(0);
     expect(meta.t).toBe(meta.n);
     expect(meta.m).toBe(meta.n);
@@ -128,6 +130,14 @@ describe('sqlite-v2 SNOMED CT post-coordination (native) and ECL fallback', () =
     expect(all).toBeGreaterThan(0);
     expect(after + before).toBeGreaterThanOrEqual(all);
     expect(after).toBeLessThanOrEqual(all);
+    // the target column (record.target_id): a small value set reads only its rows (SQL), a wide one
+    // every row; both as the decoded rows say
+    const decoded = S.refsetMemberRows(S.idOf('900000000000526001'));
+    const target = S.refsetDef(S.idOf('900000000000526001')).names.indexOf('targetComponentId');
+    const t = JSON.parse(decoded[0].fields)[target];
+    const want = new Set(decoded.filter((r) => JSON.parse(r.fields)[target] === t).map((r) => r.concept_id)).size;
+    expect(await size(`^ 900000000000526001 {{ M targetComponentId = ${t} }}`)).toBe(want);
+    expect(await size('^ 900000000000526001 {{ M targetComponentId = * }}')).toBe(new Set(decoded.filter((r) => S.idOf(JSON.parse(r.fields)[target]) != null).map((r) => r.concept_id)).size);
   });
 
   test('expressions: locate, display, MRCM, subsumption, stored normal forms', async () => {
@@ -137,13 +147,13 @@ describe('sqlite-v2 SNOMED CT post-coordination (native) and ECL fallback', () =
     expect(await p.subsumesTest('40468003:{363698007=181268008}', '3738000')).toBe('subsumed-by');
     const bad = await p.locate('367430006:{42752001=789750003}');
     expect(bad.message).toMatch(/does not allow the attribute 42752001 \|Due to\| on 367430006/);
-    const nf = factory.store.stmt('SELECT count(*) AS n FROM concept_normal_form').get().n;
+    const nf = factory.store.db.prepare("SELECT count(*) AS n FROM ix_key WHERE name = 'normalForm'").get().n;
     expect(nf).toBeGreaterThan(100);
   });
 
   test('ancestorsOf agrees with subsumesTest for plain concept ids; expressions and other spellings get null', async () => {
     const p = await factory.build(op, []);
-    const all = factory.store.stmt('SELECT code FROM concept ORDER BY concept_id').pluck().all();
+    const all = factory.store.db.prepare('SELECT code FROM concept ORDER BY id').pluck().all();
     const codes = [...new Set([...all.filter((c, i) => i % 40 === 0), '3738000', '40468003', '128241005', '138875005'])];
     let related = 0;
     for (const b of codes) {

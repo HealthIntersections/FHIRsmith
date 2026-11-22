@@ -1,46 +1,30 @@
 'use strict';
 
-// FHIRsmith SNOMED CT cache (*.cache, tx/sct/structures.js) -> sqlite-v2 ("reverse loader").
-//
-// For the editions we can only get as tx.fhir.org's binary caches (the public tx-fhir-org bucket).
-// Source-specific decoding only; numbering, sets, indexes and provenance are the shared final stage
-// (V2Builder.finish), and the facts are the ones import-sct-v2.module.js reads from RF2:
+// FHIRsmith SNOMED CT cache (*.cache, tx/sct/structures.js) -> a terminology file ("reverse loader"),
+// for the editions we can only get as tx.fhir.org's binary caches. Cache decoding only; where each
+// fact goes is the shared stage (sct-v2-common.js SnomedSink), as for RF2:
 //   concepts        active (status nibble), module, definition status (primitive flag), effectiveTime
-//   descriptions    every description record (incl. text definitions), active and inactive:
-//                   designations, language from the cache's language byte
-//   display         preferred synonym in the edition's display refsets (main's table, cs-snomed.js
-//                   _displayRefsetOrder), else preferred in any language refset, else FSN, else the
-//                   first active description (description-id order) - the rule of the RF2 importer
-//   relationships   every relationship record, active and inactive (the cache importer reads the same
-//                   non-stated sct2_Relationship rows as the RF2 importer), in record order (link_order)
-//                   - except inactive records typed by a concrete-value attribute (see below)
-//   concrete values cache v19 only (active inferred rows)
-//   identifiers     cache v18+ only (active rows)
-//   language refsets (members referencing descriptions, refset under 900000000000506000) ->
-//                   designation_acceptability
-//   other refsets   members referencing concepts -> membership + refset_member rows for refsets with
-//                   extra columns. Members referencing descriptions in other refsets are counted, skipped
-//                   (as the RF2 importer does).
+//   descriptions    every description record (incl. text definitions), active and inactive, language
+//                   from the cache's language byte
+//   relationships   every relationship record, active and inactive, in record order
+//   concrete values cache v19 and later (active inferred rows)
+//   identifiers     cache v18 and later (active rows)
+//   refsets         language refsets (members referencing descriptions, refset under 900000000000506000);
+//                   every other refset's members, on concepts or on descriptions
 // What the cache does not carry (inactive refset members, map refsets, concrete values before v19,
-// ...) is not in the file either.
+// ...) is not in the file either. Dates: 'auto' adds a day to caches built east of UTC (upstream
+// b082f98); known defects of older cache vintages stop the import unless forced.
 
 const path = require('path');
 const { BaseTerminologyModule } = require('./tx-import-base');
-const { V2Builder } = require('./sqlite-v2/builder');
 const {
   SnomedStrings, SnomedReferences, SnomedDescriptions, SnomedConceptList, SnomedRelationshipList,
-  SnomedReferenceSetMembers, SnomedReferenceSetIndex, SnomedFileReader, SNOMED_CACHE_VERSION,
+  SnomedReferenceSetMembers, SnomedReferenceSetIndex,
 } = require('../sct/structures');
-// main's display refset order per edition (tx/cs/cs-snomed.js _displayRefsetOrder)
-const { applySnomedConfig, storeNormalForms, concrete, isoDate, idLess, displayRefsetsFor, DISPLAY_REFSETS } = require('./import-sct-v2.module');
+const { SnomedFileReader, SNOMED_CACHE_VERSION } = require('../sct/structures');
+const { isoDate, displayRefsetsFor, DISPLAY_REFSETS, concrete, SnomedSink, SCT } = require('./sct-v2-common');
 const { editionName } = require('../sct/editions');
 
-const SCT = 'http://snomed.info/sct';
-const IS_A = '116680003';
-const FSN = '900000000000003001';
-const SYNONYM = '900000000000013009';
-const DEFINITION = '900000000000550004';
-const PREFERRED = '900000000000548007';
 const LANGUAGE_TYPE_REFSET = '900000000000506000';
 const PRIMITIVE = '900000000000074008';
 const DEFINED = '900000000000073002';
@@ -135,9 +119,7 @@ function sctDate(days) {
   return new Date(PASCAL_EPOCH + days * DAY).toISOString().slice(0, 10).replace(/-/g, '');
 }
 
-/**
- * @param {object} cfg { source (.cache), dest, overwrite, dateShift ('auto' | integer days), log }
- */
+/** @param {object} cfg { source (.cache), dest, overwrite, dateShift ('auto' | days), force, log, normalForms } */
 async function importSnomedV2FromCache(cfg) {
   const log = cfg.log || console.log;
   const t0 = Date.now();
@@ -160,7 +142,6 @@ async function importSnomedV2FromCache(cfg) {
   if (!m) throw new Error(`unexpected version URI ${d.versionUri}`);
   const [, edition, version] = m;
 
-  // concept offset -> code (the builder index is the concept ordinal: concepts are added in cache order)
   const code = new Array(nC);
   for (let k = 0; k < nC; k++) code[k] = cbuf.readBigUInt64LE(k * C).toString();
   const ord = (offset) => {
@@ -170,10 +151,9 @@ async function importSnomedV2FromCache(cfg) {
   const ordOf = new Map();
   for (let k = 0; k < nC; k++) ordOf.set(code[k], k);
   const known = (c) => ordOf.get(c);
+  const descId = (k) => dbuf.readBigUInt64LE(k * D + 5).toString();
 
-  // Cache dates: caches built in a time zone ahead of UTC before upstream b082f98 store every date one
-  // day early. 'auto' shifts by +1 day when no concept carries the release date but some carry the day
-  // before it.
+  // dates ('auto': +1 day for caches built east of UTC before upstream b082f98)
   let shift = 0;
   {
     const rel = Math.round((Date.UTC(+version.slice(0, 4), +version.slice(4, 6) - 1, +version.slice(6, 8)) - PASCAL_EPOCH) / DAY);
@@ -188,34 +168,26 @@ async function importSnomedV2FromCache(cfg) {
   }
   const date = (days) => (days ? sctDate(days + shift) : null);
 
-  // Known defects of some cache vintages.
-  const quality = inspect();
-  for (const w of quality.warnings) log(`WARNING: ${w}`);
-  if (cfg.inspectOnly) return { inspectOnly: true, cacheVersion: d.cacheVersion, versionUri: d.versionUri, shift, ...quality };
-  if (quality.fatal.length && !cfg.force) {
-    throw new Error(`${path.basename(cfg.source)}: defective cache (${quality.fatal.join('; ')}); use --force to import anyway`);
-  }
-
-  function inspect() {
-    const warnings = [], fatal = [];
+  const refsets = [];
+  for (let k = 0; k < rsIndex.count(); k++) refsets.push(rsIndex.getReferenceSet(k));
+  // the known defects of older cache vintages (fatal unless cfg.force), and warnings
+  const warnings = [];
+  {
+    const fatal = [];
     let noModule = 0, primitive = 0;
     for (let k = 0; k < nC; k++) {
       if (!cbuf.readUInt32LE(k * C + 36)) noModule++;
       if (cbuf.readUInt8(k * C + 8) & SnomedConceptList.MASK_CONCEPT_PRIMITIVE) primitive++;
     }
-    const counts = { concepts: nC, descriptions: nD, relationships: nR, noModule, primitive,
-      refsets: rsIndex.count(), concreteValues: (d.concreteValues || []).length, identifiers: (d.identifiers || []).length };
     if (noModule > nC / 100) fatal.push(`${noModule} of ${nC} concepts have no module`);
     if (primitive === 0) fatal.push('no concept is primitive (definition status lost)');
     const defs = new Map(), members = new Map();
-    for (let k = 0; k < rsIndex.count(); k++) {
-      const e = rsIndex.getReferenceSet(k);
+    for (const e of refsets) {
       defs.set(e.definition, (defs.get(e.definition) || 0) + 1);
       members.set(e.definition, (members.get(e.definition) || 0) + rsMembers.getMemberCount(e.membersByRef));
     }
     const dup = [...defs].filter(([, n]) => n > 1);
     if (dup.length) fatal.push(`refset index names ${dup.map(([o, n]) => `${code[o / C]} x${n}`).join(', ')} (refsets collapsed onto one concept)`);
-    counts.refsetMembers = [...members.values()].reduce((a, b) => a + b, 0);
     for (const r of displayRefsetsFor(edition)) {
       if (known(r) === undefined) continue;
       const n = members.get(known(r) * C) || 0;
@@ -223,50 +195,48 @@ async function importSnomedV2FromCache(cfg) {
       else if (n > 0 && n < nC / 10) warnings.push(`display language refset ${r} has only ${n} members (displays fall back to the FSN)`);
     }
     if (shift) warnings.push(`dates shifted by ${shift} day(s) (cache built east of UTC before upstream b082f98)`);
-    if (!counts.concreteValues) warnings.push(`no concrete values (cache v${d.cacheVersion}; carried from v19)`);
+    if (!(d.concreteValues || []).length) warnings.push(`no concrete values (cache v${d.cacheVersion}; carried from v19)`);
     warnings.push(...fatal);
-    return { counts, warnings, fatal };
+    for (const w of warnings) log(`WARNING: ${w}`);
+    if (cfg.inspectOnly) return { inspectOnly: true, cacheVersion: d.cacheVersion, versionUri: d.versionUri, shift, fatal, warnings,
+      counts: { concepts: nC, descriptions: nD, relationships: nR, refsets: refsets.length } };
+    if (fatal.length && !cfg.force) throw new Error(`${path.basename(cfg.source)}: defective cache (${fatal.join('; ')}); use --force to import anyway`);
   }
 
-  const b = new V2Builder(cfg.dest, { overwrite: cfg.overwrite, log, importer: 'sct-v2-from-cache' });
-  b.addSource(cfg.source);
+  const displayRefsets = displayRefsetsFor(edition).filter((c) => known(c) !== undefined);
+  const defByte = cacheDefaultLanguage(d);
   const name = (editionName(edition) ? `SNOMED CT ${editionName(edition)}` : `SNOMED CT edition ${edition}`);
-  b.setCodeSystem({
-    uri: SCT, version: d.versionUri, name, title: name, edition, releaseDate: isoDate(version),
-    description: `SNOMED CT edition ${edition} version ${version}, from FHIRsmith cache v${d.cacheVersion} (${path.basename(cfg.source)})`,
+  const sink = new SnomedSink({
+    dest: cfg.dest, overwrite: cfg.overwrite, log, importer: 'sct-v2-from-cache', edition,
+    codeSystem: { uri: SCT, version: d.versionUri, name, title: name, releaseDate: isoDate(version),
+      description: `SNOMED CT edition ${edition} version ${version}, from FHIRsmith cache v${d.cacheVersion} (${path.basename(cfg.source)})`,
+      // the cache's default-language slot (cacheDefaultLanguage; en-US for English)
+      defaultLanguage: defByte !== 1 && LANGUAGE[defByte] ? LANGUAGE[defByte] : 'en-US' },
+    // the description flag `preferred` = Preferred in the first display refset
+    displayRefsets, preferredRefset: displayRefsets[0], normalForms: cfg.normalForms,
   });
-  const stats = {
-    cacheVersion: d.cacheVersion, dateShiftDays: shift, cacheWarnings: quality.warnings, cacheCounts: quality.counts, descriptionRefsetRowsSkipped: 0, refsetsWithoutConcept: 0,
-    otherRefsetRowsSkipped: 0, unknownFieldValues: 0, languageRefsets: [], concreteValues: 0, identifiers: 0,
-    conceptsWithoutModule: 0, inactiveConcreteTypeRelationshipsSkipped: 0,
-  };
+  sink.b.addSource(cfg.source);
+  sink.b.setMeta('provenance.sourceFormat', `fhirsmith-cache-v${d.cacheVersion}`);
+  const stats = { cacheVersion: d.cacheVersion, dateShiftDays: shift, cacheWarnings: warnings, conceptsWithoutModule: 0, unknownFieldValues: 0, refsetsWithoutConcept: 0, otherRefsetRowsSkipped: 0, languageRefsets: [] };
 
-  const isA = b.property({ code: IS_A, uri: `${SCT}/${IS_A}`, fhirType: 'code', valueKind: 'concept', isHierarchy: true });
-  const moduleProp = b.property({ code: 'module', fhirType: 'code', valueKind: 'concept', display: 'Module' });
-  const defStatus = b.property({ code: 'definitionStatusId', fhirType: 'code', valueKind: 'concept', display: 'Definition status' });
-  const effTime = b.property({ code: 'effectiveTime', fhirType: 'dateTime', valueKind: 'literal', display: 'Effective time' });
-
-  await b.stage('decode concepts', async () => {
+  await sink.stage('decode concepts', async () => {
     for (let k = 0; k < nC; k++) {
       const flags = cbuf.readUInt8(k * C + 8);
-      const i = b.concept(code[k], { active: (flags & SnomedConceptList.MASK_CONCEPT_STATUS) === 0 });
+      const i = sink.concept(code[k], (flags & SnomedConceptList.MASK_CONCEPT_STATUS) === 0);
       if (i !== k) throw new Error(`duplicate concept ${code[k]} in cache`);
     }
     const prim = known(PRIMITIVE), defd = known(DEFINED);
     for (let k = 0; k < nC; k++) {
       const o = k * C;
       const mod = cbuf.readUInt32LE(o + 36);
-      // module 0 means "not set" except for the concept at offset 0 (never a module concept in practice)
-      if (mod) b.link(k, moduleProp, ord(mod)); else stats.conceptsWithoutModule++;
+      if (!mod) stats.conceptsWithoutModule++;
       const ds = (cbuf.readUInt8(o + 8) & SnomedConceptList.MASK_CONCEPT_PRIMITIVE) ? prim : defd;
-      if (ds !== undefined) b.link(k, defStatus, ds);
       const t = date(cbuf.readUInt16LE(o + 34));
-      if (t) b.literal(k, effTime, isoDate(t));
+      sink.conceptMeta(k, mod ? ord(mod) : undefined, ds, t ? isoDate(t) : null);
     }
     return nC;
   });
 
-  // Is r a language refset? (descends from 900000000000506000 |Language type reference set|)
   const langRoot = known(LANGUAGE_TYPE_REFSET);
   const isLanguageRefset = (k) => {
     const seen = new Set();
@@ -281,27 +251,13 @@ async function importSnomedV2FromCache(cfg) {
     return false;
   };
 
-  // Refset index -> language refsets (acceptability per description ordinal) and the rest.
-  const displayRefsets = displayRefsetsFor(edition).filter((c) => known(c) !== undefined);
-  const displayRank = new Map(displayRefsets.map((c, r) => [known(c), r]));
-  const prefIdx = known(PREFERRED);
-  const prefRank = new Int8Array(nD).fill(127); // best display-refset rank where the description is Preferred
-  const anyPref = new Uint8Array(nD);
-  const accD = [], accR = [], accV = [];
-  const refsets = [];
-  for (let k = 0; k < rsIndex.count(); k++) {
-    const e = rsIndex.getReferenceSet(k);
-    refsets.push(e);
-  }
-
-  // decode a member's extra field values to RF2 strings
+  // a member's extra field values as RF2 text (component ids as SCTIDs)
   const fieldValues = (valuesRef) => {
     const v = getRefs(valuesRef);
     const out = [];
     for (let j = 0; j + 1 < v.length; j += 2) {
       const val = v[j], type = v[j + 1];
       switch (type) {
-        // the cache importer writes 0 (the first concept) for a component it could not find
         case 1: out.push(val > 0 && val % C === 0 && val < cbuf.length ? code[val / C] : (stats.unknownFieldValues++, '')); break;
         case 2: out.push(dbuf.readBigUInt64LE(val + 5).toString()); break;
         case 4: out.push(String(val | 0)); break;
@@ -312,185 +268,109 @@ async function importSnomedV2FromCache(cfg) {
     return out;
   };
 
-  await b.stage('decode language refsets', async () => {
+  const langs = new Set();
+  await sink.stage('decode language refsets', async () => {
     let n = 0;
     for (const e of refsets) {
       const r = e.definition / C;
       const members = rsMembers.getMembers(e.membersByRef) || [];
       if (!members.some((x) => x.kind === 1) || !isLanguageRefset(r)) continue;
       stats.languageRefsets.push(code[r]);
-      const rank = displayRank.has(r) ? displayRank.get(r) : 127;
+      langs.add(code[r]);
       for (const x of members) {
         if (x.kind !== 1) continue;
         const acc = getRefs(x.values);
         if (acc.length < 2 || acc[1] !== 1) continue;
-        const di = x.ref / D;
-        const a = acc[0] / C;
-        accD.push(di); accR.push(r); accV.push(a);
-        if (a === prefIdx) { anyPref[di] = 1; if (rank < prefRank[di]) prefRank[di] = rank; }
+        sink.languageMember(descId(x.ref / D), code[r], code[acc[0] / C]);
         n++;
       }
     }
     return n;
   });
 
-  const best = new Map();
-  const consider = (i, tier, id, term) => {
-    const cur = best.get(i);
-    if (!cur || tier < cur[0] || (tier === cur[0] && idLess(id, cur[1]))) best.set(i, [tier, id, term]);
-  };
-  const stageId = new Int32Array(nD).fill(-1);
-  const synIdx = known(SYNONYM), fsnIdx = known(FSN), defIdx = known(DEFINITION);
-  await b.stage('decode descriptions', async () => {
-    let n = 0;
+  await sink.stage('decode descriptions', async () => {
     for (let k = 0; k < nD; k++) {
       const o = k * D;
-      const term = strings.getEntry(dbuf.readUInt32LE(o));
-      const active = dbuf.readUInt8(o + 4) !== 0;
-      const id = dbuf.readBigUInt64LE(o + 5).toString();
-      const i = ord(dbuf.readUInt32LE(o + 13));
-      const type = ord(dbuf.readUInt32LE(o + 21));
-      const lang = LANGUAGE[dbuf.readUInt8(o + 31)] || 'en';
-      const s = b.designation(i, { language: lang, use: { system: SCT, code: code[type] }, term, active,
-        preferred: prefRank[k] === 0 });
-      if (s !== null) stageId[k] = s;
-      n++;
-      if (!active) continue;
-      const syn = type === synIdx;
-      if (syn && prefRank[k] < 127) consider(i, prefRank[k], id, term);
-      else if (syn && anyPref[k]) consider(i, 100, id, term);
-      else if (type === fsnIdx) consider(i, 101, id, term);
-      else consider(i, 102, id, term);
-      if (type === defIdx) b.setDefinition(i, term);
+      const id = descId(k);
+      sink.description({ key: id, id, concept: ord(dbuf.readUInt32LE(o + 13)), language: LANGUAGE[dbuf.readUInt8(o + 31)] || 'en',
+        type: code[ord(dbuf.readUInt32LE(o + 21))], term: strings.getEntry(dbuf.readUInt32LE(o)), active: dbuf.readUInt8(o + 4) !== 0 });
     }
-    for (const [i, c] of best) b.setDisplay(i, c[2].trim());
-    return n;
+    sink.descriptionsDone();
+    return nD;
   });
-  await b.stage('stage acceptability', async () => {
-    let n = 0;
-    for (let k = 0; k < accD.length; k++) {
-      const s = stageId[accD[k]];
-      if (s >= 0) { b.acceptability(s, accR[k], accV[k]); n++; }
-    }
-    return n;
-  });
-  best.clear(); accD.length = accR.length = accV.length = 0;
-  for (const u of b.uses.values()) { const i = b.idx(u.code); if (i !== undefined) u.display = b.display[i]; }
 
-  // The concrete-value attribute types (stored below as literal properties). An inactive
-  // relationship record with one of these types and a concept target (UK Edition: retired
-  // pre-concrete-domain drug rows) is left out: a property has one value kind, and main's provider
-  // never reads inactive relationships (cs-snomed.js getConceptRelationships).
-  const concreteTypes = new Set();
-  for (const [src, type] of d.concreteValues || []) if (known(String(src)) !== undefined) concreteTypes.add(String(type));
-  await b.stage('decode relationships', async () => {
-    const props = new Map();
-    let n = 0;
+  // concrete-value attribute types (of known concepts), with the literal type of each type's first value
+  const concreteTypes = new Map();
+  for (const [src, type, , raw] of d.concreteValues || []) {
+    if (known(String(src)) !== undefined && !concreteTypes.has(String(type))) concreteTypes.set(String(type), concrete(String(raw)).fhirType);
+  }
+  sink.setConcreteTypes(concreteTypes);
+  await sink.stage('decode relationships', async () => {
     for (let k = 0; k < nR; k++) {
       const o = k * R;
-      const s = ord(rbuf.readUInt32LE(o)), t = ord(rbuf.readUInt32LE(o + 4)), ty = ord(rbuf.readUInt32LE(o + 8));
-      const active = rbuf.readUInt8(o + 26) !== 0;
-      if (!active && concreteTypes.has(code[ty])) { stats.inactiveConcreteTypeRelationshipsSkipped++; continue; }
-      let p = props.get(ty);
-      if (p === undefined) {
-        const tc = code[ty];
-        p = tc === IS_A ? isA : b.property({ code: tc, uri: `${SCT}/${tc}`, fhirType: 'code', valueKind: 'concept' });
-        props.set(ty, p);
-      }
-      // seq: the record's place in the cache, the order cs-snomed.js lists parents, children and
-      // relationships in (each concept's inbound and outbound lists are in record order)
-      b.link(s, p, t, { group: rbuf.readInt32LE(o + 28) || 0, active, seq: k });
+      sink.relationship(ord(rbuf.readUInt32LE(o)), ord(rbuf.readUInt32LE(o + 4)), code[ord(rbuf.readUInt32LE(o + 8))],
+        rbuf.readInt32LE(o + 28) || 0, rbuf.readUInt8(o + 26) !== 0);
+    }
+    return nR;
+  });
+  await sink.stage('decode concrete values', async () => {
+    let n = 0;
+    for (const [src, type, group, raw] of d.concreteValues || []) {
+      sink.concreteValue(known(String(src)), String(type), Number(group) || 0, String(raw));
       n++;
     }
+    sink.concreteDone();
     return n;
   });
 
-  if (d.concreteValues && d.concreteValues.length) {
-    await b.stage('decode concrete values', async () => {
-      for (const [src, type, group, raw] of d.concreteValues) {
-        const s = known(String(src));
-        if (s === undefined) continue;
-        const v = concrete(String(raw));
-        const p = b.property({ code: String(type), uri: `${SCT}/${type}`, fhirType: v.fhirType, valueKind: 'literal' });
-        b.literal(s, p, v.value, { group: Number(group) || 0 });
-        stats.concreteValues++;
-      }
-      return stats.concreteValues;
-    });
-  }
+  await sink.stage('decode identifiers', async () => {
+    for (const [scheme, , id, concept] of d.identifiers || []) sink.identifier(String(scheme), String(id), String(concept));
+    return (d.identifiers || []).length;
+  });
 
-  if (d.identifiers && d.identifiers.length) {
-    await b.stage('decode identifiers', async () => {
-      for (const [scheme, , id, concept] of d.identifiers) {
-        const s = known(String(scheme)), c = known(String(concept));
-        if (s === undefined || c === undefined) continue;
-        b.alternateIdentifier(c, s, String(id));
-        stats.identifiers++;
-      }
-      return stats.identifiers;
-    });
-  }
-
-  await b.stage('decode refsets', async () => {
+  await sink.stage('decode refsets', async () => {
     let n = 0;
-    const langs = new Set(stats.languageRefsets);
-    const moduleDependencies = [];
     for (const e of refsets) {
       const r = e.definition / C;
       let rname = '';
       try { rname = strings.getEntry(e.name) || ''; } catch (err) { rname = ''; }
       if (code[r] === '900000000000534007' || rname.startsWith('ModuleDependency')) {
-        // module dependencies go to cs_config, with each row's own module (as the RF2 importer does)
         for (const x of rsMembers.getMembers(e.membersByRef) || []) {
           if (x.kind !== 0 || x.module == null) continue;
           const f = fieldValues(x.values);
-          moduleDependencies.push([code[ord(x.module)], code[ord(x.ref)], f[0] || null, f[1] || null]);
+          sink.moduleDependency([code[ord(x.module)], code[ord(x.ref)], f[0] || null, f[1] || null]);
           n++;
         }
         continue;
       }
       if (langs.has(code[r])) continue;
-      // a refset whose concept is not in the edition is written against offset 0 (the first concept)
       if (r === 0) { stats.refsetsWithoutConcept++; continue; }
       const types = getRefs(e.fieldTypes).map((t) => String.fromCharCode(t));
       const names = getRefs(e.fieldNames).map((s) => strings.getEntry(s));
-      const hasFields = types.length > 0;
+      const def = { names: names.length === types.length ? names : types.map((t, j) => `field${j + 1}`), types };
       for (const x of rsMembers.getMembers(e.membersByRef) || []) {
-        if (x.kind !== 0) { if (x.kind === 1) stats.descriptionRefsetRowsSkipped++; else stats.otherRefsetRowsSkipped++; continue; }
-        if (hasFields) b.refsetDef(r, names.length === types.length ? names : types.map((t, j) => `field${j + 1}`), types);
-        // the row's effectiveTime and module, when the cache kept them (refsets stored with ids)
-        const meta = x.module != null || x.date != null ? { time: x.date != null ? date(x.date) : null, module: x.module != null ? ord(x.module) : null } : null;
-        b.refsetMember(r, ord(x.ref), hasFields ? fieldValues(x.values) : null, meta);
+        if (x.kind !== 0 && x.kind !== 1) { stats.otherRefsetRowsSkipped++; continue; }
+        const ref = x.kind === 0 ? code[ord(x.ref)] : descId(x.ref / D);
+        const meta = { time: x.date != null ? date(x.date) : null, module: x.module != null ? code[ord(x.module)] : null };
+        sink.refsetMember(code[r], ref, def, types.length ? fieldValues(x.values) : null, meta, x.kind === 1);
         n++;
       }
     }
-    if (moduleDependencies.length) b.setConfig('moduleDependencies', moduleDependencies);
     return n;
   });
 
-  applySnomedConfig(b, displayRefsets);
-  b.setConfig('sourceFormat', `fhirsmith-cache-v${d.cacheVersion}`);
-  // The language a text or display filter with no request language searches: the cache's
-  // default-language slot, read as main's server reads it (cs-snomed.js SnomedServices: the
-  // language byte the importer wrote, or the language of most of the descriptions in the
-  // reference set whose offset the original server wrote, else English). Kept as en-US for
-  // English, as for an RF2 import.
-  const defByte = cacheDefaultLanguage(d);
-  if (defByte !== 1 && LANGUAGE[defByte]) b.setConfig('defaultLanguage', LANGUAGE[defByte]);
   log(`default language: slot ${d.defaultLanguage} -> ${LANGUAGE[defByte] || 'en'}`);
-  const summary = await b.finish(stats);
-  if (cfg.normalForms !== false && !cfg.inspectOnly) storeNormalForms(cfg.dest, summary, cfg.log || (() => {}));
-  return summary;
+  return sink.finish(stats);
 }
 
 class SnomedV2FromCacheModule extends BaseTerminologyModule {
   getName() { return 'snomed-v2-from-cache'; }
-  getDescription() { return 'FHIRsmith SNOMED CT .cache -> SQLite (sqlite-v2 schema), for editions without RF2'; }
+  getDescription() { return 'FHIRsmith SNOMED CT .cache -> SQLite terminology file (sqlite-v2 provider), for editions without RF2'; }
   getSupportedFormats() { return ['file']; }
 
   registerCommands(cmd) {
     cmd.command('import')
-      .description('Reverse-load a FHIRsmith SNOMED CT cache (*.cache) into a sqlite-v2 database')
+      .description('Reverse-load a FHIRsmith SNOMED CT cache (*.cache) into a terminology file')
       .requiredOption('-s, --source <file>', 'the .cache file')
       .requiredOption('-d, --dest <file>', 'destination .db')
       .option('--date-shift <days|auto>', 'days to add to every cache date (auto: fix caches built east of UTC)', 'auto')
@@ -514,4 +394,4 @@ class SnomedV2FromCacheModule extends BaseTerminologyModule {
   }
 }
 
-module.exports = { SnomedV2FromCacheModule, importSnomedV2FromCache, cacheDefaultLanguage, readCache };
+module.exports = { SnomedV2FromCacheModule, importSnomedV2FromCache, cacheDefaultLanguage, readCache, view, sctDate };

@@ -7,17 +7,20 @@
 const Database = require('better-sqlite3');
 const { SqliteV2Factory } = require('./provider');
 const { SnomedV2Factory } = require('./snomed');
+const { checkFormat } = require('./store');
 
-/** a factory for the file, chosen by the code system it holds */
+/** a factory for the file, chosen by the grammar it says its codes have */
 async function loadSqliteV2Factory(i18n, file, opts = {}) {
   const db = new Database(file, { readonly: true, fileMustExist: true });
-  let uri;
+  let grammar;
   try {
-    uri = db.prepare('SELECT uri FROM code_system WHERE id = 1').get().uri;
+    checkFormat(db, file);
+    grammar = JSON.parse(db.prepare("SELECT value FROM main.meta WHERE key = 'behaviour.grammar'").pluck().get() || 'null');
   } finally {
     db.close();
   }
-  const factory = uri === 'http://snomed.info/sct' ? new SnomedV2Factory(i18n, file, opts) : new SqliteV2Factory(i18n, file, opts);
+  // behaviour.grammar 'snomed': SNOMED CT expressions and ECL (snomed.js)
+  const factory = grammar === 'snomed' ? new SnomedV2Factory(i18n, file, opts) : new SqliteV2Factory(i18n, file, opts);
   await factory.load();
   return factory;
 }

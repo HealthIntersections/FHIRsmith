@@ -9,7 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { importRxNormV2 } = require('../../tx/importers/import-rxnorm-v2.module');
-const { V2Store } = require('../../tx/sqlite-v2/store');
+const { openStore } = require('../../tx/sqlite-v2/store');
 const { Engine } = require('../../tx/sqlite-v2/engine/engine');
 const { Compiler } = require('../../tx/sqlite-v2/engine/compile');
 const { dialectFor } = require('../../tx/sqlite-v2/dialects');
@@ -45,7 +45,7 @@ afterAll(() => fs.rmSync(dir, { recursive: true, force: true }));
 
 describe('sqlite-v2 RxNorm obsolete and archived concepts', () => {
   test('selection: filters and the whole system take obsolete concepts, never archived ones', () => {
-    const S = new V2Store(db);
+    const S = openStore(db);
     try {
       const run = (includes, activeOnly = false) => {
         const c = new Compiler({ store: S, dialect: dialectFor(S.system) });

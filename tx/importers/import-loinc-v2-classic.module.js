@@ -1,12 +1,11 @@
 'use strict';
 
-// FHIRsmith classic LOINC db (import-loinc.module.js, served by tx/cs/cs-loinc.js) -> sqlite-v2
-// ("reverse loader"). For releases we only have as a classic file (LOINC 2.77: loinc-2.77-a.db).
+// FHIRsmith classic LOINC db (import-loinc.module.js, served by tx/cs/cs-loinc.js) -> a terminology
+// file ("reverse loader"). For releases we only have as a classic file (LOINC 2.77: loinc-2.77-a.db).
 //
-// Source-specific decoding only; numbering, sets, indexes and provenance are the shared final
-// stage (V2Builder.finish), with the property definitions and cs_config of the CSV importer
-// (import-loinc-v2.module.js), so a reverse-loaded file serves like one built from the release.
-// What is read, and how it maps:
+// Source-specific decoding only, onto the CSV importer's catalog (import-loinc-v2.module.js
+// loincCatalog) and its derived-by-importer orders (writeOrders), so a reverse-loaded file serves
+// like one built from the release. What is read, and how it maps:
 //   Codes          concepts. Type 1 term, 2 part, 3 answer list, 4 answer; a Type 2 code with
 //                  RelationshipKey 0 and no status is a ComponentHierarchyBySystem-only node.
 //                  display = Description; inactive iff StatusKey is DISCOURAGED (cs-loinc.js
@@ -18,12 +17,15 @@
 //                  ('Laboratory class') to its code ('1'), as the CSV importer stores it.
 //   Relationships  links by RelationshipTypes name: the part axes, CLASS, parent, Answer
 //                  (list -> answer, in RelationshipKey order = AnswerList.csv order, which also
-//                  gives each answer's sequence in its list), answers-for (list -> term). The
-//                  inverses child and AnswerList are not stored (cs_config inverseProperties).
-//   Closure        the explicit ancestor pairs (PATH_TO_ROOT closure, as the CSV importer).
+//                  gives each answer's sequence in its list: link.seq), answers-for (list -> term).
+//                  The inverses child and AnswerList are catalog rows (inverse_of), not links.
+//                  The parent and child rows, in RelationshipKey order, are cs-loinc.js's $lookup
+//                  order (ix_order hier_start / hier, unless the parent links' seq gives it).
+//   Closure        the explicit ancestor pairs (`ancestor` links: the PATH_TO_ROOT closure, as the
+//                  CSV importer).
 //   Descriptions   designations, language from Languages, use from DescriptionTypes; preferred
 //                  for the en-US LONG_COMMON_NAME (as the CSV importer).
-//   ExternalCodes/ExternalMappings (when present)   external_map rows.
+//   ExternalCodes/ExternalMappings (when present)   mapping rows.
 // Not in a classic file: answer SequenceNumber (the list order stands in for it), parts whose
 // Part.csv status is NOTSTATED are indistinguishable from parts with no status (no STATUS
 // literal either way, as cs-loinc.js reports them).
@@ -31,10 +33,10 @@
 const fs = require('fs');
 const Database = require('better-sqlite3');
 const { BaseTerminologyModule } = require('./tx-import-base');
-const { V2Builder } = require('./sqlite-v2/builder');
-const { loincProperties, applyLoincConfig, loincWalk, KIND, LOINC } = require('./import-loinc-v2.module');
+const { TerminologyBuilder, vacuumFile } = require('./sqlite-v2/builder');
+const { loincCatalog, loincCodeSystem, loincWalk, writeOrders, hierarchyCheck, KIND, LOINC } = require('./import-loinc-v2.module');
 
-// classic stores CLASSTYPE as its description (cs_config propertyValueDescriptions); v2 the code
+// classic stores CLASSTYPE as its description; the terminology file the code (with a value_label)
 const CLASSTYPE_CODE = { 'Laboratory class': '1', 'Clinical class': '2', 'Claims attachment': '3', 'Surveys': '4' };
 const SKIP_REL = new Set(['child', 'AnswerList', 'N/A']);
 const TYPE_KIND = { 1: KIND.term, 2: KIND.part, 3: KIND.list, 4: KIND.answer };
@@ -64,11 +66,14 @@ async function importLoincV2FromClassic(cfg) {
     const descName = lookup('SELECT DescriptionTypeKey k, Description v FROM DescriptionTypes');
     const langCode = lookup('SELECT LanguageKey k, Code v FROM Languages');
 
-    const b = new V2Builder(cfg.dest, { overwrite: cfg.overwrite, log, importer: 'loinc-v2-classic' });
+    const b = new TerminologyBuilder(cfg.dest, { overwrite: cfg.overwrite, log, importer: 'loinc-v2-classic' });
     b.addSource(cfg.source);
-    b.setCodeSystem({ uri: LOINC, version, name: 'LOINC',
-      title: 'Logical Observation Identifier Names and Codes (LOINC)', description: `LOINC ${version} (FHIRsmith classic db)` });
-    const { prop, parent, partProp, lit, answer, answersFor } = loincProperties(b);
+    loincCodeSystem(b, version, `LOINC ${version} (FHIRsmith classic db)`);
+    const { link, parent, partProp, lit, answer, answersFor, ancestor } = loincCatalog(b);
+    const prop = (code, kind) => (kind === 'literal'
+      ? b.property({ code, uri: `${LOINC}/property/${code}`, shape: 'literal', fhirType: 'string', display: code }) : link(code));
+    // the classic file's own keys (cs-loinc.js's orders): handle -> [Type, CodeKey]
+    const sourceOrder = new Map();
     const stats = { blankCodesDropped: 0, linksToDropped: 0, unknownRelationshipTypes: {}, hierarchyNodes: 0, ancestorPairs: 0 };
 
     // classic CodeKey -> staging index (undefined: dropped)
@@ -84,7 +89,7 @@ async function importLoincV2FromClassic(cfg) {
         const i = b.concept(code, { active: st !== DISCOURAGED, display: (r.Description || '').trim() || code,
           sortKey: node ? KIND.node : (TYPE_KIND[r.Type] ?? KIND.node) });
         idx.set(r.CodeKey, i);
-        b.setSourceOrder(i, r.Type, r.CodeKey); // the classic file's own keys (cs-loinc.js's orders)
+        sourceOrder.set(i, [r.Type, r.CodeKey]);
         if (st) b.literal(i, lit.STATUS, st);
         n++;
       }
@@ -111,6 +116,8 @@ async function importLoincV2FromClassic(cfg) {
     });
 
     const childLinks = new Map();
+    const hier = { xs: [], others: [], child: [] };   // cs-loinc.js's parent / child entries, in order
+    const parentLinks = [];                           // [child, parent, row] of each parent link
     await b.stage('read Relationships', async () => {
       let n = 0;
       // property per relationship type, defined on first use (the CSV importer defines no
@@ -127,7 +134,10 @@ async function importLoincV2FromClassic(cfg) {
       };
       const seq = new Map(); // list index -> answers so far
       const hierSeen = new Set();
+      const linkSeen = new Set();
+      let row = 0;
       for (const r of src.prepare('SELECT RelationshipTypeKey t, SourceKey s, TargetKey g FROM Relationships ORDER BY RelationshipKey').iterate()) {
+        row++;
         if (relName.get(r.t) === 'child' && idx.has(r.s) && idx.has(r.g)) {
           // (the child links, in their rows' order: the whole-system walk below)
           let kids = childLinks.get(idx.get(r.s));
@@ -138,7 +148,7 @@ async function importLoincV2FromClassic(cfg) {
         if ((rel === 'parent' || rel === 'child') && idx.has(r.s) && idx.has(r.g)) {
           // a code's parent and child rows in RelationshipKey order: cs-loinc.js's $lookup order
           const key = rel + ':' + r.s + ':' + r.g;
-          if (!hierSeen.has(key)) { hierSeen.add(key); b.hierarchyEntry(idx.get(r.s), idx.get(r.g), rel === 'child'); }
+          if (!hierSeen.has(key)) { hierSeen.add(key); hier.xs.push(idx.get(r.s)); hier.others.push(idx.get(r.g)); hier.child.push(rel === 'child' ? 1 : 0); }
         }
         const p = propFor(r.t);
         if (p === undefined) {
@@ -147,12 +157,15 @@ async function importLoincV2FromClassic(cfg) {
         }
         const s = idx.get(r.s), t = idx.get(r.g);
         if (s === undefined || t === undefined) { stats.linksToDropped++; continue; }
-        b.link(s, p, t);
         if (p === answer) {
+          // the answer's place in its list: the list's rows in RelationshipKey order
           const k = (seq.get(s) || 0) + 1;
           seq.set(s, k);
-          b.refsetDef(s, ['sequence'], ['i']);
-          b.refsetMember(s, t, [k]);
+          b.link(s, p, t, { seq: k });
+        } else {
+          b.link(s, p, t, { seq: row });
+          const lk = s + ':' + t;
+          if (p === parent && !linkSeen.has(lk)) { linkSeen.add(lk); parentLinks.push(s, t, row); }
         }
         n++;
       }
@@ -164,7 +177,7 @@ async function importLoincV2FromClassic(cfg) {
       for (const r of src.prepare('SELECT AncestorKey a, DescendentKey d FROM Closure ORDER BY DescendentKey, AncestorKey').iterate()) {
         const a = idx.get(r.a), d = idx.get(r.d);
         if (a === undefined || d === undefined || a === d) continue;
-        b.ancestor(d, a);
+        b.link(d, ancestor, a);
         n++;
       }
       stats.ancestorPairs = n;
@@ -179,7 +192,7 @@ async function importLoincV2FromClassic(cfg) {
         if (i === undefined || !term) continue;
         const language = langCode.get(r.l) || null;
         const use = descName.get(r.t);
-        b.designation(i, { language, use: use ? { system: LOINC, code: use, display: use } : null, term, active: true,
+        b.item(i, { language, use: use ? { system: LOINC, code: use, display: use } : null, text: term, active: true,
           preferred: use === 'LONG_COMMON_NAME' && language === 'en-US' });
         n++;
       }
@@ -193,21 +206,26 @@ async function importLoincV2FromClassic(cfg) {
             FROM ExternalMappings m JOIN ExternalCodes e ON e.ExternalCodeKey = m.ExternalCodeKey ORDER BY m.ExternalMappingKey`).iterate()) {
           const i = idx.get(r.c);
           if (i === undefined || !r.code || !r.s) continue;
-          b.externalMap(i, { system: r.s, version: r.v || null, code: r.code, display: r.d || null, equivalence: r.q || 'equivalent' });
+          b.mapping(i, { system: r.s, version: r.v || null, code: r.code, display: r.d || null, relationship: r.q || 'equivalent' });
           n++;
         }
         return n;
       });
     }
 
-    await b.stage('whole-system walk', async () => {
-      const place = loincWalk(b.sourceOrder, childLinks);
-      for (const [i, w] of place) b.setSourceWalk(i, w);
-      return place.size;
-    });
-
-    applyLoincConfig(b);
-    return b.finish(stats);
+    const walkPlace = await b.stage('whole-system walk', async () => loincWalk(sourceOrder, childLinks));
+    const order = hierarchyCheck(b.codes.length, hier, parentLinks);
+    stats.hierarchyOrder = order.stats;
+    const storeHier = order.stats.conceptsDiffering > 0;
+    const derived = [{ table: 'ix_order', name: 'rank' }, { table: 'ix_order', name: 'ids' }, { table: 'ix_order', name: 'walk' }];
+    if (storeHier) derived.push({ table: 'ix_order', name: 'hier_start' }, { table: 'ix_order', name: 'hier' });
+    b.setMeta('derived-by-importer', derived);
+    stats.hierarchyArraysStored = storeHier;
+    const summary = b.finish(stats, { vacuum: false });
+    writeOrders(cfg.dest, b, sourceOrder, walkPlace, storeHier ? hier : null);
+    vacuumFile(cfg.dest);
+    summary.fileBytes = fs.statSync(cfg.dest).size;
+    return summary;
   } finally {
     src.close();
   }
@@ -215,12 +233,12 @@ async function importLoincV2FromClassic(cfg) {
 
 class LoincV2ClassicModule extends BaseTerminologyModule {
   getName() { return 'loinc-v2-classic'; }
-  getDescription() { return 'FHIRsmith classic LOINC db -> SQLite (sqlite-v2 schema with stored Roaring sets)'; }
+  getDescription() { return 'FHIRsmith classic LOINC db -> SQLite terminology file (sqlite-v2 provider)'; }
   getSupportedFormats() { return ['sqlite']; }
 
   registerCommands(cmd) {
     cmd.command('import')
-      .description('Convert a classic FHIRsmith LOINC .db into a sqlite-v2 database')
+      .description('Convert a classic FHIRsmith LOINC .db into a terminology file')
       .requiredOption('-s, --source <file>', 'classic LOINC .db (e.g. loinc-2.77-a.db)')
       .requiredOption('-d, --dest <file>', 'destination .db')
       .option('-v, --loinc-version <version>', 'checked against the classic Config (default: its version)')

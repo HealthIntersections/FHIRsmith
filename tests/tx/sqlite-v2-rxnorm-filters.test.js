@@ -208,37 +208,17 @@ describe('sqlite-v2 RxNorm filters, as main', () => {
     expect(await r(['has_active_ingredient', '=', 'CUI:200'])).toEqual([]);
   });
 
-  test('the file holds no atom-level rows; a file that still has rxnorm_atom_rel (earlier importer) reads the same', async () => {
+  test('the default file holds no atom-level rows; the REL and RELA names of every source are catalog rows', () => {
     const Database = require('better-sqlite3');
     const db = new Database(path.join(dir, 'rx.db'), { readonly: true });
-    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'rxnorm_atom_rel'").all()).toEqual([]);
-    const config = Object.fromEntries(db.prepare('SELECT key, value FROM cs_config').raw().all());
-    db.close();
-    expect(JSON.parse(config.rxRelas)).toEqual(expect.arrayContaining(['has_ingredient', 'has_active_ingredient', 'tradename_of']));
-    expect(JSON.parse(config.rxRels)).toEqual(expect.arrayContaining(['RO', 'RB', 'SY']));
-
-    const old = path.join(dir, 'rx-old.db');
-    fs.copyFileSync(path.join(dir, 'rx.db'), old);
-    const w = new Database(old);
-    w.exec(`CREATE TABLE rxnorm_atom_rel (aui INTEGER NOT NULL, rel INTEGER NOT NULL, rela INTEGER NOT NULL, concept_id INTEGER NOT NULL,
-      PRIMARY KEY (aui, rel, rela, concept_id)) WITHOUT ROWID;
-      INSERT INTO rxnorm_atom_rel SELECT 2002, 0, 0, concept_id FROM concept WHERE code = '100'`);
-    w.close();
-    const f = await loadSqliteV2Factory(tx.i18n, old);
     try {
-      use(f);
-      for (const filters of [[['has_ingredient', '=', 'CUI:200']], [['has_active_ingredient', '=', 'CUI:200']], [['TTY', '=', 'SCD']]]) {
-        use(f);
-        const a = await expand(filters);
-        use(v2);
-        expect(a).toEqual(await expand(filters));
-        expect(a.status).toBe(200);
-      }
-      use(f);
-      expect(await expand(AUI[0])).toEqual(refusal(AUI[0]));
-    } finally {
-      use(v2);
-      f.store.close();
-    }
+      expect(db.prepare("SELECT count(*) FROM property WHERE code LIKE 'AUI:%'").pluck().get()).toBe(0);
+      expect(db.prepare('SELECT count(*) FROM identifier').pluck().get()).toBe(0);
+      const rows = Object.fromEntries(db.prepare('SELECT code, shape, wildcard, n_rows FROM property').raw().all().map(([c, ...r]) => [c, r]));
+      for (const rela of ['has_ingredient', 'has_active_ingredient', 'tradename_of']) expect(rows[rela]).toBeDefined();
+      for (const rel of ['RO', 'RB', 'SY']) expect(rows[rel]).toBeDefined();
+      // has_active_ingredient: only other sources' atom-level rows have it, so it selects nothing
+      expect(rows.has_active_ingredient).toEqual(['link', 1, 0]);
+    } finally { db.close(); }
   });
 });

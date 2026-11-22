@@ -12,9 +12,10 @@ const { SnomedImporter } = require('../../tx/importers/import-sct.module');
 // main's importer requires the license the edition is distributed under (cache format 21)
 const SCT_LICENSE = path.join(__dirname, '../../tx/data/snomed/license.txt');
 const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
-const { importSnomedV2FromCache, readCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { readCache } = require('../../tx/importers/import-sct-v2-cache.module');
+const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
 const { SnomedFileReader } = require('../../tx/sct/structures');
-const { diffV2 } = require('../../tx/importers/sqlite-v2/diff');
+const { diffFiles } = require('../../tx/importers/sqlite-v2/diff');
 
 const SRC = path.resolve(__dirname, '../../tx/data/snomed');
 let dir, report, cacheSummary, olderSummary, olderReport;
@@ -53,11 +54,11 @@ beforeAll(async () => {
   } finally { quiet.mockRestore(); }
   await importSnomedV2({ source: snap, dest: path.join(dir, 'rf2.db'), edition: '31000003106', version: '20250909', overwrite: true, log: () => {} });
   cacheSummary = await importSnomedV2FromCache({ source: path.join(dir, 't.cache'), dest: path.join(dir, 'rev.db'), overwrite: true, log: () => {} });
-  report = diffV2(path.join(dir, 'rf2.db'), path.join(dir, 'rev.db'), { examples: 50 });
+  report = diffFiles(path.join(dir, 'rf2.db'), path.join(dir, 'rev.db'), { examples: 50 });
   // the same edition in cache format 20 (main's server reads only 21; this importer reads both)
   writeFormat20(await new SnomedFileReader(path.join(dir, 't.cache')).loadSnomedData(), path.join(dir, 't20.cache'));
   olderSummary = await importSnomedV2FromCache({ source: path.join(dir, 't20.cache'), dest: path.join(dir, 'rev20.db'), overwrite: true, log: () => {} });
-  olderReport = diffV2(path.join(dir, 'rev.db'), path.join(dir, 'rev20.db'), { examples: 50 });
+  olderReport = diffFiles(path.join(dir, 'rev.db'), path.join(dir, 'rev20.db'), { examples: 50 });
 }, 120000);
 
 /**
@@ -107,8 +108,8 @@ test('a cache format this importer does not know is refused', async () => {
   await expect(readCache(bad)).rejects.toThrow(/format 15 is not one this importer reads/);
 });
 
-test('concepts, links, literals, designations, acceptability and identifiers are identical', () => {
-  for (const f of ['concept', 'link', 'literal', 'designation', 'acceptability', 'alternate_identifier', 'refset_def', 'property_def']) {
+test('concepts, items, the catalog, links, literals and identifiers are identical', () => {
+  for (const f of ['concept', 'item', 'item_use', 'property', 'property_member', 'link', 'literal', 'identifier']) {
     expect([f, report.facts[f].onlyA, report.facts[f].onlyB]).toEqual([f, 0, 0]);
   }
 });
@@ -120,28 +121,33 @@ test('numbering and every stored set are identical', () => {
   }
 });
 
-test('refset members differ only where a field names a concept missing from the edition', () => {
-  const r = report.facts.refset_member;
+test('records (refset rows, language refsets included) differ only where a field names a concept missing from the edition', () => {
+  const r = report.facts.record;
   expect(r.onlyA).toBe(r.onlyB);
-  const a = new Map(r.examplesA.map((x) => [`${x.refset}|${x.concept}`, JSON.parse(x.fields)]));
+  // [relation, subject, target, active, fields]
+  const a = new Map(r.examplesA.map((x) => [`${x[0]}|${x[1]}`, x]));
   for (const x of r.examplesB) {
-    const fa = a.get(`${x.refset}|${x.concept}`);
-    expect(fa).toBeDefined();
-    const fb = JSON.parse(x.fields);
-    fb.forEach((v, i) => { if (v !== fa[i]) expect(v).toBe(''); });
+    const ya = a.get(`${x[0]}|${x[1]}`);
+    expect(ya).toBeDefined();
+    expect([x[2], x[3]]).toEqual([ya[2], ya[3]]);
+    x[4].forEach((v, i) => { if (v !== ya[4][i]) expect(v === '' || v === null).toBe(true); });
   }
   expect(cacheSummary.importer.unknownFieldValues).toBe(r.onlyB);
 });
 
-test('link_order: the cache\'s record order gives the same parents and children order as the RF2 rows', () => {
+test('link order: the cache\'s record order gives the same parents and children order as the RF2 rows', () => {
   const Database = require('better-sqlite3');
   const order = (file) => {
     const db = new Database(file, { readonly: true });
     try {
-      const q = (by, other) => db.prepare(`SELECT a.code k, group_concat(b.code) v FROM (SELECT * FROM link_order WHERE active = 1 AND group_id = 0
-        AND property_id = (SELECT property_id FROM property_def WHERE is_hierarchy = 1) ORDER BY ${by}, seq) l
-        JOIN concept a ON a.concept_id = l.${by} JOIN concept b ON b.concept_id = l.${other} GROUP BY a.code ORDER BY a.code`).all();
-      return { children: q('target_id', 'source_id'), parents: q('source_id', 'target_id') };
+      const h = db.prepare('SELECT id FROM property WHERE subsumption = 1').pluck().get();
+      const children = db.prepare(`SELECT a.code k, group_concat(b.code) v FROM (SELECT * FROM ix_in WHERE active = 1 AND group_id = 0
+        AND property_id = ? ORDER BY target_id, seq) l JOIN concept a ON a.id = l.target_id JOIN concept b ON b.id = l.subject_id
+        GROUP BY a.code ORDER BY a.code`).all(h);
+      const parents = db.prepare(`SELECT a.code k, group_concat(b.code) v FROM (SELECT * FROM link WHERE active = 1 AND group_id = 0
+        AND property_id = ? ORDER BY subject_id, seq) l JOIN concept a ON a.id = l.subject_id JOIN concept b ON b.id = l.target_id
+        GROUP BY a.code ORDER BY a.code`).all(h);
+      return { children, parents };
     } finally { db.close(); }
   };
   const a = order(path.join(dir, 'rf2.db'));
@@ -149,53 +155,44 @@ test('link_order: the cache\'s record order gives the same parents and children 
   expect(order(path.join(dir, 'rev.db'))).toEqual(a);
 });
 
-describe('system_order (tx/sqlite-v2/orders.js)', () => {
+describe('the system order (ix_order, tx/sqlite-v2/orders.js)', () => {
   const Database = require('better-sqlite3');
-  const { computeOrder, storedOrder, builtOrder } = require('../../tx/sqlite-v2/orders');
-  const { addSystemOrder } = require('../../tx/importers/sqlite-v2/add-system-order');
-  const { V2Store } = require('../../tx/sqlite-v2/store');
-  const blobs = (file) => {
+  const { computeOrder, storedOrder } = require('../../tx/sqlite-v2/orders');
+  const { openStore } = require('../../tx/sqlite-v2/store');
+  const arrays = (file) => {
     const db = new Database(file, { readonly: true });
-    try { return db.prepare('SELECT name, length, reached, data FROM system_order ORDER BY name').raw().all(); } finally { db.close(); }
+    try {
+      return db.prepare("SELECT name, hex(group_concat(data, x'') ) FROM (SELECT name, data FROM ix_order ORDER BY name, block) GROUP BY name ORDER BY name").raw().all()
+        .concat(db.prepare("SELECT key, value FROM meta WHERE key LIKE 'ix.ix_order.%' ORDER BY key").raw().all());
+    } finally { db.close(); }
   };
 
-  test('both importers store the same orders, equal to those computed from the rows', () => {
-    const a = blobs(path.join(dir, 'rf2.db'));
-    expect(a.map((r) => r[0])).toEqual(['ids', 'rank', 'walk']);
-    expect(blobs(path.join(dir, 'rev.db'))).toEqual(a);
+  test('both importers store the same orders, equal to those computed from the facts', () => {
+    const a = arrays(path.join(dir, 'rf2.db'));
+    expect(a.map((r) => r[0])).toEqual(['ids', 'rank', 'walk', 'ix.ix_order.walk.reached']);
+    expect(arrays(path.join(dir, 'rev.db'))).toEqual(a);
     const db = new Database(path.join(dir, 'rf2.db'), { readonly: true });
     try {
-      const want = computeOrder(db, 'snomed');
-      const n = db.prepare('SELECT concept_count FROM code_system').pluck().get();
+      const n = db.prepare('SELECT concept_count FROM code_system WHERE served = 1').pluck().get();
+      const want = computeOrder(db, 'snomed', n);
       expect([want.rank.length, want.ids.length, want.walk.length]).toEqual([n + 1, n + 1, n]);
-      expect(a.find((r) => r[0] === 'walk')[2]).toBe(want.walk.reached);
+      expect(Number(a.find((r) => r[0] === 'ix.ix_order.walk.reached')[1])).toBe(want.walk.reached);
       expect(want.walk.reached).toBeGreaterThan(n / 2);
       expect(want.walk.reached).toBeLessThan(n);
-      for (const r of a) expect(Buffer.compare(r[3], Buffer.from(want[r[0]].buffer))).toBe(0);
+      for (const r of a.slice(0, 3)) expect(r[1]).toBe(Buffer.from(want[r[0]].buffer).toString('hex').toUpperCase());
     } finally { db.close(); }
   });
 
-  test('read lazily: no array until used; the same arrays as the load-time computation of a file without the table', () => {
-    const old = path.join(dir, 'no-order.db');
-    fs.copyFileSync(path.join(dir, 'rf2.db'), old);
-    { const db = new Database(old); db.exec('DROP TABLE system_order'); db.close(); }
-    const s1 = new V2Store(path.join(dir, 'rf2.db'), { unregistered: true });
-    const s2 = new V2Store(old, { unregistered: true });
+  test('read lazily: no array until used', () => {
+    const s1 = openStore(path.join(dir, 'rf2.db'), { unregistered: true });
     try {
-      const stored = storedOrder(s1, 'snomed');
+      const stored = storedOrder(s1, s1.behaviour.expansionOrder);
       expect(stored.loadedBytes()).toBe(0);
       expect([stored.selfFirst, stored.hasWalk]).toEqual([true, true]);
-      const built = builtOrder(s2.withoutMmap(() => computeOrder(s2.db, 'snomed', s2.conceptCount)), 'snomed');
-      expect([...stored.rank]).toEqual([...built.rank]);
+      const n = stored.rank.length;
       expect(stored.loadedBytes()).toBe(stored.rank.byteLength);
-      expect([...stored.ids]).toEqual([...built.ids]);
-      expect([...stored.walk]).toEqual([...built.walk]);
-      expect(stored.walk.reached).toBe(built.walk.reached);
-      expect(stored.loadedBytes()).toBe(built.loadedBytes());
-    } finally { s1.close(); s2.close(); }
-    // add-system-order.js writes the same table into the old file
-    const r = addSystemOrder(old);
-    expect([r.kind, r.reached]).toEqual(['snomed', blobs(path.join(dir, 'rf2.db')).find((x) => x[0] === 'walk')[2]]);
-    expect(blobs(old)).toEqual(blobs(path.join(dir, 'rf2.db')));
+      expect(stored.ids.length).toBe(n);
+      expect(stored.walk.reached).toBeGreaterThan(0);
+    } finally { s1.close(); }
   });
 });

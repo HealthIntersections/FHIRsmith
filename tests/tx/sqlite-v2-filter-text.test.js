@@ -16,7 +16,6 @@ const { RxNormServicesFactory } = require('../../tx/cs/cs-rxnorm');
 const { RxNormImporter } = require('../../tx/importers/import-rxnorm.module');
 const { importSnomedV2FromCache } = require('../../tx/importers/import-sct-v2-cache.module');
 const { importRxNormV2 } = require('../../tx/importers/import-rxnorm-v2.module');
-const { addFilterIndex } = require('../../tx/importers/sqlite-v2/add-filter-index');
 const { loadSqliteV2Factory } = require('../../tx/sqlite-v2');
 const { OperationContext } = require('../../tx/operation-context');
 const { SearchFilterText } = require('../../tx/library/designations');
@@ -101,7 +100,8 @@ beforeAll(async () => {
   await importSnomedV2FromCache({ source: cache, dest: path.join(dir, 'sct.db'), overwrite: true, log: () => {} });
   fs.copyFileSync(path.join(dir, 'sct.db'), path.join(dir, 'sct-bare.db'));
   const bare = new Database(path.join(dir, 'sct-bare.db'));
-  bare.exec('DROP TABLE text_word; DROP TABLE text_word_count; DROP TABLE text_word_meta;');
+  // without its word index (ix_word, and the rules it was made by, meta ix.ix_word.format)
+  bare.exec("DELETE FROM ix_word; DELETE FROM meta WHERE key = 'ix.ix_word.format'");
   bare.close();
   stored = await loadSqliteV2Factory(op.i18n, path.join(dir, 'sct.db'));
   memory = await loadSqliteV2Factory(op.i18n, path.join(dir, 'sct-bare.db'));
@@ -142,39 +142,9 @@ describe('SNOMED CT text filter, as cs-snomed.js', () => {
   test('the importer writes the word index', () => {
     const db = new Database(path.join(dir, 'sct.db'), { readonly: true });
     try {
-      expect(db.prepare('SELECT lang FROM text_word_count ORDER BY lang').pluck().all()).toEqual(['en', 'nl']);
-      expect(db.prepare("SELECT count(*) FROM text_word WHERE lang = 'en' AND word = 'liver'").pluck().get()).toBe(1);
+      expect(db.prepare("SELECT lang FROM ix_word WHERE word = '' ORDER BY lang").pluck().all()).toEqual(['en', 'nl']);
+      expect(db.prepare("SELECT count(*) FROM ix_word WHERE lang = 'en' AND word = 'liver'").pluck().get()).toBe(1);
     } finally { db.close(); }
-  });
-
-  test('add-filter-index writes the same tables, in place or in a sidecar (the file untouched)', async () => {
-    const f = path.join(dir, 'sct-again.db');
-    fs.copyFileSync(path.join(dir, 'sct-bare.db'), f);
-    addFilterIndex(f, { inPlace: true });
-    const g = path.join(dir, 'sct-side.db');
-    fs.copyFileSync(path.join(dir, 'sct-bare.db'), g);
-    const before = fs.readFileSync(g);
-    addFilterIndex(g);
-    expect(fs.readFileSync(g).equals(before)).toBe(true);
-    expect(fs.existsSync(g + '.words')).toBe(true);
-    const a = new Database(path.join(dir, 'sct.db'), { readonly: true });
-    const b = new Database(f, { readonly: true });
-    const c = new Database(g + '.words', { readonly: true });
-    try {
-      for (const q of ['SELECT lang, word, stem, ids FROM text_word ORDER BY lang, word', 'SELECT lang, data FROM text_word_count ORDER BY lang']) {
-        expect(b.prepare(q).raw().all()).toEqual(a.prepare(q).raw().all());
-        expect(c.prepare(q).raw().all()).toEqual(a.prepare(q).raw().all());
-      }
-      expect(c.prepare("SELECT value FROM text_word_meta WHERE key = 'system'").pluck().get()).toBe('http://snomed.info/sct');
-    } finally { a.close(); b.close(); c.close(); }
-    // the server uses the sidecar: same answers as main
-    const side = await loadSqliteV2Factory(op.i18n, g);
-    try {
-      for (const t of ['liver', 'hepatitis', 'chronic hepat', '2']) {
-        expect([t, await search(side, t)]).toEqual([t, await search(main, t)]);
-      }
-      expect(side.store._textIndex && side.store._textIndex.own).toBe(true);
-    } finally { side.store.close(); }
   });
 
   test('(2) every word may be the start of a word (#398)', async () => {
@@ -192,9 +162,9 @@ describe('SNOMED CT text filter, as cs-snomed.js', () => {
     const db = new Database(path.join(dir, 'sct.db'), { readonly: true });
     let spread;
     try {
-      spread = db.prepare(`SELECT c.code, a.term AS a, b.term AS b FROM concept c JOIN designation a ON a.concept_id = c.concept_id AND a.active = 1
-        JOIN designation b ON b.concept_id = c.concept_id AND b.active = 1 AND b.designation_id <> a.designation_id
-        WHERE c.active = 1 AND lower(a.term) LIKE '%hepat%' AND lower(a.term) NOT LIKE '%liver%' AND lower(b.term) LIKE '%liver%' LIMIT 1`).get();
+      spread = db.prepare(`SELECT c.code, a.text AS a, b.text AS b FROM concept c JOIN item a ON a.concept_id = c.id AND a.active = 1
+        JOIN item b ON b.concept_id = c.id AND b.active = 1 AND b.id <> a.id
+        WHERE c.active = 1 AND lower(a.text) LIKE '%hepat%' AND lower(a.text) NOT LIKE '%liver%' AND lower(b.text) LIKE '%liver%' LIMIT 1`).get();
     } finally { db.close(); }
     expect(spread).toBeTruthy();
     const words = (t) => t.toLowerCase().match(/[a-z]{4,}/g);
@@ -251,7 +221,7 @@ describe('SNOMED CT: the languages a text or display regex filter chooses from',
       const prepare = db.prepare.bind(db);
       db.prepare = (q) => { sql.push(q); return prepare(q); };
     }
-    return { f, sql, scanned: () => sql.some((q) => /DISTINCT language FROM designation/.test(q)) };
+    return { f, sql, scanned: () => sql.some((q) => /DISTINCT language FROM main\.item/.test(q)) };
   }
   async function filterCodes(factory, prop, opName, value) {
     const p = await factory.build(op, []);
@@ -264,11 +234,7 @@ describe('SNOMED CT: the languages a text or display regex filter chooses from',
   }
 
   test('ECL and a property filter do not list the languages; a display regex lists them from the word index', async () => {
-    if (!fs.existsSync(path.join(dir, 'sct-side.db.words'))) {
-      fs.copyFileSync(path.join(dir, 'sct-bare.db'), path.join(dir, 'sct-side.db'));
-      addFilterIndex(path.join(dir, 'sct-side.db'));
-    }
-    for (const file of ['sct.db', 'sct-side.db']) {
+    for (const file of ['sct.db']) {
       const w = await watched(file);
       try {
         expect(await filterCodes(w.f, 'constraint', '=', '<< 404684003')).toBeGreaterThan(0);

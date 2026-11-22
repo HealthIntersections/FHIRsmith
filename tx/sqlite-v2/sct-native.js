@@ -4,10 +4,10 @@
 // compositional-grammar parser (tx/sct/expressions.js), and checked, normalised, compared and
 // rendered by NativeExpressionServices. That class keeps main's expression algorithms (it extends
 // SnomedExpressionServices) but answers every data question from the engine and the file:
-//   - a concept "reference" is its concept_id;
+//   - a concept "reference" is its concept id;
 //   - definitions are the concept's active links; is-a and descendants are the stored sets;
-//   - normal forms are read from concept_normal_form, which the importer fills (buildNormalForms);
-//   - the MRCM rules come from refset_member, parsed once per file (store._nativeMrcm: file-load
+//   - normal forms are read from ix_key 'normalForm', which the importer fills (buildNormalForms);
+//   - the MRCM rules come from the MRCM reference sets' records, parsed once per file (store._nativeMrcm: file-load
 //     data, like the LOINC order rank);
 //   - an MRCM range or an ECL value-set constraint is evaluated by the engine's own ECL.
 // Membership of an expression in an ECL constraint (exprSatisfies) and the edition and
@@ -36,7 +36,7 @@ const NO_REFERENCE = E.NO_REFERENCE;
 
 class NativeExpressionServices extends E.SnomedExpressionServices {
   /**
-   * @param {import('./store').V2Store} store
+   * @param {import('./store').Store} store
    * @param {{building?: boolean, compilerFor?: function}} opts
    */
   constructor(store, opts = {}) {
@@ -80,8 +80,8 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
       const p = props.get(l.p);
       if (!p) continue;
       if (p.code === 'definitionStatusId') primitive = S.conceptRows([l.t]).get(l.t).code === PRIMITIVE;
-      else if (p.code === 'module') module = l.t;
-      else if (/^\d+$/.test(p.code) && p.code !== IS_A && p.kind === 'concept') defs.push({ relType: this.id(p.code), target: l.t, group: l.g || 0, active: true, defining: true, source: id });
+      else if (p.code === 'moduleId') module = l.t;
+      else if (p.attribute && p.code !== IS_A && p.kind === 'concept') defs.push({ relType: this.id(p.code), target: l.t, group: l.g || 0, active: true, defining: true, source: id });
     }
     f = { code: row.code, active: !!row.active, display: row.display, links, primitive, module, defs };
     this.facts.set(id, f);
@@ -109,7 +109,7 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
 
   getDefiningRelationships(ref) { return this.fact(ref).defs; }
 
-  /** the normal form: stored at import (concept_normal_form); computed when building it */
+  /** the normal form: stored at import (ix_key 'normalForm'); computed when building it */
   createNormalForm(ref) {
     if (this.building) {
       let s = this.nf.get(ref);
@@ -123,8 +123,8 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
       const r = new E.SnomedExpressionParser(this.conceptList).parse(s || this.getConceptId(ref));
       return r;
     }
-    const row = this.S.stmt('SELECT nf FROM concept_normal_form WHERE concept_id = ?').get(ref);
-    const r = new E.SnomedExpressionParser().parse(row ? row.nf : this.getConceptId(ref));
+    const nf = this.S.normalFormOf(ref);
+    const r = new E.SnomedExpressionParser().parse(nf || this.getConceptId(ref));
     this.resolveExpressionReferences(r);
     return r;
   }
@@ -211,8 +211,8 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
     const all = this.id(CONTENT_ALL);
     const post = this.id(CONTENT_POST);
     const optional = this.id(STRENGTH_OPTIONAL);
-    const rows = (rid) => (rid == null ? [] : S.stmt(`SELECT concept_id, fields FROM refset_member WHERE refset_id = ? ORDER BY ${S.stmt("SELECT 1 FROM pragma_table_info('refset_member') WHERE name = 'seq'").get() ? 'seq' : 'concept_id, fields'}`).all(rid));
-    const refsets = new Set(S.stmt('SELECT value FROM concept_set WHERE kind = ? AND property_id = 0').pluck().all(KIND.refset));
+    const rows = (rid) => (rid == null ? [] : S.refsetMemberRows(rid));
+    const refsets = new Set(S.refsetIds());
     for (const r of rows(this.id(MRCM_ATTRIBUTE_DOMAIN))) {
       // domainId, grouped, attributeCardinality, attributeInGroupCardinality, ruleStrengthId, contentTypeId
       const [domainId, grouped, card, inGroup, strength, content] = JSON.parse(r.fields);
@@ -296,20 +296,20 @@ class NativeExpressionServices extends E.SnomedExpressionServices {
       for (const d of this.fact(c.reference).defs) rels.push(d);
       for (const l of S.literalsOf([c.reference], true)) {
         const p = S.propsById.get(l.p);
-        if (!p || !/^\d+$/.test(p.code)) continue;
+        if (!p || !p.attribute) continue;
         rels.push({ active: true, relType: this.id(p.code), group: l.g || 0, target: -1, concrete: concreteOf(p, l.v) });
       }
     }
-    // inbound relationships (for reversed attributes) are read only when one is asked about:
-    // concept_link has no index on its target
+    // inbound relationships (for reversed attributes) are read only when one is asked about
+    // (ix_in, the links of the by-target properties)
     const focus = (expression.concepts || []).map((c) => c.reference).filter((r) => r != null && r !== NO_REFERENCE);
     Object.defineProperty(rels, 'inbound', { value: () => {
       const out = [];
       for (const ref of focus) {
-        for (const r of S.stmt('SELECT source_id, property_id, group_id FROM concept_link WHERE target_id = ? AND active = 1').all(ref)) {
-          const p = S.propsById.get(r.property_id);
-          if (!p || !/^\d+$/.test(p.code) || p.code === IS_A) continue;
-          out.push({ active: true, relType: this.id(p.code), group: r.group_id, source: r.source_id, target: ref, inbound: true });
+        for (const r of S.linksTo(ref, true)) {
+          const p = S.propsById.get(r.p);
+          if (!p || !p.attribute || p.code === IS_A) continue;
+          out.push({ active: true, relType: this.id(p.code), group: r.g, source: r.s, target: ref, inbound: true });
         }
       }
       return out;
@@ -481,14 +481,13 @@ function concreteMatcher(c) {
 
 /**
  * Normal forms at import: every active, fully defined concept whose normal form differs from its
- * own id, rendered in the minimal form (as main stores them). Written to concept_normal_form.
- * @returns {number} rows written
+ * own id, rendered in the minimal form (as main stores them), each through opts.write(id, nf)
+ * (the importer's derived-by-importer ix_key rows: sct-v2-common.js derivedIndexes).
+ * @returns {{written: number, failed: number}}
  */
-function buildNormalForms(store, db, log = () => { }) {
-  db.exec('CREATE TABLE IF NOT EXISTS concept_normal_form (concept_id INTEGER PRIMARY KEY, nf TEXT NOT NULL)');
-  db.exec('CREATE INDEX IF NOT EXISTS concept_normal_form_nf ON concept_normal_form(nf)');
+function buildNormalForms(store, db, log = () => { }, opts = {}) {
+  const ins = { run: opts.write };
   const svc = new NativeExpressionServices(store, { building: true });
-  const ins = db.prepare('INSERT OR REPLACE INTO concept_normal_form VALUES (?, ?)');
   const ids = store.active().toArray();
   let n = 0;
   let failed = 0;

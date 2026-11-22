@@ -104,8 +104,9 @@ describe('main\'s id() and the engine\'s, over a table of versions', () => {
   });
 
   test.each(['03022026', '11042024', '01012026'])('RxNorm %s', (v) => {
-    expect(v2(SqliteV2Factory, RXNORM, v).id()).toBe(mainRxNorm(v).id());
-    expect(v2(SqliteV2Factory, RXNORM, v).id()).toBe('RxNorm-' + v);
+    // the file's code system name (the RxNorm importer writes RxNorm)
+    expect(v2(SqliteV2Factory, RXNORM, v, { name: 'RxNorm' }).id()).toBe(mainRxNorm(v).id());
+    expect(v2(SqliteV2Factory, RXNORM, v, { name: 'RxNorm' }).id()).toBe('RxNorm-' + v);
   });
 
   test.each([

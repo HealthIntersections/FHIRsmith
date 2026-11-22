@@ -28,25 +28,21 @@
 //   anything else (cs-cs.js searchFilter): see contentTextSearch.
 //
 // Which concepts have a name with a word is a word index, one per language (primary subtag) of
-// the names: text_word(lang, word, stem, ids), every word (text-match words: folded letters,
-// marks and digits) with its stem in that language and the concepts that have it (portable
-// Roaring bitmap of concept_id), and for SNOMED CT text_word_count(lang, data), the distinct
-// words of each concept (Uint16 by concept_id). A filter word matches the words it is the start
-// of and those with its stem, a single letter or digit only itself; a filter of several words is
-// then checked name by name (TextQuery.nameMatches), as every word has to be in one name.
+// the names: ix_word(lang, word, stem, ids), every word (text-match words: folded letters, marks
+// and digits) with its stem in that language and the concepts that have it (portable Roaring
+// bitmap of concept ids), and for SNOMED CT the row with word '', the distinct words of each
+// concept (Uint16 by concept id). A filter word matches the words it is the start of and those
+// with its stem, a single letter or digit only itself; a filter of several words is then checked
+// name by name (TextQuery.nameMatches), as every word has to be in one name.
 //
-// Where the index is: in the file (the importer writes it: builder.finish), else in a sidecar
-// beside it, <file>.words (tx/importers/sqlite-v2/add-filter-index.js, which leaves the file as
-// it is), else built in memory on the first search, as the built-in providers do. text_word_meta
-// says which rules it was made by (FORMAT): one made by other rules is not used.
+// The index builder writes it (tx/importers/sqlite-v2/indexes.js), with meta 'ix.ix_word.format'
+// naming the rules it was made by (FORMAT); a file without one made by these rules has it built in
+// memory on the first search, as the built-in providers do.
 
-const fs = require('fs');
-const Database = require('better-sqlite3');
 const { RoaringBitmap32 } = require('roaring');
 const { TextQuery, words: textWords, stem: stemOf, languageOf } = require('../library/text-match');
 
 const FORMAT = 'text-match/1';
-const SIDECAR = '.words';
 const RANK_REFINE_LIMIT = 200;
 const SEARCH_CACHE = 8;
 // pause points (evaluate.js runAsync): concepts whose names are read and ranked per statement,
@@ -59,53 +55,71 @@ const ROW_CHUNK = 20000;
 const PAUSE = Symbol('pause');
 const MAX = '\u{10FFFF}';
 
-const DDL = `CREATE TABLE IF NOT EXISTS text_word (lang TEXT NOT NULL, word TEXT NOT NULL, stem TEXT NOT NULL,
-  ids BLOB NOT NULL, PRIMARY KEY (lang, word)) WITHOUT ROWID;
-CREATE INDEX IF NOT EXISTS text_word_stem ON text_word(lang, stem);
-CREATE TABLE IF NOT EXISTS text_word_count (lang TEXT PRIMARY KEY, data BLOB NOT NULL) WITHOUT ROWID;
-CREATE TABLE IF NOT EXISTS text_word_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) WITHOUT ROWID;`;
-
 function primaryLanguage(code, defLang) {
   return languageOf(code || null, defLang || 'en');
 }
 
-function hasTable(db, name) {
-  return !!db.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(name);
-}
-
 // ---- the names ------------------------------------------------------------------------------
 
-function relatedNamesUse(db) {
-  const r = db.prepare("SELECT use_id FROM designation_use WHERE code = 'RELATEDNAMES2'").pluck().get();
-  return r == null ? -1 : r;
+/** the RELATEDNAMES2 item use (LOINC: never a searched name), or -1 */
+function relatedUse(store) {
+  if (store._relatedUse === undefined) {
+    store._relatedUse = -1;
+    for (const [id, u] of store.uses) if (u.code === 'RELATEDNAMES2') store._relatedUse = id;
+  }
+  return store._relatedUse;
 }
 
-function suppressProperty(db) {
-  return db.prepare("SELECT property_id FROM property_def WHERE code = 'SUPPRESS'").pluck().get();
-}
-
-/**
- * Every name the built-in provider of the system searches, in concept_id order: fn(id, lang, term)
- * @param {string} dialect 'snomed' | 'loinc' | 'rxnorm'
- */
-function eachName(db, dialect, defLang, fn) {
+/** fn(id, lang, term) for every name the system's search reads, in concept order (one statement) */
+function eachSearchName(store, dialect, fn) {
+  const db = store.db;
+  const defLang = store.defaultLanguage || 'en';
   if (dialect === 'snomed') {
-    for (const [id, language, term] of db.prepare('SELECT concept_id, language, term FROM designation WHERE active = 1 ORDER BY concept_id').raw().iterate()) {
+    for (const [id, language, term] of db.prepare('SELECT concept_id, language, text FROM main.item WHERE active = 1 AND cs_id = ? AND (kind = 0 OR use_id IS NOT NULL) ORDER BY concept_id').raw().iterate(store.csId)) {
       fn(id, primaryLanguage(language, defLang), term);
     }
   } else if (dialect === 'loinc') {
-    const rel = relatedNamesUse(db);
-    const q = db.prepare(`SELECT concept_id, NULL, display FROM concept WHERE display IS NOT NULL AND display <> ''
-      UNION ALL SELECT concept_id, coalesce(language, @def), term FROM designation WHERE use_id IS NOT @rel AND term <> '' ORDER BY 1`).raw();
-    for (const [id, language, term] of q.iterate({ def: defLang, rel })) fn(id, language == null ? 'en' : primaryLanguage(language, defLang), term);
+    const q = db.prepare(`SELECT id, NULL, display FROM main.concept WHERE display IS NOT NULL AND display <> ''
+      UNION ALL SELECT concept_id, coalesce(language, @def), text FROM main.item WHERE cs_id = @cs AND use_id IS NOT @rel AND text <> '' ORDER BY 1`).raw();
+    for (const [id, language, term] of q.iterate({ def: defLang, rel: relatedUse(store), cs: store.csId })) fn(id, language == null ? 'en' : primaryLanguage(language, defLang), term);
   } else if (dialect === 'rxnorm') {
-    const sup = suppressProperty(db);
-    const q = sup != null
-      ? db.prepare('SELECT concept_id, term FROM designation WHERE concept_id IN (SELECT DISTINCT concept_id FROM concept_literal WHERE property_id = ?) ORDER BY concept_id').raw()
-      : db.prepare('SELECT concept_id, term FROM designation ORDER BY concept_id').raw();
-    for (const [id, term] of (sup != null ? q.iterate(sup) : q.iterate())) fn(id, 'en', term);
+    // the concepts in RXNCONSO (a SUPPRESS literal), as cs-rxnorm.js searches only those
+    const sup = store.props.get('SUPPRESS');
+    const q = sup
+      ? db.prepare('SELECT concept_id, text FROM main.item WHERE cs_id = ? AND concept_id IN (SELECT DISTINCT subject_id FROM main.literal WHERE property_id = ? AND subject_id <= ?) ORDER BY concept_id').raw()
+      : db.prepare('SELECT concept_id, text FROM main.item WHERE cs_id = ? ORDER BY concept_id').raw();
+    for (const [id, term] of (sup ? q.iterate(store.csId, sup.id, store.hi) : q.iterate(store.csId))) fn(id, 'en', term);
   }
 }
+
+/** fn(id, lang, term) for the names of some concepts the system's search reads; the rows read */
+function searchNamesOf(store, dialect, ids, fn) {
+  const def = store.defaultLanguage || 'en';
+  const j = JSON.stringify(ids);
+  let rows = 0;
+  if (dialect === 'snomed') {
+    for (const [id, language, term] of store.stmt('SELECT concept_id, language, text FROM main.item WHERE concept_id IN (SELECT value FROM json_each(?)) AND active = 1 AND cs_id = +? AND (kind = 0 OR use_id IS NOT NULL) ORDER BY id').raw().iterate(j, store.csId)) {
+      rows++;
+      fn(id, primaryLanguage(language, def), term);
+    }
+  } else if (dialect === 'loinc') {
+    for (const [id, display] of store.stmt("SELECT id, display FROM main.concept WHERE id IN (SELECT value FROM json_each(?)) AND display IS NOT NULL AND display <> ''").raw().iterate(j)) {
+      rows++;
+      fn(id, 'en', display);
+    }
+    for (const [id, language, term] of store.stmt('SELECT concept_id, language, text FROM main.item WHERE concept_id IN (SELECT value FROM json_each(?)) AND cs_id = +? AND use_id IS NOT ?').raw().iterate(j, store.csId, relatedUse(store))) {
+      rows++;
+      fn(id, primaryLanguage(language, def), term);
+    }
+  } else {
+    for (const [id, term] of store.stmt('SELECT concept_id, text FROM main.item WHERE concept_id IN (SELECT value FROM json_each(?)) AND cs_id = +?').raw().iterate(j, store.csId)) {
+      rows++;
+      fn(id, 'en', term);
+    }
+  }
+  return rows;
+}
+
 
 /** the dialects with a word index */
 function indexed(dialect) {
@@ -113,10 +127,10 @@ function indexed(dialect) {
 }
 
 /**
- * The index, computed from a file's rows.
+ * The index of a list of names: each(fn) calls fn(id, lang, term) in id order.
  * @returns {Map<string, {words: Map<string, number[]>, counts: Uint16Array|null}>} by language
  */
-function computeTextIndex(db, dialect, n, defLang = 'en') {
+function computeTextIndexFrom(each, dialect, n) {
   const byLang = new Map();
   const counting = dialect === 'snomed';
   const of = (lang) => {
@@ -127,7 +141,7 @@ function computeTextIndex(db, dialect, n, defLang = 'en') {
     }
     return x;
   };
-  eachName(db, dialect, defLang, (id, lang, term) => {
+  each((id, lang, term) => {
     const x = of(lang);
     for (const w of textWords(term)) {
       let list = x.words.get(w);
@@ -141,87 +155,37 @@ function computeTextIndex(db, dialect, n, defLang = 'en') {
   return byLang;
 }
 
-/** write a computed index (replaces what is there); {bytes, words, langs} */
-function writeTextIndex(db, byLang, ident = {}) {
-  db.exec(DDL);
-  db.exec('DELETE FROM text_word; DELETE FROM text_word_count; DELETE FROM text_word_meta;');
-  const ins = db.prepare('INSERT INTO text_word VALUES (?, ?, ?, ?)');
-  const insCount = db.prepare('INSERT INTO text_word_count VALUES (?, ?)');
-  let bytes = 0, words = 0;
-  for (const [lang, x] of byLang) {
-    for (const [w, ids] of x.words) {
-      const blob = new RoaringBitmap32(ids).serialize('portable');
-      ins.run(lang, w, stemOf(w, lang), blob);
-      bytes += blob.length + w.length * 2;
-      words++;
-    }
-    if (x.counts) {
-      const c = Buffer.from(x.counts.buffer, x.counts.byteOffset, x.counts.byteLength);
-      insCount.run(lang, c);
-      bytes += c.length;
-    }
-  }
-  const insMeta = db.prepare('INSERT INTO text_word_meta VALUES (?, ?)');
-  insMeta.run('format', FORMAT);
-  for (const [k, v] of Object.entries(ident)) insMeta.run(k, String(v));
-  return { bytes, words, langs: [...byLang.keys()] };
-}
-
-/** the file's identity, as a sidecar records it */
-function identityOf(db) {
-  const cs = db.prepare('SELECT uri, version, concept_count FROM code_system WHERE id = 1').get();
-  return { system: cs.uri, version: cs.version == null ? '' : cs.version, conceptCount: cs.concept_count };
-}
-
-/**
- * The text tables of a file's code system, written into `out` (the file itself at import, or a
- * sidecar) from `src`; null for a system without them
- */
-function writeTextTables(out, dialectName, n, src = out, ident = {}) {
-  if (!indexed(dialectName)) return null;
-  const def = src.prepare("SELECT value FROM cs_config WHERE key = 'defaultLanguage'").pluck().get();
-  return { kind: dialectName, ...writeTextIndex(out, computeTextIndex(src, dialectName, n, def || 'en'), ident) };
-}
-
 // ---- reading the index ------------------------------------------------------------------------
 
-function formatOf(db) {
-  if (!hasTable(db, 'text_word_meta')) return null;
-  return db.prepare("SELECT value FROM text_word_meta WHERE key = 'format'").pluck().get() || null;
-}
-
-/** a stored index (in the file, or a sidecar) */
-class StoredTextIndex {
-  constructor(db, own = false) {
-    this.db = db;
-    this.own = own; // a sidecar: opened (and closed) here
-    this._stmts = new Map();
-    this.langs = new Set(db.prepare('SELECT DISTINCT lang FROM text_word').pluck().all());
+/** the word index the index builder stored (ix_word) */
+class WordIndex {
+  constructor(store) {
+    this.store = store;
+    this.langs = new Set(store.db.prepare("SELECT DISTINCT lang FROM main.ix_word WHERE word <> ''").pluck().all());
     this._counts = new Map();
-  }
-
-  stmt(sql) {
-    let s = this._stmts.get(sql);
-    if (!s) { s = this.db.prepare(sql); this._stmts.set(sql, s); }
-    return s;
   }
 
   counts(lang) {
     let c = this._counts.get(lang);
     if (!c) {
-      const b = this.stmt('SELECT data FROM text_word_count WHERE lang = ?').pluck().get(lang);
+      const b = this.store.stmt("SELECT ids FROM main.ix_word WHERE lang = ? AND word = ''").pluck().get(lang);
       c = b ? new Uint16Array(b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)) : new Uint16Array(0);
       this._counts.set(lang, c);
     }
     return c;
   }
 
-  /** the concepts with a word that the filter word matches (TextQuery.tokens: {word, stem, whole}) */
+  /** the languages with per-concept counts (every language of the names, where counts are kept), or null */
+  languages() {
+    const l = this.store.db.prepare("SELECT lang FROM main.ix_word WHERE word = ''").pluck().all();
+    return l.length ? l : null;
+  }
+
   conceptsFor(lang, token, stats) {
     const rows = token.whole
-      ? this.stmt('SELECT ids FROM text_word WHERE lang = ? AND word = ?').pluck().all(lang, token.word)
-      : this.stmt(`SELECT ids FROM text_word WHERE lang = @lang AND word >= @w AND word < @hi
-          UNION ALL SELECT ids FROM text_word WHERE lang = @lang AND stem = @stem AND NOT (word >= @w AND word < @hi)`)
+      ? this.store.stmt('SELECT ids FROM main.ix_word WHERE lang = ? AND word = ?').pluck().all(lang, token.word)
+      : this.store.stmt(`SELECT ids FROM main.ix_word WHERE lang = @lang AND word >= @w AND word < @hi
+          UNION ALL SELECT ids FROM main.ix_word WHERE lang = @lang AND stem = @stem AND word <> '' AND NOT (word >= @w AND word < @hi)`)
         .pluck().all({ lang, w: token.word, hi: token.word + MAX, stem: token.stem });
     if (stats) { stats.statements++; stats.rows += rows.length; }
     const bm = new RoaringBitmap32();
@@ -235,7 +199,7 @@ class StoredTextIndex {
     return n;
   }
 
-  close() { if (this.own) try { this.db.close(); } catch (e) { /* closed */ } }
+  close() {}
 }
 
 /** a file without a stored index: built in memory on its first search, as the built-in providers do */
@@ -287,44 +251,14 @@ class MemoryTextIndex {
   close() {}
 }
 
-function sidecarPath(file) {
-  return file + SIDECAR;
-}
-
-/** the sidecar of a store's file, if there is one made by these rules for this file */
-function openSidecar(store) {
-  if (!store.file || typeof store.file !== 'string') return null;
-  const p = sidecarPath(store.file);
-  if (!fs.existsSync(p)) return null;
-  let db = null;
-  try {
-    db = new Database(p, { readonly: true, fileMustExist: true });
-    db.pragma('query_only = 1');
-    const meta = new Map(db.prepare('SELECT key, value FROM text_word_meta').raw().all());
-    const ident = identityOf(store.db);
-    if (meta.get('format') !== FORMAT || meta.get('system') !== ident.system || meta.get('version') !== String(ident.version)
-        || meta.get('conceptCount') !== String(ident.conceptCount)) {
-      console.warn(`sqlite-v2 filter: ${p} is not the word index of ${store.file} by these rules; not used`);
-      db.close();
-      return null;
-    }
-    return new StoredTextIndex(db, true);
-  } catch (e) {
-    if (db) try { db.close(); } catch (e2) { /* closed */ }
-    console.warn(`sqlite-v2 filter: ${p}: ${e.message}`);
-    return null;
-  }
-}
-
-/** the file's index: in the file, else its sidecar, else built in memory now */
+/** the file's index: stored in the file, else built in memory now */
 function textIndexOf(store, dialect) {
-  const stored = storedTextIndexOf(store);
+  const stored = store.textIndex();
   if (stored) return stored;
   // built in memory, for the names of the dialect asked for (a file serves one)
   const built = store._textIndexBuilt || (store._textIndexBuilt = new Map());
   if (!built.has(dialect)) {
-    const def = store.config.defaultLanguage || 'en';
-    built.set(dialect, new MemoryTextIndex(store.withoutMmap(() => computeTextIndex(store.db, dialect, store.conceptCount, def))));
+    built.set(dialect, new MemoryTextIndex(store.withoutMmap(() => computeTextIndexFrom((fn) => store.eachSearchName(dialect, fn), dialect, store.conceptCount))));
   }
   return built.get(dialect);
 }
@@ -340,33 +274,10 @@ function* candidates(index, lang, tokens, stats) {
   return bm || new RoaringBitmap32();
 }
 
-/** fn(id, lang, term) for the names of some concepts the built-in provider searches */
+/** fn(id, lang, term) for the names of some concepts the built-in provider searches (the store's searchNames) */
 function namesOf(store, dialect, ids, stats, fn) {
   if (!ids.length) return;
-  const def = store.config.defaultLanguage || 'en';
-  const json = JSON.stringify(ids);
-  let rows = 0;
-  if (dialect === 'snomed') {
-    for (const [id, language, term] of store.stmt('SELECT concept_id, language, term FROM designation WHERE concept_id IN (SELECT value FROM json_each(?)) AND active = 1 ORDER BY designation_id').raw().iterate(json)) {
-      rows++;
-      fn(id, primaryLanguage(language, def), term);
-    }
-  } else if (dialect === 'loinc') {
-    if (store._relatedUse === undefined) store._relatedUse = relatedNamesUse(store.db);
-    for (const [id, display] of store.stmt("SELECT concept_id, display FROM concept WHERE concept_id IN (SELECT value FROM json_each(?)) AND display IS NOT NULL AND display <> ''").raw().iterate(json)) {
-      rows++;
-      fn(id, 'en', display);
-    }
-    for (const [id, language, term] of store.stmt('SELECT concept_id, language, term FROM designation WHERE concept_id IN (SELECT value FROM json_each(?)) AND use_id IS NOT ?').raw().iterate(json, store._relatedUse)) {
-      rows++;
-      fn(id, primaryLanguage(language, def), term);
-    }
-  } else {
-    for (const [id, term] of store.stmt('SELECT concept_id, term FROM designation WHERE concept_id IN (SELECT value FROM json_each(?))').raw().iterate(json)) {
-      rows++;
-      fn(id, 'en', term);
-    }
-  }
+  const rows = store.searchNames(dialect, ids, fn);
   if (stats) { stats.statements++; stats.rows += rows; }
 }
 
@@ -443,7 +354,7 @@ function codesInRanges(store, ranges, stats) {
   const seen = new Set();
   const rows = [];
   for (const [low, high] of ranges) {
-    for (const r of store.stmt('SELECT concept_id, code FROM concept WHERE code >= ? AND code < ? AND concept_id BETWEEN ? AND ?').raw().all(low, high, store.lo, store.hi)) {
+    for (const r of store.codesInRange(low, high)) {
       if (!seen.has(r[0])) { seen.add(r[0]); rows.push(r); }
     }
   }
@@ -486,9 +397,7 @@ function sctCodeMatches(store, q, active, stats) {
   const p = BigInt(q.code);
   const digits = p === 0n ? '' : p.toString();
   const maxLen = 18 - n + digits.length;
-  const rows = digits
-    ? store.stmt('SELECT concept_id, code FROM concept WHERE code >= ? AND code < ? AND concept_id BETWEEN ? AND ?').raw().all(digits, digits + MAX, store.lo, store.hi)
-    : store.stmt('SELECT concept_id, code FROM concept WHERE length(code) <= ? AND concept_id BETWEEN ? AND ?').raw().all(maxLen, store.lo, store.hi);
+  const rows = digits ? store.codesInRange(digits, digits + MAX) : store.codesUpToLength(maxLen);
   if (stats) { stats.statements++; stats.rows += rows.length; }
   const found = rows.filter(([id, code]) => active.has(id) && code.length <= maxLen && /^[1-9][0-9]*$/.test(code));
   // identifier order (as numbers: shorter first), the concept itself in front
@@ -498,7 +407,7 @@ function sctCodeMatches(store, q, active, stats) {
 
 /**
  * The concepts a SNOMED CT text filter matches, and their order (see the top of this file).
- * @param {object} store V2Store of a SNOMED CT file
+ * @param {object} store Store of a SNOMED CT file
  * @param {string} text the filter
  * @param {string} lang the search language (primary subtag)
  * @param {function} ordinal concept id -> its place in the built-in concept order
@@ -558,32 +467,42 @@ function* rankSct(store, kept, ordinal, counts, q, lang, several, stats) {
   return head.sort(byRank(best)).concat(tail);
 }
 
-/** the file's stored index (in the file, or its sidecar), or null; never builds one in memory */
-function storedTextIndexOf(store) {
-  if (!store._textIndex) {
-    if (formatOf(store.db) === FORMAT) store._textIndex = new StoredTextIndex(store.db);
-    else store._textIndex = openSidecar(store) || false;
-  }
-  return store._textIndex || null;
-}
-
 /**
  * The languages the file has active descriptions in (primary subtags), once per file. A stored
- * index has one text_word_count row for each of them (computeTextIndex: every name eachName
- * lists, words or none), so it answers at once; a file without one reads every description
- * (0.1-0.3 s on a national edition), which only a text or display regex filter asks for.
+ * index has one count row for each of them (computeTextIndexFrom: every name eachSearchName lists, words
+ * or none), so it answers at once; a file without one reads every description (0.1-0.3 s on a
+ * national edition), which only a text or display regex filter asks for.
  */
 function sctTextLanguages(store) {
   if (!store._textLangs) {
-    const idx = storedTextIndexOf(store);
-    if (idx && hasTable(idx.db, 'text_word_count')) {
-      store._textLangs = new Set(idx.db.prepare('SELECT lang FROM text_word_count').pluck().all());
-    } else {
-      const defLang = store.config.defaultLanguage || 'en';
-      store._textLangs = new Set(store.db.prepare('SELECT DISTINCT language FROM designation WHERE active = 1').pluck().all().map((l) => primaryLanguage(l, defLang)));
+    const idx = store.textIndex();
+    const stored = idx ? idx.languages() : null;
+    if (stored) store._textLangs = new Set(stored);
+    else {
+      const defLang = store.defaultLanguage || 'en';
+      store._textLangs = new Set(store.activeLanguages().map((l) => primaryLanguage(l, defLang)));
     }
   }
   return store._textLangs;
+}
+
+/**
+ * RxNorm: the concepts cs-rxnorm.js's text search selects from, those with an RXNCONSO atom
+ * (a SUPPRESS literal) of a term type other than SY
+ */
+function rxSearchable(store, stats) {
+  if (!store._rxSearchable) {
+    const { KIND } = require('./store');
+    const sup = store.props.get('SUPPRESS'), tty = store.props.get('TTY');
+    const bm = sup ? store.getSet(KIND.hasProp, sup.id, 0, stats).clone() : store.active(stats).clone();
+    if (tty) {
+      const types = new RoaringBitmap32();
+      for (const r of store.propValues(tty.id, stats)) if (r.value !== 'SY') types.orInPlace(store.getSet(KIND.prop, tty.id, r.value, stats));
+      bm.andInPlace(types);
+    }
+    store._rxSearchable = bm;
+  }
+  return store._rxSearchable;
 }
 
 // ---- LOINC ------------------------------------------------------------------------------------
@@ -704,12 +623,12 @@ function* rateConceptsG(concepts, q, lang, supplementCodes = null) {
   return yield* sortG(hits, (a, b) => b.rating - a.rating);
 }
 
-/** the concepts of a block, for rateConcepts: display and designations from the v2 tables */
+/** the concepts of a file, for rateConcepts: display and designations */
 function* blockConcepts(store, csLang, stats) {
   const lang = primaryLanguage(csLang, 'en');
   // two statements read side by side: a better-sqlite3 iterator holds its connection, so the
-  // designations are read whole first (a block's, not a file's)
-  const desRows = store.stmt('SELECT concept_id, language, term FROM designation WHERE concept_id BETWEEN ? AND ? ORDER BY concept_id, designation_id').raw().all(store.lo, store.hi);
+  // designations are read whole first
+  const desRows = store.blockDesignations();
   let di = 0;
   const des = { next: () => (di < desRows.length ? { done: false, value: desRows[di++] } : { done: true }) };
   let d = des.next();
@@ -717,7 +636,7 @@ function* blockConcepts(store, csLang, stats) {
   // read in chunks (no statement iterator is held across a pause: evaluate.js)
   for (let from = store.lo; from <= store.hi; from += ROW_CHUNK) {
     if (from > store.lo) yield PAUSE;
-  for (const [id, code, display] of store.stmt('SELECT concept_id, code, display FROM concept WHERE concept_id BETWEEN ? AND ? ORDER BY concept_id').raw().all(from, Math.min(from + ROW_CHUNK - 1, store.hi))) {
+  for (const [id, code, display] of store.blockConcepts(from, Math.min(from + ROW_CHUNK - 1, store.hi))) {
     rows++;
     const names = display ? [[lang, display]] : [];
     while (!d.done && d.value[0] < id) d = des.next();
@@ -728,7 +647,7 @@ function* blockConcepts(store, csLang, stats) {
   if (stats) { stats.statements += 2; stats.rows += rows; }
 }
 
-/** a v2 file's other code system: cs-cs.js's rules over its concepts (rateConcepts) */
+/** any other code system: cs-cs.js's rules over its concepts (rateConcepts) */
 function* genericTextSearchG(store, text, lang, csLang, stats = null, supplementCodes = null) {
   const run = function* () {
     const hits = yield* rateConceptsG(blockConcepts(store, csLang, stats), new TextQuery(text), lang, supplementCodes);
@@ -745,8 +664,8 @@ const rxTextSearch = (...a) => runSync(rxTextSearchG(...a));
 const genericTextSearch = (...a) => runSync(genericTextSearchG(...a));
 
 module.exports = {
-  FORMAT, SIDECAR, DDL, blockConcepts, sidecarPath, identityOf, indexed,
-  computeTextIndex, writeTextIndex, writeTextTables, textIndexOf, primaryLanguage,
+  FORMAT, WordIndex, blockConcepts, indexed, eachSearchName, searchNamesOf, rxSearchable,
+  computeTextIndexFrom, textIndexOf, primaryLanguage,
   sctTextSearch, sctTextLanguages, loincTextSearch, rxTextSearch, genericTextSearch, rateConcepts,
   sctTextSearchG, loincTextSearchG, rxTextSearchG, genericTextSearchG
 };

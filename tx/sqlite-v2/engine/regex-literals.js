@@ -2,7 +2,7 @@
 
 // Literal substrings that every match of an RE2 pattern must contain (codesearch-style, kept
 // deliberately simple and conservative). A substring of 3 or more characters can narrow the
-// candidates through the FTS5 trigram index on displays (search_display) before RE2 runs on them.
+// candidates through the FTS5 trigram index on displays (ix_text_display) before RE2 runs on them.
 //
 // The extractor is sound when it returns literals: any string the pattern matches contains each of
 // them. When it is unsure (alternation at the top level, unusual syntax) it returns []. Case: the

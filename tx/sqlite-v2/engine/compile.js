@@ -2,7 +2,7 @@
 // ValueSet.compose includes / filters and ECL -> IR (see evaluate.js for the node list).
 //
 // Generic rules cover the concept filters (is-a, descendent-of, child-of, generalizes, =, in,
-// not-in, is-not-a, descendent-leaf, regex) and every property in property_def (=, in, not-in,
+// not-in, is-not-a, descendent-leaf, regex) and every catalog property a filter may name (=, in, not-in,
 // exists, regex). A per-system dialect (dialects.js) adds or overrides filters. Two error kinds:
 //   FilterError  - the request is wrong for this system (the message is what upstream reports)
 //   Unsupported  - the engine cannot do it; the caller hands the request back to expand.js
@@ -55,7 +55,9 @@ class Compiler {
   }
 
   id(code) {
-    return this.store.idOf(String(code).trim(), this.stats);
+    // through the request's code map: a member filter tests one code per row
+    const c = String(code).trim();
+    return this.ids([c]).get(c);
   }
 
   /** concept ids for a filter value: the code, or a dialect-specific alternative (LOINC part names) */
@@ -159,8 +161,8 @@ class Compiler {
       const n = this.dialect.filter(this, prop, op, value);
       if (n) return n;
     }
-    if (prop === 'display' && !this.store.props.has('display')) return this.displayFilter(op, value);
-    if (prop === 'designation' && !this.store.props.has('designation')) {
+    if (prop === 'display' && !this.store.filterProp('display')) return this.displayFilter(op, value);
+    if (prop === 'designation' && !this.store.filterProp('designation')) {
       // R5 CodeSystem 4.8.15 generic filters: designation = / regex; the display counts as one
       if (op === '=') return { t: 'desigMatch', eq: String(value), label: `designation = "${value}"` };
       if (op === 'regex') return { t: 'desigMatch', re: String(value), label: `designation regex /${value}/` };
@@ -169,7 +171,8 @@ class Compiler {
     if (prop === 'concept' || prop === 'code' || (this.store.hierarchy && prop === this.store.hierarchy.code && op !== '=' && op !== 'in' && op !== 'exists')) {
       return this.conceptFilter(op, value, prop);
     }
-    const p = this.store.props.get(prop);
+    // the property's catalog entry is its access path (store filterProp)
+    const p = this.store.filterProp(prop);
     if (!p) {
       const n = this.term.layers ? this.term.layers.filterNode(this, prop, op, value) : null;
       if (n) return n;
@@ -230,22 +233,29 @@ class Compiler {
     }
   }
 
+  /**
+   * A filter on a catalog entry, by its access path:
+   *   inverse (reverses): the targets of the reversed properties from the values' concepts (of a
+   *     hierarchy property: their parents); exists, the inverse row's has-property set where the
+   *     file has one;
+   *   union (members): the union of its members' sets;
+   *   node-valued (link): the prop set of each value's concept;
+   *   'both' (links and literals): a value that is a code is a node, otherwise a literal;
+   *   literal: the prop sets of the stored values that match (labels, search prefixes).
+   */
   propertyFilter(p, op, value) {
-    const inverse = this.inverseOf(p.code);
+    if (p.reverses) return this.inverseFilter(p, op, value);
+    const pids = pidsOf(p);
     switch (op) {
       case '=':
       case 'in':
       case 'not-in': {
         const vals = op === '=' ? [String(value)] : splitList(value);
         let node;
-        if (inverse) {
-          // P' = X where P' is the inverse of P: the targets of P from X
-          const ids = uniqSorted(vals.flatMap((v) => this.valueIds(v)));
-          node = { t: 'or', items: inverse.map((q) => (q.isHierarchy ? { t: 'hier', dir: 'parents', self: false, of: { t: 'ids', ids } } : { t: 'propOf', pids: [q.id], sources: { t: 'ids', ids } })) };
-          if (node.items.length === 1) node = node.items[0];
-        } else if (p.kind === 'concept') {
-          const ids = uniqSorted(vals.flatMap((v) => this.valueIds(v)));
-          node = ids.length === 1 ? { t: 'set', kind: KIND.prop, pid: p.id, value: ids[0] } : { t: 'propIn', pids: [p.id], values: { t: 'ids', ids } };
+        if (p.kind === 'concept') {
+          node = this.nodeSets(pids, uniqSorted(vals.flatMap((v) => this.valueIds(v))));
+        } else if (p.shape === 'both') {
+          node = this.bothValues(p, vals);
         } else if (op === '=' && ['integer', 'decimal', 'dateTime'].includes(p.type) && /^(eq|ne|gt|lt|ge|le|sa|eb|ap)./.test(String(value))) {
           // R5 CodeSystem 4.8.15.1: FHIR search prefixes on integer, decimal and dateTime properties
           node = litSets(p.id, this.store.propValues(p.id, this.stats).filter((r) => searchPrefixMatch(p.type, String(value), r.value)).map((r) => r.value));
@@ -255,20 +265,16 @@ class Compiler {
         return op === 'not-in' ? { t: 'minus', a: { t: 'all' }, b: node } : node;
       }
       case 'exists': {
-        let n;
-        if (inverse) {
-          n = { t: 'or', items: inverse.map((q) => ({ t: 'propOf', pids: [q.id], sources: { t: 'all' } })) };
-        } else {
-          n = { t: 'set', kind: KIND.hasProp, pid: p.id, value: 0 };
-        }
         const v = String(value).toLowerCase();
         if (v !== 'true' && v !== 'false') throw this.notSupported(p.code, op, value);
+        const items = pids.map((pid) => ({ t: 'set', kind: KIND.hasProp, pid, value: 0 }));
+        const n = items.length === 1 ? items[0] : items.length ? { t: 'or', items } : { t: 'empty' };
         return v === 'false' ? { t: 'minus', a: { t: 'all' }, b: n } : n;
       }
       case 'regex':
         if (p.kind === 'concept') {
           // regex over the target's code or display: match the target keys, then their sources
-          return { t: 'propIn', pids: [p.id], values: { t: 'text', field: this.dialect.conceptRegexField || 'display', re: value } };
+          return { t: 'propIn', pids, values: { t: 'text', field: this.dialect.conceptRegexField || 'display', re: value } };
         }
         return { t: 'litMatch', pid: p.id, re: value };
       default:
@@ -276,22 +282,76 @@ class Compiler {
     }
   }
 
-  /** inverse property definitions (cs_config.inverseProperties), or null */
-  inverseOf(code) {
-    const inv = this.store.config.inverseProperties;
-    if (!inv || !inv[code]) return null;
-    return [].concat(inv[code]).map((c) => this.store.props.get(c)).filter(Boolean);
+  /** the concepts with a node value in ids of one of the properties pids (prop sets) */
+  nodeSets(pids, ids, vk = 0) {
+    if (!pids.length || !ids.length) return { t: 'empty' };
+    if (ids.length === 1) {
+      const items = pids.map((pid) => ({ t: 'set', kind: KIND.prop, pid, value: ids[0], ...(vk ? { vk } : {}) }));
+      return items.length === 1 ? items[0] : { t: 'or', items };
+    }
+    return { t: 'propIn', pids, values: { t: 'ids', ids }, ...(vk ? { vk } : {}) };
+  }
+
+  /**
+   * Values of a property with links and literals (SCHEMA-REDESIGN, scoping): a value that is a
+   * code of this file is a node (the link sets); otherwise, and for a #n or quoted value, a
+   * literal (the stored values it matches, numbers as numbers)
+   */
+  bothValues(p, vals) {
+    const items = [];
+    const lits = [];
+    for (const v of vals) {
+      const lit = /^#|^"/.test(v);
+      const id = lit ? null : this.id(v);
+      if (id != null) items.push({ t: 'set', kind: KIND.prop, pid: p.id, value: id, vk: 1 });
+      else lits.push(lit ? v.replace(/^#/, '').replace(/^"(.*)"$/, '$1') : v);
+    }
+    if (lits.length) {
+      const keys = this.store.propValues(p.id, this.stats, 2);
+      for (const v of lits) {
+        for (const r of keys) if (String(r.value) === v || (typeof r.value === 'number' && Number(v) === r.value)) items.push({ t: 'set', kind: KIND.prop, pid: p.id, value: r.value, vk: 2 });
+      }
+    }
+    return items.length === 0 ? { t: 'empty' } : items.length === 1 ? items[0] : { t: 'or', items };
+  }
+
+  /** P' op X where P' reverses P: the targets of P from X's concepts (of a hierarchy: X's parents) */
+  inverseFilter(p, op, value) {
+    const rev = p.reverses;
+    const hier = rev.filter((q) => q.isHierarchy);
+    const other = rev.filter((q) => !q.isHierarchy).map((q) => q.id);
+    const of = (sources) => {
+      const items = hier.map(() => ({ t: 'hier', dir: 'parents', self: false, of: sources }));
+      if (other.length) items.push({ t: 'propOf', pids: other, sources });
+      return items.length === 1 ? items[0] : items.length ? { t: 'or', items } : { t: 'empty' };
+    };
+    switch (op) {
+      case '=':
+      case 'in':
+      case 'not-in': {
+        const vals = op === '=' ? [String(value)] : splitList(value);
+        const node = of({ t: 'ids', ids: uniqSorted(vals.flatMap((v) => this.valueIds(v))) });
+        return op === 'not-in' ? { t: 'minus', a: { t: 'all' }, b: node } : node;
+      }
+      case 'exists': {
+        const v = String(value).toLowerCase();
+        if (v !== 'true' && v !== 'false') throw this.notSupported(p.code, op, value);
+        // the inverse row's has-property set (the reversed properties' targets), where the file has one
+        const n = p.id != null ? { t: 'set', kind: KIND.hasProp, pid: p.id, value: 0 } : of({ t: 'all' });
+        return v === 'false' ? { t: 'minus', a: { t: 'all' }, b: n } : n;
+      }
+      case 'regex': return of({ t: 'text', field: 'display', re: value });
+      default: throw this.notSupported(p.code, op, value);
+    }
   }
 
   /** map literal filter values onto stored keys (case-insensitive for strings) */
   literalKeys(p, vals) {
     const keys = this.store.propValues(p.id, this.stats);
     const out = new Set();
-    const map = this.store.config.propertyValueDescriptions && this.store.config.propertyValueDescriptions[p.code];
+    const map = this.store.valueLabels(p);
     for (let v of vals) {
       if (map) for (const [k, d] of Object.entries(map)) if (String(d).toLowerCase() === v.toLowerCase()) v = k;
-      const aliases = this.store.config.propertyValueAliases && this.store.config.propertyValueAliases[p.code];
-      if (aliases && aliases[v.toLowerCase()] !== undefined) v = aliases[v.toLowerCase()];
       const lv = v.toLowerCase();
       for (const r of keys) if (String(r.value).toLowerCase() === lv) out.add(r.value);
     }
@@ -379,8 +439,7 @@ class Compiler {
       }
       if (f.refSet.type === 'ConceptReference') {
         const rid = this.eclConcept(f.refSet.conceptId);
-        if (this.store.hasAcceptability && !this.store.getSet(KIND.refset, 0, rid, this.stats).size
-          && this.store.stmt('SELECT 1 FROM designation_acceptability WHERE refset_id = ? LIMIT 1').get(rid)) {
+        if (!this.store.getSet(KIND.refset, 0, rid, this.stats).size && this.store.isLanguageRefset(rid)) {
           // a language reference set: its members are descriptions (as main reports it)
           throw new FilterError(`The members of reference set ${f.refSet.conceptId} are descriptions, not concepts, so ^ cannot be evaluated for it`);
         }
@@ -446,10 +505,12 @@ class Compiler {
     const neg = f.operator === '!=';
     const not = (n) => (neg ? { t: 'minus', a: { t: 'all' }, b: n } : n);
     if (field === 'active') return (f.value === true) !== neg ? { t: 'active' } : { t: 'inactive' };
+    // a concept filter field is the catalog row of that name (moduleId, definitionStatusId,
+    // effectiveTime: filterable, not refinable)
+    const row = [...S.props.values()].find((d) => d.code.toLowerCase() === field && d.filterable && !d.refinable);
     if (field === 'moduleid' || field === 'definitionstatusid') {
-      const p = S.props.get(field === 'moduleid' ? 'module' : 'definitionStatusId');
-      if (!p) return { t: 'empty' };
-      return not({ t: 'propIn', pids: [p.id], values: this.eclNode(f.value) });
+      if (!row) return { t: 'empty' };
+      return not({ t: 'propIn', pids: [row.id], values: this.eclNode(f.value) });
     }
     if (field === 'definitionstatus') {
       const p = S.props.get('definitionStatusId');
@@ -457,7 +518,7 @@ class Compiler {
       return not({ t: 'propIn', pids: [p.id], values: { t: 'ids', ids } });
     }
     if (field === 'effectivetime') {
-      const p = S.props.get('effectiveTime');
+      const p = row;
       const vals = (f.values || []).map(String);
       const cmp = { '=': (x) => vals.includes(x), '!=': (x) => !vals.includes(x), '<': (x) => x < vals[0], '<=': (x) => x <= vals[0], '>': (x) => x > vals[0], '>=': (x) => x >= vals[0] }[f.operator];
       if (!p || !cmp) throw new Unsupported('ecl-feature', 'effectiveTime ' + f.operator);
@@ -482,6 +543,7 @@ class Compiler {
           acceptability: d.acceptability ? d.acceptability.map((a) => this.id(a === 'preferred' ? '900000000000548007' : a === 'acceptable' ? '900000000000549004' : a)) : null
         }));
       } else if (field === 'active') out.value = f.value;
+      else if (field === 'id') out.ids = f.values.map(String); // a description's own id (item external_id)
       else throw new Unsupported('ecl-feature', 'description filter ' + f.field);
       return out;
     });
@@ -491,7 +553,9 @@ class Compiler {
       if (f.field === 'term' && !f.neg && f.matchers.length === 1 && f.matchers[0].words) words.push(...f.matchers[0].words.filter((w) => w.length >= 3));
     }
     void S;
-    return { t: 'descFilter', filters: prepared, words, label: 'description filter' };
+    // descriptions named by id: their concepts are the candidates (item external_id)
+    const byId = prepared.find((f) => f.field === 'id' && !f.neg);
+    return { t: 'descFilter', filters: prepared, words, ...(byId ? { ids: byId.ids } : {}), label: 'description filter' };
   }
 
   eclIds(expr) {
@@ -558,6 +622,8 @@ class Compiler {
           node.values = value;
         } else {
           node = a.reverse ? { t: 'propOf', pids, sources: value } : { t: 'propIn', pids, values: value };
+          // a concept value of an attribute with links and literals: its link sets (value kind 1)
+          if (!a.reverse && pids.some((pid) => (this.store.propsById.get(pid) || {}).shape === 'both')) node.vk = 1;
         }
       } else if (c.operator === 'NOT_EQUALS' && !a.reverse) {
         // has a value outside the set
@@ -620,10 +686,29 @@ class Compiler {
    */
   eclMemberFilter(rid, code, filters) {
     const S = this.store;
-    const rows = S.stmt('SELECT concept_id, fields, effective_time, module_id FROM refset_member WHERE refset_id = ?').all(rid);
-    const def = S.stmt('SELECT field_names, field_types FROM refset_def WHERE refset_id = ?').get(rid);
-    const names = def ? JSON.parse(def.field_names).map((n) => String(n).toLowerCase()) : [];
-    const types = def ? JSON.parse(def.field_types) : [];
+    // the filters' value sets, each evaluated once
+    const sets = new Map();
+    const setFor = (fl) => {
+      if (fl.valueType !== 'expression') return null;
+      if (!sets.has(fl)) sets.set(fl, new Evaluator(S).mat(this.eclNode(fl.value)));
+      return sets.get(fl);
+    };
+    // `target = <expression>` on the column held in record.target_id: only those rows are read (SQL)
+    const target = (S.refsetTargetField(rid) || '').toLowerCase();
+    const onTarget = target && filters.find((fl) => String(fl.field).toLowerCase() === target && fl.operator === '=' && fl.valueType === 'expression');
+    const targetIn = onTarget && setFor(onTarget).size <= 10000 ? setFor(onTarget).toArray() : null;
+    // the rows as stored: a node column's value is its node id, compared with the filter's set
+    // without looking codes up (a code only where a string comparison names a node column)
+    const rows = S.refsetMemberRows(rid, null, targetIn ? { raw: true, targetIn } : { raw: true });
+    const codeCache = new Map();
+    const codeOf = (v) => {
+      if (typeof v !== 'number') return v;
+      if (!codeCache.has(v)) codeCache.set(v, S.codesOfNodes([v]).get(v) ?? '');
+      return codeCache.get(v);
+    };
+    const def = S.refsetDef(rid);
+    const names = def ? def.names.map((n) => String(n).toLowerCase()) : [];
+    const types = def ? def.types : [];
     const cmp = (actual, op, values, c) => {
       switch (op) {
         case '=': return values.some((v) => c(actual, v) === 0);
@@ -638,7 +723,7 @@ class Compiler {
     const str = (a, b) => String(a).localeCompare(String(b));
     const tests = filters.map((fl) => {
       const field = String(fl.field).toLowerCase();
-      const setOf = () => (fl.valueType === 'expression' ? new Evaluator(S).mat(this.eclNode(fl.value)) : null);
+      const setOf = () => setFor(fl);
       if (field === 'active') return () => (fl.operator === '=') === fl.value;
       if (field === 'effectivetime') return (r) => r.effective_time != null && cmp(String(r.effective_time), fl.operator, fl.values, str);
       if (field === 'moduleid') {
@@ -654,7 +739,8 @@ class Compiler {
         return (r) => {
           const v = r.f[i];
           if (v == null || v === '') return false;
-          const id = this.id(String(v));
+          // a node id; a string is a code that is no node of the file
+          const id = typeof v === 'number' ? v : this.id(String(v));
           const inSet = id != null && bm.has(id);
           return fl.operator === '=' ? inSet : !inSet;
         };
@@ -663,27 +749,27 @@ class Compiler {
         if (t !== 'i') throw new FilterError(`Reference set field ${fl.field} is not a numeric field`);
         return (r) => r.f[i] != null && r.f[i] !== '' && cmp(Number(r.f[i]), fl.operator, [Number(fl.value)], (a, b) => a - b);
       }
-      if (fl.valueType === 'boolean') return (r) => (fl.operator === '=') === ((String(r.f[i]) === '1' || String(r.f[i]).toLowerCase() === 'true') === fl.value);
+      if (fl.valueType === 'boolean') return (r) => (fl.operator === '=') === ((String(codeOf(r.f[i])) === '1' || String(codeOf(r.f[i])).toLowerCase() === 'true') === fl.value);
       // string / time
-      return (r) => r.f[i] != null && r.f[i] !== '' && cmp(String(r.f[i]), fl.operator, fl.values, str);
+      return (r) => r.f[i] != null && r.f[i] !== '' && cmp(String(codeOf(r.f[i])), fl.operator, fl.values, str);
     });
     const ids = new Set();
-    for (const r of rows) {
-      r.f = JSON.parse(r.fields || '[]');
-      if (tests.every((t) => t(r))) ids.add(r.concept_id);
-    }
+    for (const r of rows) if (tests.every((t) => t(r))) ids.add(r.concept_id);
     return { t: 'ids', ids: [...ids].sort((a, b) => a - b), label: `^ ${code} {{ M ... }}` };
   }
 
-  /** attribute name expression -> property ids (attributes are concepts too) */
+  /**
+   * attribute name expression -> property ids (attributes are concepts too): the catalog's
+   * refinable rows by code; `*` the wildcard rows
+   */
   eclAttrIds(name) {
     const S = this.store;
     if (name.type === 'ConceptReference') {
       const p = S.props.get(name.conceptId);
-      return p ? [p.id] : [];
+      return p && p.refinable ? [p.id] : [];
     }
     if (name.type === 'Wildcard') {
-      return [...S.props.values()].filter((p) => /^\d+$/.test(p.code) && !p.isHierarchy).map((p) => p.id);
+      return [...S.props.values()].filter((p) => p.wildcard).map((p) => p.id);
     }
     if (name.type === 'SubExpressionConstraint' && name.focus.type === 'ConceptReference' && !name.filters) {
       const id = this.eclConcept(name.focus.conceptId);
@@ -697,7 +783,7 @@ class Compiler {
         const out = [];
         for (const r of rows.values()) {
           const p = S.props.get(r.code);
-          if (p && !p.isHierarchy) out.push(p.id);
+          if (p && p.refinable && !p.isHierarchy) out.push(p.id);
         }
         if (op === 'DESCENDANT_OR_SELF_OF' && S.hierarchy && S.hierarchy.code === name.focus.conceptId) out.push(S.hierarchy.id);
         return out;
@@ -730,6 +816,11 @@ function searchPrefixMatch(type, spec, stored) {
     case 'le': return a <= b;
     default: return false;
   }
+}
+
+/** the stored properties a catalog entry stands for: a union's members, else itself */
+function pidsOf(p) {
+  return p.members ? p.members.flatMap(pidsOf) : p.id != null ? [p.id] : [];
 }
 
 /** literal property = any of the stored keys: their prop sets (prefetched in one statement) */
@@ -770,4 +861,4 @@ function collectIds(n, out) {
   }
 }
 
-module.exports = { Compiler, FilterError, Unsupported, splitList, uniqSorted, litSets };
+module.exports = { Compiler, FilterError, Unsupported, splitList, uniqSorted, litSets, pidsOf };

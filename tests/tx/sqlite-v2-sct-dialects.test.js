@@ -100,7 +100,7 @@ describe('SNOMED CT English dialects (engine)', () => {
     expect(codes(engine.national)).toEqual(['900000000000509007', '900000000000508004']);
     expect(codes(engine.au)).toEqual(['900000000000508004', '900000000000509007']);
     for (const name of Object.keys(EDITIONS)) expect(codes(engine[name + '-rf2'])).toEqual(codes(engine[name]));
-    expect(engine.intl.store.hasRank).toBe(true); // a v5 file: acceptability is read only where needed
+    expect(engine.intl.store.hasRank).toBe(true); // item.rank: acceptability is read only where needed
   });
 
   for (const significantOnly of [true, false]) {
@@ -133,7 +133,7 @@ describe('SNOMED CT English dialects (engine)', () => {
     const names = [...Object.keys(EDITIONS), ...(significantOnly ? Object.keys(EDITIONS).map((n) => n + '-rf2') : [])];
     test.each(names)(op2 + ' designations: every concept, %s, as cs-snomed.js reports them', async (name) => {
       {
-        const codes = engine[name].store.db.prepare('SELECT code FROM concept ORDER BY concept_id').pluck().all();
+        const codes = engine[name].store.db.prepare('SELECT code FROM concept ORDER BY id').pluck().all();
         expect(codes.length).toBeGreaterThan(2000);
         let dialectTagged = 0;
         for (const code of codes) {

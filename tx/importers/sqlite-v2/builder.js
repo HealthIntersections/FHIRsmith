@@ -1,41 +1,72 @@
 'use strict';
 
-// Shared import machinery for the sqlite-v2 schema (schema-v2.sql).
+// Generic builder for the terminology file (schema.sql). No terminology knowledge here.
 //
-// An importer parses its source and hands facts to a V2Builder, naming concepts by code.
-// Facts are staged with provisional concept indexes in a scratch SQLite file next to the
-// destination. builder.finish() is the shared final stage used by every vocabulary:
-//   1. number concepts depth-first (numbering.js) -> concept_id;
-//   2. rewrite every staged fact to final ids, in id order, into the destination;
-//   3. build and write the stored sets (sets.js) with their member counts;
-//   4. full-text indexes, secondary indexes, integrity checks, ANALYZE;
-//   5. record provenance (sources with sha256, counts, timings).
+// An importer names concepts by code and gets back a handle; items (terms, definitions, atoms)
+// hang off a concept and also get a handle. Statements (link, literal, identifier, record) take
+// node handles, so any of them can be about a concept or an item. Facts are staged with
+// provisional handles in a scratch SQLite file; finish():
+//   1. numbers concepts (sqlite-v2/numbering.js: active first, depth-first over the subsumption
+//      links, siblings by sort key) -> ids 1..N, then items N+1.. in (concept, arrival) order;
+//   2. rewrites every staged fact to final ids, in key order, into the destination;
+//      item.rank (derived) from the role 'language' relations and meta displayContexts;
+//   3. fills the catalog's computed fields (subject_kind, target_kind, n_rows; shape 'union' for a
+//      link row with members and no rows of its own) from the rows, by_target (hierarchy or
+//      refinable) and by_subject (every identifier row) unless the importer set them;
+//   4. builds the ix_* tables (indexes.js, which reads fact tables only);
+//   5. writes meta (format, provenance), ANALYZE (sqlite_stat1 only: analyze()) and VACUUM (unless
+//      the importer still writes derived-by-importer rows: then it calls vacuumFile() after them).
+//
+// Handles: a concept is its 0-based arrival index (>= 0); an item is -(its staging row id) (< 0).
 
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const { numberConcepts } = require('../sqlite-v2/numbering');
+const { buildIndexes } = require('./indexes');
 
-const { numberConcepts } = require('./numbering');
-const { dialectFor } = require('../../sqlite-v2/dialects');
-const { orderKind, computeOrder, writeOrder, hierarchyArrays, writeHierarchyOrder } = require('../../sqlite-v2/orders');
-const { writeTextTables } = require('../../sqlite-v2/text-index');
-const {
-  SET_KIND, serialize, rangeSet, descendantsFromEdges, descendantsFromPairs, groupSorted,
-} = require('./sets');
-const sets = require('./sets'); // sets.RoaringBitmap32: roaring loads on first use
-
-const SCHEMA_PATH = path.join(__dirname, 'schema-v2.sql');
-const SCHEMA_VERSION = 5; // PRAGMA user_version of schema-v2.sql (5: designation.rank)
+const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+const FORMAT = 'tx-terminology/1';
+// PRAGMA user_version of a file in this format (the earlier sqlite-v2 schema wrote 5), so a reader can
+// tell an old file before reading any table
+const USER_VERSION = 1;
 const COMMIT_EVERY = 100000;
+const SHAPES = new Set(['link', 'literal', 'both', 'identifier', 'record', 'union']);
+const ROLES = new Set(['language']);
+/**
+ * a source id that is a canonical decimal integer is stored as INTEGER. Bound as a BigInt:
+ * better-sqlite3 binds every JS number as REAL, which an untyped column keeps (and CAST AS TEXT
+ * then gives '220306011.0')
+ */
+function externalIdValue(v) {
+  if (v == null || v === '') return null;
+  if (typeof v === 'bigint') return v;
+  if (typeof v === 'number') {
+    if (!Number.isSafeInteger(v) || v < 0) throw new Error(`external id ${v}: a number must be a safe non-negative integer (pass the source text)`);
+    return BigInt(v);
+  }
+  const t = String(v);
+  if (!/^(0|[1-9][0-9]{0,18})$/.test(t)) return t;
+  const b = BigInt(t);
+  return b > 9223372036854775807n ? t : b;
+}
+const LITERAL_TYPES = new Set(['code', 'Coding', 'string', 'integer', 'decimal', 'boolean', 'dateTime']);
 
-const FHIR_TYPES = new Set(['code', 'Coding', 'string', 'integer', 'decimal', 'boolean', 'dateTime']);
+/** the sections of schema.sql: { facts, factIndexes, ix } */
+function schemaSections() {
+  const ddl = fs.readFileSync(SCHEMA_PATH, 'utf8');
+  const part = (name) => {
+    const m = ddl.split(/^-- @(facts|fact-indexes|ix)\s*$/m);
+    const i = m.indexOf(name);
+    if (i < 0) throw new Error(`schema.sql: no @${name} section`);
+    return m[i + 1];
+  };
+  return { facts: part('facts'), factIndexes: part('fact-indexes'), ix: part('ix') };
+}
 
-class V2Builder {
-  /**
-   * @param {string} dest  destination .db (replaced if options.overwrite)
-   * @param {object} [options] { overwrite, log, importer }
-   */
+class TerminologyBuilder {
+  /** @param {string} dest @param {object} [options] { overwrite, log, importer } */
   constructor(dest, options = {}) {
     this.dest = path.resolve(dest);
     this.log = options.log || (() => {});
@@ -49,112 +80,151 @@ class V2Builder {
     fs.mkdirSync(path.dirname(this.dest), { recursive: true });
     this.stagePath = `${this.dest}.stage`;
     fs.rmSync(this.stagePath, { force: true });
-
     this.st = new Database(this.stagePath);
     this.st.pragma('journal_mode = OFF');
     this.st.pragma('synchronous = OFF');
     this.st.pragma('cache_size = -200000');
     this.st.exec(`
-      CREATE TABLE s_link (src INTEGER, prop INTEGER, grp INTEGER, tgt INTEGER, active INTEGER, seq INTEGER);
-      CREATE TABLE s_literal (src INTEGER, prop INTEGER, grp INTEGER, value, active INTEGER);
-      CREATE TABLE s_designation (id INTEGER PRIMARY KEY, concept INTEGER, language TEXT, use_id INTEGER,
-        term TEXT, active INTEGER, preferred INTEGER);
-      CREATE TABLE s_refset (refset INTEGER, concept INTEGER, fields TEXT, time INTEGER, module INTEGER, seq INTEGER);
-      CREATE TABLE s_ancestor (descendant INTEGER, ancestor INTEGER);
-      CREATE TABLE s_extmap (concept INTEGER, system TEXT, version TEXT, code TEXT, display TEXT, equivalence TEXT);
-      CREATE TABLE s_altid (concept INTEGER, scheme INTEGER, identifier TEXT);
+      CREATE TABLE s_item (id INTEGER PRIMARY KEY, concept INTEGER, kind INTEGER, external_id, cs_id INTEGER,
+        language TEXT, use_id INTEGER, text TEXT, active INTEGER, preferred INTEGER, rank INTEGER);
+      CREATE TABLE s_link (subject INTEGER, prop INTEGER, grp INTEGER, target INTEGER, active INTEGER, seq INTEGER);
+      CREATE TABLE s_literal (subject INTEGER, prop INTEGER, grp INTEGER, value, active INTEGER);
+      CREATE TABLE s_identifier (prop INTEGER, value, subject INTEGER, resolves INTEGER);
+      CREATE TABLE s_record (id INTEGER PRIMARY KEY, relation INTEGER, subject INTEGER, target INTEGER, active INTEGER, fields TEXT);
+      CREATE TABLE s_mapping (concept INTEGER, prop INTEGER, system TEXT, version TEXT, code TEXT, display TEXT, relationship TEXT);
+      CREATE TABLE s_value_label (prop INTEGER, value, display TEXT);
     `);
     const p = (sql) => this.st.prepare(sql);
     this.ins = {
+      item: p('INSERT INTO s_item (concept, kind, external_id, cs_id, language, use_id, text, active, preferred, rank) VALUES (?,?,?,?,?,?,?,?,?,?)'),
       link: p('INSERT INTO s_link VALUES (?,?,?,?,?,?)'),
       literal: p('INSERT INTO s_literal VALUES (?,?,?,?,?)'),
-      designation: p('INSERT INTO s_designation (concept, language, use_id, term, active, preferred) VALUES (?,?,?,?,?,?)'),
-      refset: p('INSERT INTO s_refset VALUES (?,?,?,?,?,?)'),
-      ancestor: p('INSERT INTO s_ancestor VALUES (?,?)'),
-      extmap: p('INSERT INTO s_extmap VALUES (?,?,?,?,?,?)'),
-      altid: p('INSERT INTO s_altid VALUES (?,?,?)'),
+      identifier: p('INSERT INTO s_identifier VALUES (?,?,?,?)'),
+      record: p('INSERT INTO s_record (relation, subject, target, active, fields) VALUES (?,?,?,?,?)'),
+      mapping: p('INSERT INTO s_mapping VALUES (?,?,?,?,?,?,?)'),
+      valueLabel: p('INSERT INTO s_value_label VALUES (?,?,?)'),
     };
     this.pending = 0;
     this.st.exec('BEGIN');
 
-    // Concepts live in memory until numbering (index = provisional id, 0-based).
+    this.systems = [];            // cs_id - 1 -> spec; cs_id 1 is the served system
     this.codes = [];
     this.index = new Map();
+    this.conceptCs = [];
     this.active = [];
     this.display = [];
-    this.definition = [];
     this.sortKey = [];
-
-    this.properties = [];          // property_id - 1 -> def
-    this.propertyByCode = new Map();
-    this.uses = new Map();          // system|code -> {id, system, code, display}
-    this.refsetDefs = new Map();    // refset index -> {names, types}
-    this.config = new Map();
-    this.accept = { n: 0, d: new Int32Array(1 << 16), r: new Int32Array(1 << 16), v: new Int32Array(1 << 16) };
-    this.codeSystem = null;
+    this.properties = [];         // id - 1 -> def
+    this.propertyByKey = new Map(); // cs_id|code -> def
+    this.members = [];
+    this.uses = new Map();
+    this.meta = new Map();
     this.sources = [];
     this.counts = {};
   }
 
-  _tick() {
-    if (++this.pending >= COMMIT_EVERY) { this.st.exec('COMMIT; BEGIN'); this.pending = 0; }
+  _tick() { if (++this.pending >= COMMIT_EVERY) { this.st.exec('COMMIT; BEGIN'); this.pending = 0; } }
+  _count(name) { this.counts[name] = (this.counts[name] || 0) + 1; }
+
+  // ---- release ---------------------------------------------------------------------------
+
+  /**
+   * A code system row. The first one is the served system (cs_id 1); later ones are sources that
+   * only contribute items (served = 0). Returns the cs_id.
+   * { uri, version, name, title, description, releaseDate, content, caseSensitive, hierarchyMeaning, defaultLanguage,
+   *   compositional, resource }
+   */
+  codeSystem(spec) {
+    if (!spec.uri || spec.version == null) throw new Error('codeSystem: uri and version are required');
+    this.systems.push({ content: 'complete', ...spec, served: this.systems.length === 0 ? 1 : 0 });
+    return this.systems.length;
   }
 
-  _count(name, n = 1) { this.counts[name] = (this.counts[name] || 0) + n; }
-
-  // ---- release metadata ----------------------------------------------------------------
-
-  /** { uri, version, name, title, description, releaseDate, edition, content } */
-  setCodeSystem(cs) { this.codeSystem = { content: 'complete', ...cs }; }
-
-  setConfig(key, value) {
-    this.config.set(key, value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value));
+  /** a behaviour setting (meta behaviour.<key>, a JSON value; tx/sqlite-v2/store.js BEHAVIOUR) */
+  setBehaviour(key, value) {
+    this.meta.set(`behaviour.${key}`, JSON.stringify(value));
   }
 
-  /** Record a source file (or every file under a directory) for provenance. */
+  /** a release fact without a column (displayContexts, moduleDependencies, ...): JSON for objects */
+  setMeta(key, value) {
+    this.meta.set(key, value !== null && typeof value === 'object' ? JSON.stringify(value) : String(value));
+  }
+
   addSource(filePath) {
     const st = fs.statSync(filePath);
-    if (st.isDirectory()) {
-      for (const e of fs.readdirSync(filePath).sort()) this.addSource(path.join(filePath, e));
-      return;
-    }
+    if (st.isDirectory()) { for (const e of fs.readdirSync(filePath).sort()) this.addSource(path.join(filePath, e)); return; }
     this.sources.push({ path: filePath, size: st.size });
   }
 
-  // ---- properties ----------------------------------------------------------------------
+  // ---- catalog ---------------------------------------------------------------------------
 
-  /** { code, uri, fhirType, valueKind: 'concept'|'literal', isHierarchy, display } -> property_id */
+  /**
+   * A catalog row; returns its id (an existing (cs, code) returns the existing id, which must have
+   * the same shape). { code, cs = 1, uri, display, shape, fhirType, concept (handle), subsumption,
+   * closureFrom, filterable = true, refinable, wildcard, inverseOf (may name a union row), byTarget
+   * (default: subsumption or refinable; being named by inverseOf does not imply it), bySubject
+   * (shape identifier: its rows are read by subject, ix_by_subject; default true), ordered
+   * (link.seq orders a subject's targets and the order is part of the answer), fields
+   * ([{name, type, target}]: record shape), role (NULL or 'language': a record relation on items that
+   * ranks displays, by meta displayContexts), filterOps (the FHIR operators a filter on it accepts),
+   * report ('named' | 'always': when $lookup reports it) }
+   */
   property(spec) {
-    const existing = this.propertyByCode.get(spec.code);
-    if (existing) {
-      if (existing.valueKind !== spec.valueKind) {
-        throw new Error(`property ${spec.code} defined as both ${existing.valueKind} and ${spec.valueKind}`);
-      }
-      return existing.id;
+    const cs = spec.cs || 1;
+    const key = `${cs}|${spec.code}`;
+    const known = this.propertyByKey.get(key);
+    if (known) {
+      if (known.shape !== spec.shape) throw new Error(`property ${spec.code}: shape ${known.shape}, not ${spec.shape}`);
+      return known.id;
     }
-    if (!FHIR_TYPES.has(spec.fhirType)) throw new Error(`property ${spec.code}: bad fhirType ${spec.fhirType}`);
-    if (spec.valueKind !== 'concept' && spec.valueKind !== 'literal') throw new Error(`property ${spec.code}: bad valueKind`);
+    if (!SHAPES.has(spec.shape)) throw new Error(`property ${spec.code}: bad shape ${spec.shape}`);
+    if (spec.role != null && !ROLES.has(spec.role)) throw new Error(`property ${spec.code}: bad role ${spec.role}`);
+    if (spec.role === 'language' && (spec.shape !== 'record' || !(spec.fields || []).some((f) => f.target))) {
+      throw new Error(`property ${spec.code}: a language relation is a record with a target column (the acceptability)`);
+    }
+    if (spec.bySubject != null && spec.shape !== 'identifier') throw new Error(`property ${spec.code}: bySubject is for shape identifier`);
+    if ((spec.shape === 'literal' || spec.shape === 'both') && !LITERAL_TYPES.has(spec.fhirType)) {
+      throw new Error(`property ${spec.code}: bad fhirType ${spec.fhirType}`);
+    }
     const def = {
-      id: this.properties.length + 1, code: spec.code, uri: spec.uri ?? null, fhirType: spec.fhirType,
-      valueKind: spec.valueKind, isHierarchy: spec.isHierarchy ? 1 : 0, display: spec.display ?? null,
+      id: this.properties.length + 1, cs, code: spec.code, uri: spec.uri ?? null, display: spec.display ?? null,
+      concept: spec.concept ?? null, shape: spec.shape, role: spec.role ?? null, fhirType: spec.fhirType ?? null,
+      subsumption: spec.subsumption ? 1 : 0, closureFrom: spec.closureFrom ?? null,
+      filterable: spec.filterable === false ? 0 : 1, refinable: spec.refinable ? 1 : 0, wildcard: spec.wildcard ? 1 : 0,
+      inverseOf: spec.inverseOf ?? null, byTarget: spec.byTarget == null ? null : (spec.byTarget ? 1 : 0),
+      bySubject: spec.shape === 'identifier' && spec.bySubject !== false ? 1 : 0,
+      ordered: spec.ordered ? 1 : 0,
+      filterOps: spec.filterOps ? JSON.stringify(spec.filterOps) : null, report: spec.report ?? null,
+      fields: spec.fields ? JSON.stringify(spec.fields) : null,
+      // record shape: positions in record.fields (the non-target columns) that hold node handles
+      nodeCols: spec.fields ? spec.fields.filter((f) => !f.target).map((f, i) => ((f.type === 'c' || f.type === 'n') ? i : -1)).filter((i) => i >= 0) : [],
     };
     this.properties.push(def);
-    this.propertyByCode.set(spec.code, def);
+    this.propertyByKey.set(key, def);
     return def.id;
   }
 
-  // ---- concepts ------------------------------------------------------------------------
+  propertyId(code, cs = 1) { const d = this.propertyByKey.get(`${cs}|${code}`); return d ? d.id : undefined; }
 
-  /** Add a concept; returns its provisional index. Re-adding a code returns the existing index. */
-  concept(code, { active = true, display = null, definition = null, sortKey = 0 } = {}) {
+  /** the property whose explicit pairs are this (subsumption) property's closure, set after both exist */
+  setClosureFrom(property, from) { this.properties[property - 1].closureFrom = from; }
+
+  /** the parent property is the union of the child (property_member) */
+  propertyMember(parent, child) { this.members.push([parent, child]); }
+
+  // ---- nodes -----------------------------------------------------------------------------
+
+  /** a concept; returns its handle. Re-adding a code returns the existing handle. */
+  concept(code, { cs = 1, active = true, display = null, sortKey = 0 } = {}) {
     const known = this.index.get(code);
     if (known !== undefined) return known;
+    if (cs !== 1) throw new Error('concepts belong to the served system (cs 1)');
     const i = this.codes.length;
     this.codes.push(code);
     this.index.set(code, i);
+    this.conceptCs.push(cs);
     this.active.push(active ? 1 : 0);
     this.display.push(display);
-    this.definition.push(definition);
     this.sortKey.push(sortKey);
     return i;
   }
@@ -162,137 +232,105 @@ class V2Builder {
   idx(code) { return this.index.get(code); }
   setActive(i, active) { this.active[i] = active ? 1 : 0; }
   setDisplay(i, display) { this.display[i] = display; }
-  setDefinition(i, definition) { this.definition[i] = definition; }
   setSortKey(i, key) { this.sortKey[i] = key; }
 
-  /**
-   * The concept's place in the built-in importer's key order (LOINC: the CodeKey that
-   * import-loinc.module.js gives it), kept in concept_order for the orders the built-in provider
-   * lists results in: kind is its group (cs-loinc.js Codes.Type), seq its place (a later call
-   * replaces an earlier one, as a re-inserted code takes the later key). None for most systems
-   */
-  setSourceOrder(i, kind, seq) {
-    if (!this.sourceOrder) this.sourceOrder = new Map();
-    this.sourceOrder.set(i, [kind, seq]);
-  }
-  hasSourceOrder(i) { return !!this.sourceOrder && this.sourceOrder.has(i); }
-  /**
-   * One of a concept's parent or child relations, in the order the built-in provider lists them
-   * (LOINC: import-loinc.module.js's Relationships rows), stored as system_order hier_start / hier
-   * (tx/sqlite-v2/orders.js). Call in that order; the caller gives each relation once
-   */
-  hierarchyEntry(i, other, isChild) {
-    if (!this.hierEntries) this.hierEntries = { xs: [], others: [], child: [] };
-    this.hierEntries.xs.push(i); this.hierEntries.others.push(other); this.hierEntries.child.push(isChild ? 1 : 0);
-  }
-  /** the concept's place in the built-in provider's whole-system order (LOINC), in concept_order.walk */
-  setSourceWalk(i, walk) {
-    if (!this.sourceWalk) this.sourceWalk = new Map();
-    this.sourceWalk.set(i, walk);
+  /** an item_use coding; returns its use_id */
+  use({ system = null, code, display = null }) {
+    const k = `${system || ''}|${code}`;
+    let u = this.uses.get(k);
+    if (!u) this.uses.set(k, u = { id: this.uses.size + 1, system, code, display });
+    return u.id;
   }
 
-  // ---- facts ---------------------------------------------------------------------------
-
-  /** use = { system, code, display } or null */
-  /** Returns the designation's staging id (for acceptability), or null if the term is empty. */
-  designation(i, { language = null, use = null, term, active = true, preferred = false }) {
-    if (term === null || term === undefined || term === '') return null;
-    let useId = null;
-    if (use) {
-      const k = `${use.system || ''}|${use.code}`;
-      let u = this.uses.get(k);
-      if (!u) this.uses.set(k, u = { id: this.uses.size + 1, system: use.system || null, code: use.code, display: use.display ?? null });
-      useId = u.id;
-    }
-    const id = this.ins.designation.run(i, language, useId, term, active ? 1 : 0, preferred ? 1 : 0).lastInsertRowid;
-    this._count('designations');
+  /**
+   * An item below a concept; returns its handle (< 0), or null for an empty text.
+   * { kind = 0, externalId, cs = 1, language, use ({system, code, display} or a use_id), text, active, preferred, rank }
+   */
+  item(concept, { kind = 0, externalId = null, cs = 1, language = null, use = null, text, active = true, preferred = false, rank = null }) {
+    if (text === null || text === undefined || text === '') return null;
+    if (!(concept >= 0)) throw new Error('item: the concept handle is required');
+    const useId = use == null ? null : typeof use === 'number' ? use : this.use(use);
+    const id = this.ins.item.run(concept, kind, externalIdValue(externalId), cs, language, useId, text, active ? 1 : 0, preferred ? 1 : 0, rank).lastInsertRowid;
+    this._count('items');
     this._tick();
-    return Number(id);
+    return -Number(id);
   }
 
-  /**
-   * @param {{group?: number, active?: boolean, seq?: number}} [opts] seq: the link's place in the
-   *   release (SNOMED CT: its row in the relationship file), kept in link_order for the orders the
-   *   built-in provider lists links in; none for a link without one
-   */
-  link(source, propertyId, target, { group = 0, active = true, seq = null } = {}) {
-    this.ins.link.run(source, propertyId, group, target, active ? 1 : 0, seq);
-    if (seq != null) this.linkSeqs = true;
+  /** change an item's preferred flag (the importer decides after reading, e.g. the definition shown) */
+  setItemPreferred(handle, preferred) {
+    if (!(handle < 0)) throw new Error('setItemPreferred: an item handle is required');
+    if (!this._setPref) this._setPref = this.st.prepare('UPDATE s_item SET preferred = ? WHERE id = ?');
+    this._setPref.run(preferred ? 1 : 0, -handle);
+    this._tick();
+  }
+
+  // ---- statements ------------------------------------------------------------------------
+
+  link(subject, property, target, { group = 0, active = true, seq = null } = {}) {
+    this.ins.link.run(subject, property, group, target, active ? 1 : 0, seq);
     this._count('links');
     this._tick();
   }
 
-  literal(source, propertyId, value, { group = 0, active = true } = {}) {
+  literal(subject, property, value, { group = 0, active = true } = {}) {
     if (value === null || value === undefined || value === '') return;
-    const def = this.properties[propertyId - 1];
-    let v = value;
-    switch (def.fhirType) {
-      case 'integer': case 'decimal': {
-        const num = Number(value);
-        if (Number.isNaN(num)) throw new Error(`property ${def.code}: '${value}' is not a number`);
-        v = num;
-        break;
-      }
-      case 'boolean':
-        v = (value === true || value === 'true' || value === '1' || value === 1 || value === 'Y') ? 1 : 0;
-        break;
-      default:
-        v = String(value);
-    }
-    this.ins.literal.run(source, propertyId, group, v, active ? 1 : 0);
+    this.ins.literal.run(subject, property, group, this._typed(property, value), active ? 1 : 0);
     this._count('literals');
     this._tick();
   }
 
-  /** Language refset acceptability of a designation (its staging id from designation()). */
-  acceptability(designation, refset, acceptability) {
-    // Kept in memory (3 ints per row) and written sorted in the final stage.
-    const a = this.accept;
-    if (a.n === a.d.length) for (const k of ['d', 'r', 'v']) { const x = new Int32Array(a.n * 2); x.set(a[k]); a[k] = x; }
-    a.d[a.n] = designation; a.r[a.n] = refset; a.v[a.n] = acceptability; a.n++;
-    this._count('acceptability');
-  }
-
-  /** Field layout of a refset whose rows carry extra columns. */
-  refsetDef(refset, names, types) {
-    if (!this.refsetDefs.has(refset)) this.refsetDefs.set(refset, { names, types });
-  }
-
-  /** Active refset member; fields = array of extra column values or null (membership only). */
   /**
-   * Active refset member; fields = array of extra column values or null (membership only);
-   * meta = { time: YYYYMMDD, module: staging index of the row's module } when the source has them.
-   * Rows keep the order they arrive in (seq): the RF2 row order.
+   * a value -> subject statement. resolves: 0 not a code; 1 an alias, accepted as a code and answered
+   * with the subject's own code; 2 a code in its own right, answered as written
    */
-  refsetMember(refset, concept, fields = null, meta = null) {
-    this._refsetSeq = (this._refsetSeq || 0) + 1;
-    const time = meta && meta.time != null && /^\d{8}$/.test(String(meta.time)) ? Number(meta.time) : null;
-    this.ins.refset.run(refset, concept, fields ? JSON.stringify(fields) : null, time, meta && meta.module != null ? meta.module : null, this._refsetSeq);
-    this._count('refsetMembers');
+  identifier(property, value, subject, { resolves = 0 } = {}) {
+    const r = resolves === true ? 1 : resolves === false ? 0 : resolves;
+    if (r !== 0 && r !== 1 && r !== 2) throw new Error(`identifier ${value}: resolves is 0, 1 or 2`);
+    this.ins.identifier.run(property, externalIdValue(value), subject, r);
+    this._count('identifiers');
     this._tick();
   }
 
-  /** Explicit (descendant, ancestor) pair. If any are given they define the descendant sets. */
-  ancestor(descendant, ancestor) {
-    this.ins.ancestor.run(descendant, ancestor);
+  /**
+   * a record row; seq is its arrival order within the relation. target: a node handle.
+   * fields: the values of the relation's non-target columns (property.fields order). In a node
+   * column (type c / n) a number is a node handle (rewritten to the node id at finish); a string
+   * is kept as it is (a source code that is not a node of this file).
+   */
+  record(relation, subject, { target = null, active = true, fields = null } = {}) {
+    this.ins.record.run(relation, subject, target, active ? 1 : 0, fields ? JSON.stringify(fields) : null);
+    this._count('records');
     this._tick();
   }
 
-  externalMap(i, { system, version = null, code, display = null, equivalence = 'equivalent' }) {
-    this.ins.extmap.run(i, system, version, code, display, equivalence);
-    this._count('externalMaps');
+  /** the display of a literal value of a property (value_label) */
+  valueLabel(property, value, display) {
+    this.ins.valueLabel.run(property, this._typed(property, value), display);
+  }
+
+  mapping(concept, { property = null, system, version = null, code, display = null, relationship }) {
+    this.ins.mapping.run(concept, property, system, version, code, display, relationship);
+    this._count('mappings');
     this._tick();
   }
 
-  alternateIdentifier(i, scheme, identifier) {
-    this.ins.altid.run(i, scheme, identifier);
-    this._count('alternateIdentifiers');
-    this._tick();
+  _typed(property, value) {
+    const def = this.properties[property - 1];
+    switch (def.fhirType) {
+      case 'integer': case 'decimal': {
+        const n = Number(value);
+        if (Number.isNaN(n)) throw new Error(`property ${def.code}: '${value}' is not a number`);
+        return n;
+      }
+      case 'boolean':
+        return (value === true || value === 'true' || value === '1' || value === 1 || value === 'Y') ? 1 : 0;
+      default:
+        return String(value);
+    }
   }
 
-  // ---- the shared final stage ----------------------------------------------------------
+  // ---- final stage -----------------------------------------------------------------------
 
-  // Per-stage wall time, rows (when the stage returns a row count) and peak RSS so far.
   _record(name, t, r) {
     const rec = { s: (Date.now() - t) / 1000, peakRssMiB: Math.round(process.resourceUsage().maxRSS / 1024) };
     if (typeof r === 'number') rec.rows = r;
@@ -300,397 +338,266 @@ class V2Builder {
     this.log(`  ${name}: ${rec.s.toFixed(1)} s${rec.rows !== undefined ? `, ${rec.rows.toLocaleString()} rows` : ''}, peak RSS ${rec.peakRssMiB} MiB`);
   }
 
-  _time(name, fn) {
-    const t = Date.now();
-    const r = fn();
-    this._record(name, t, r);
-    return r;
-  }
+  _time(name, fn) { const t = Date.now(); const r = fn(); this._record(name, t, r); return r; }
 
-  /** Time an importer (parse) stage; fn may be async and may return a row count. */
-  async stage(name, fn) {
-    const t = Date.now();
-    const r = await fn();
-    this._record(name, t, typeof r === 'number' ? r : undefined);
-    return r;
-  }
+  async stage(name, fn) { const t = Date.now(); const r = await fn(); this._record(name, t, typeof r === 'number' ? r : undefined); return r; }
 
   /**
-   * designation.rank (v5), so a reader need not read acceptability to order designations:
-   * 0 = a designation of use rank.use that is preferred (rank.preferred) in one of rank.refsets,
-   * 1 = one preferred in another language refset, 2 = any other. SNOMED CT sets it
-   * (applySnomedConfig: synonym, preferred, the display refsets); the engine's display order
-   * (tx/sqlite-v2/snomed.js) reads it, or acceptability in files without it. Written with the
-   * rows (a staged flag per preferred designation), so the table stays packed. Returns the SQL
-   * expression for the rank and the join it needs, or NULL.
+   * record rows to final ids, in SQL: subject and target through the node map, the node columns of
+   * fields (property nodeCols: a JSON number there is a node handle) with json_set; seq = arrival
+   * order within the relation. One statement per relation, in relation order, so rows go in
+   * key order.
    */
-  _stageDesignationRank(db) {
-    const r = this.designationRank;
-    if (!r) return { expr: 'NULL', join: '' };
-    const use = this.uses.get(`${r.useSystem || ''}|${r.useCode}`);
-    const pref = this.index.get(String(r.preferred));
-    const display = new Set(r.refsets.map((c) => this.index.get(String(c))).filter((x) => x !== undefined));
-    const flag = new Uint8Array(this.counts.designations + 2); // 2 = preferred in a display refset, 1 = in another
-    const { d, r: refset, v } = this.accept;
-    for (let k = 0; k < this.accept.n; k++) {
-      if (v[k] !== pref) continue;
-      const f = display.has(refset[k]) ? 2 : 1;
-      if (f > flag[d[k]]) flag[d[k]] = f;
+  _rewriteRecords(db) {
+    db.exec('CREATE INDEX st.s_record_relation ON s_record(relation, id)');
+    const rels = db.prepare('SELECT DISTINCT relation FROM st.s_record ORDER BY 1').pluck().all();
+    let n = 0;
+    for (const rel of rels) {
+      const def = this.properties[rel - 1];
+      const cols = (def && def.nodeCols) || [];
+      // each node column from the staged row: its node id where it is a handle, else as it is
+      const f = cols.length ? `json_set(r.fields, ${cols.map((i) => `'$[${i}]', CASE WHEN json_type(r.fields, '$[${i}]') = 'integer'
+          THEN (SELECT new FROM st.s_node WHERE old = json_extract(r.fields, '$[${i}]')) ELSE json_extract(r.fields, '$[${i}]') END`).join(', ')})` : 'r.fields';
+      n += db.prepare(`INSERT INTO record SELECT r.relation, m.new,
+          row_number() OVER (ORDER BY r.id) - 1, mt.new, r.active, ${f}
+        FROM st.s_record r JOIN st.s_node m ON m.old = r.subject LEFT JOIN st.s_node mt ON mt.old = r.target
+        WHERE r.relation = ? ORDER BY 2, 3`).run(rel).changes;
     }
-    db.exec('CREATE TABLE st.s_drank (stage_id INTEGER PRIMARY KEY, flag INTEGER NOT NULL)');
-    const ins = db.prepare('INSERT INTO st.s_drank VALUES (?, ?)');
-    for (let i = 0; i < flag.length; i++) if (flag[i]) ins.run(i, flag[i]);
-    return {
-      expr: `CASE WHEN d.use_id IS NOT ${use ? use.id : 'NULL'} THEN 2 WHEN f.flag = 2 THEN 0 WHEN f.flag = 1 THEN 1 ELSE 2 END`,
-      join: 'LEFT JOIN st.s_drank f ON f.stage_id = d.id',
-    };
+    return n;
   }
 
   /**
-   * Number, rewrite, build sets, index, verify, record provenance. Returns a summary.
-   * @param {object} [extra] importer stats to record in provenance
+   * item.rank (derived), from the relations with role 'language' and meta displayContexts
+   * ({relations, preferred, use}): 0 an item whose target is `preferred` in one of
+   * `relations`, 1 Preferred in another language relation, 2 any other. Only items of `use`
+   * ({system, code}) rank 0 or 1, when it is set (SNOMED CT: synonyms; an FSN is Preferred too, but
+   * is not a display). Without language relations: the rank the importer gave.
+   * Returns the SQL expression for item.rank over staged s_item i and the join it needs.
    */
-  finish(extra = {}) {
-    if (!this.codeSystem) throw new Error('setCodeSystem() was not called');
+  _stageRank(db) {
+    const lang = this.properties.filter((p) => p.role === 'language');
+    if (!lang.length) return { expr: 'i.rank', join: '' };
+    // meta displayContexts = {relations: [codes, in order], preferred: <target code>, use: {system, code}}
+    const dc = JSON.parse(this.meta.get('displayContexts') || '{}');
+    const contexts = (dc.relations || []).map(String);
+    if (dc.preferred == null) throw new Error('meta displayContexts: no preferred target for the language relations');
+    const t = this.index.get(String(dc.preferred));
+    db.exec('CREATE TABLE st.s_pref (relation INTEGER PRIMARY KEY, target INTEGER, display INTEGER)');
+    const ins = db.prepare('INSERT INTO st.s_pref VALUES (?, ?, ?)');
+    if (t !== undefined) for (const p of lang) ins.run(p.id, t, contexts.includes(p.code) ? 1 : 0);
+    db.exec(`CREATE TABLE st.s_rank (item INTEGER PRIMARY KEY, flag INTEGER NOT NULL);
+      INSERT INTO st.s_rank SELECT -r.subject, max(CASE WHEN p.display = 1 THEN 2 ELSE 1 END) FROM st.s_record r
+        JOIN st.s_pref p ON p.relation = r.relation AND p.target = r.target WHERE r.active = 1 AND r.subject < 0 GROUP BY r.subject`);
+    const du = dc.use || null;
+    const u = du ? this.uses.get(`${du.system || ''}|${du.code}`) : null;
+    const useCond = du ? `i.use_id IS NOT ${u ? u.id : 'NULL'}` : '0';
+    return { expr: `CASE WHEN ${useCond} THEN 2 WHEN rk.flag = 2 THEN 0 WHEN rk.flag = 1 THEN 1 ELSE 2 END`, join: 'LEFT JOIN st.s_rank rk ON rk.item = i.id' };
+  }
+
+  /**
+   * @param {object} [extra] importer stats, kept in meta 'provenance.importer'
+   * @param {object} [opts] { vacuum: false when the importer writes derived-by-importer rows after
+   *   this (it then calls vacuumFile) }
+   */
+  finish(extra = {}, opts = {}) {
+    if (!this.systems.length) throw new Error('codeSystem() was not called');
     this.st.exec('COMMIT');
     this.timings.parse = { s: (Date.now() - this.t0) / 1000, peakRssMiB: Math.round(process.resourceUsage().maxRSS / 1024) };
     const n = this.codes.length;
     this.log(`Final stage: ${n.toLocaleString()} concepts`);
 
-    // 1. numbering ------------------------------------------------------------------------
-    const hier = this.properties.filter(p => p.isHierarchy).map(p => p.id);
+    // 1. numbering: concepts over the active subsumption links between concepts
+    const hier = this.properties.filter((p) => p.subsumption).map((p) => p.id);
     const [childOf, parentOf] = hier.length
-      ? intPairs(this.st.prepare(`SELECT src, tgt FROM s_link WHERE active = 1 AND prop IN (${hier.join(',')})`))
+      ? intPairs(this.st.prepare(`SELECT subject, target FROM s_link WHERE active = 1 AND subject >= 0 AND target >= 0 AND prop IN (${hier.join(',')})`))
       : [new Int32Array(0), new Int32Array(0)];
     const num = this._time('number', () => numberConcepts({
-      codes: this.codes, active: Uint8Array.from(this.active), childOf, parentOf,
-      sortKey: Float64Array.from(this.sortKey),
+      codes: this.codes, active: Uint8Array.from(this.active), childOf, parentOf, sortKey: Float64Array.from(this.sortKey),
     }));
     const { idOf, order, activeCount } = num;
 
-    // 2. rewrite --------------------------------------------------------------------------
     const db = new Database(this.dest);
     this.db = db;
     db.pragma('page_size = 4096');
     db.pragma('journal_mode = OFF');
     db.pragma('synchronous = OFF');
     db.pragma('cache_size = -400000');
-    const ddl = fs.readFileSync(SCHEMA_PATH, 'utf8');
-    const [tablesDdl, indexDdl] = ddl.split(/^-- @indexes.*$/m);
-    db.exec(tablesDdl);
+    const ddl = schemaSections();
+    db.exec(ddl.facts);
+    db.pragma(`user_version = ${USER_VERSION}`);
     this.st.close();
     db.prepare('ATTACH DATABASE ? AS st').run(this.stagePath);
-
     const run = (name, sql) => this._time(`rewrite ${name}`, () => db.prepare(sql).run().changes);
-    {
-      db.exec('BEGIN');
-      db.exec('CREATE TABLE st.s_map (old INTEGER PRIMARY KEY, new INTEGER NOT NULL)');
-      const insMap = db.prepare('INSERT INTO st.s_map VALUES (?, ?)');
-      for (let i = 0; i < n; i++) insMap.run(i, idOf[i]);
 
-      const cs = this.codeSystem;
-      db.prepare(`INSERT INTO code_system (id, uri, version, name, title, description, release_date, edition, content,
-        concept_count, active_count) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-        cs.uri, cs.version, cs.name ?? null, cs.title ?? null, cs.description ?? null, cs.releaseDate ?? null,
-        cs.edition ?? null, cs.content, n, activeCount);
-      const insCfg = db.prepare('INSERT INTO cs_config VALUES (?, ?)');
-      for (const [k, v] of [...this.config].sort()) insCfg.run(k, v);
-      const insProp = db.prepare('INSERT INTO property_def (property_id, code, uri, fhir_type, value_kind, is_hierarchy, display) VALUES (?,?,?,?,?,?,?)');
-      for (const p of this.properties) insProp.run(p.id, p.code, p.uri, p.fhirType, p.valueKind, p.isHierarchy, p.display);
-      const insUse = db.prepare('INSERT INTO designation_use VALUES (?,?,?,?)');
-      for (const u of this.uses.values()) insUse.run(u.id, u.system, u.code, u.display);
-
-      const insConcept = db.prepare('INSERT INTO concept VALUES (?,?,?,?,?)');
-      this._time('rewrite concept', () => {
-        for (let k = 0; k < n; k++) {
-          const i = order[k];
-          insConcept.run(k + 1, this.codes[i], this.active[i], this.display[i], this.definition[i]);
-        }
-        return n;
-      });
-
-      run('concept_link', `INSERT OR IGNORE INTO concept_link
-        SELECT ms.new, l.prop, l.grp, mt.new, l.active FROM st.s_link l
-        JOIN st.s_map ms ON ms.old = l.src JOIN st.s_map mt ON mt.old = l.tgt
-        ORDER BY 1, 2, 3, 4, 5`);
-      if (this.linkSeqs) {
-        // the release order of the links (a link in several rows: its first), for the built-in
-        // provider's orders (cs-snomed.js: parents, children and relationships in relationship-file
-        // order). Only when the importer gave it (SNOMED CT from RF2)
-        db.exec(`CREATE TABLE link_order (source_id INTEGER NOT NULL, property_id INTEGER NOT NULL, group_id INTEGER NOT NULL,
-          target_id INTEGER NOT NULL, active INTEGER NOT NULL, seq INTEGER NOT NULL,
-          PRIMARY KEY (source_id, property_id, group_id, target_id, active)) WITHOUT ROWID`);
-        run('link_order', `INSERT INTO link_order
-          SELECT ms.new, l.prop, l.grp, mt.new, l.active, MIN(l.seq) FROM st.s_link l
-          JOIN st.s_map ms ON ms.old = l.src JOIN st.s_map mt ON mt.old = l.tgt
-          WHERE l.seq IS NOT NULL GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5`);
-        db.exec('CREATE INDEX link_order_target ON link_order(target_id, property_id, seq)');
-      }
-      if (this.sourceOrder) {
-        // the built-in importer's key order (LOINC), for the built-in provider's orders: filter
-        // results by key, the whole system by kind then key. Only when the importer gave it
-        // (walk: the place in the whole-system order, when the importer gave it)
-        db.exec(`CREATE TABLE concept_order (concept_id INTEGER PRIMARY KEY, kind INTEGER NOT NULL, seq INTEGER NOT NULL, walk INTEGER)`);
-        const insOrder = db.prepare('INSERT INTO concept_order VALUES (?, ?, ?, ?)');
-        const walk = this.sourceWalk || new Map();
-        this._time('rewrite concept_order', () => {
-          for (const [i, [kind, seq]] of this.sourceOrder) insOrder.run(idOf[i], kind, seq, walk.get(i) ?? null);
-          return this.sourceOrder.size;
-        });
-      }
-      run('concept_literal', `INSERT OR IGNORE INTO concept_literal
-        SELECT m.new, l.prop, l.grp, l.value, l.active FROM st.s_literal l
-        JOIN st.s_map m ON m.old = l.src ORDER BY 1, 2, 3, 4, 5`);
-
-      run('designation map', `CREATE TABLE st.s_dmap AS SELECT d.id AS stage_id,
-          row_number() OVER (ORDER BY m.new, d.id) AS final_id
-        FROM st.s_designation d JOIN st.s_map m ON m.old = d.concept`);
-      db.exec('CREATE UNIQUE INDEX st.s_dmap_stage ON s_dmap(stage_id)');
-      const rank = this._time('rewrite designation rank', () => this._stageDesignationRank(db));
-      run('designation', `INSERT INTO designation (designation_id, concept_id, language, use_id, term, active, preferred, rank)
-        SELECT dm.final_id, m.new, d.language, d.use_id, d.term, d.active, d.preferred, ${rank.expr}
-        FROM st.s_designation d JOIN st.s_map m ON m.old = d.concept JOIN st.s_dmap dm ON dm.stage_id = d.id ${rank.join}
-        ORDER BY dm.final_id`);
-      if (this.accept.n) {
-        this._time('rewrite designation_acceptability', () => {
-          const final = new Int32Array(this.counts.designations + 1);
-          for (const [st, fin] of db.prepare('SELECT stage_id, final_id FROM st.s_dmap').raw().iterate()) final[st] = fin;
-          const { d, r, v } = this.accept;
-          // counting sort by final designation id, so rows go in (nearly) key order
-          const m = this.accept.n;
-          const start = new Int32Array(final.length + 1);
-          for (let k = 0; k < m; k++) start[final[d[k]] + 1]++;
-          for (let i = 0; i < final.length; i++) start[i + 1] += start[i];
-          const idx = new Int32Array(m);
-          for (let k = 0; k < m; k++) idx[start[final[d[k]]]++] = k;
-          const ins = db.prepare('INSERT OR IGNORE INTO designation_acceptability VALUES (?, ?, ?)');
-          for (const k of idx) ins.run(final[d[k]], idOf[r[k]], idOf[v[k]]);
-          return m;
-        });
-      }
-
-      const insDef = db.prepare('INSERT INTO refset_def VALUES (?, ?, ?)');
-      for (const [r, d] of this.refsetDefs) insDef.run(idOf[r], JSON.stringify(d.names), JSON.stringify(d.types));
-      // every member row (simple refsets too, with fields []), with its effectiveTime, module and
-      // RF2 order: ECL member filters read them, and rules are listed in the order they were given
-      run('refset_member', `INSERT OR IGNORE INTO refset_member
-        SELECT mr.new, mc.new, COALESCE(r.fields, '[]'), r.time, mm.new, r.seq FROM st.s_refset r
-        JOIN st.s_map mr ON mr.old = r.refset JOIN st.s_map mc ON mc.old = r.concept
-        LEFT JOIN st.s_map mm ON mm.old = r.module
-        ORDER BY 1, 2, 3, 6`);
-      run('external_map', `INSERT OR IGNORE INTO external_map
-        SELECT m.new, e.system, e.version, e.code, e.display, e.equivalence FROM st.s_extmap e
-        JOIN st.s_map m ON m.old = e.concept ORDER BY 1, 2, 4`);
-      run('alternate_identifier', `INSERT OR IGNORE INTO alternate_identifier
-        SELECT m.new, ms.new, a.identifier FROM st.s_altid a
-        JOIN st.s_map m ON m.old = a.concept JOIN st.s_map ms ON ms.old = a.scheme ORDER BY 1, 2, 3`);
-      db.exec('COMMIT');
-    }
-
-    // 3. sets -----------------------------------------------------------------------------
-    const setStats = this._buildSets(n, activeCount, hier);
-
-    // 4. search + indexes + checks ------------------------------------------------------
     db.exec('BEGIN');
-    this._time('fts display', () => db.prepare(`INSERT INTO search_display(rowid, term) SELECT concept_id, display
-      FROM concept WHERE display IS NOT NULL AND display <> ''`).run().changes);
-    this._time('fts designation', () => db.prepare(
-      'INSERT INTO search_designation(rowid, term) SELECT designation_id, term FROM designation').run().changes);
+    // node map: concept handles -> 1..N, item handles -> N+1.. in (concept id, arrival) order
+    db.exec('CREATE TABLE st.s_node (old INTEGER PRIMARY KEY, new INTEGER NOT NULL)');
+    const insNode = db.prepare('INSERT INTO st.s_node VALUES (?, ?)');
+    for (let i = 0; i < n; i++) insNode.run(i, idOf[i]);
+    run('item map', `INSERT INTO st.s_node SELECT -i.id, ${n} + row_number() OVER (ORDER BY m.new, i.id)
+      FROM st.s_item i JOIN st.s_node m ON m.old = i.concept`);
+
+    const insCs = db.prepare(`INSERT INTO code_system (cs_id, uri, version, name, title, description, release_date, content,
+      case_sensitive, hierarchy_meaning, default_language, compositional, served, concept_count, active_count, resource)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const flag = (v) => (v == null ? null : (v ? 1 : 0));
+    this.systems.forEach((cs, k) => insCs.run(k + 1, cs.uri, String(cs.version), cs.name ?? null, cs.title ?? null,
+      cs.description ?? null, cs.releaseDate ?? null, cs.content, flag(cs.caseSensitive),
+      cs.hierarchyMeaning ?? null, cs.defaultLanguage ?? null, flag(cs.compositional), cs.served, cs.served ? n : 0, cs.served ? activeCount : 0,
+      cs.resource == null ? null : (typeof cs.resource === 'string' ? cs.resource : JSON.stringify(cs.resource))));
+    const insUse = db.prepare('INSERT INTO item_use VALUES (?,?,?,?)');
+    for (const u of this.uses.values()) insUse.run(u.id, u.system, u.code, u.display);
+
+    const insConcept = db.prepare('INSERT INTO concept VALUES (?,?,?,?,?)');
+    this._time('rewrite concept', () => {
+      for (let k = 0; k < n; k++) { const i = order[k]; insConcept.run(k + 1, this.conceptCs[i], this.codes[i], this.active[i], this.display[i]); }
+      return n;
+    });
+    const rank = this._time('item rank', () => this._stageRank(db));
+    run('item', `INSERT INTO item SELECT m.new, mc.new, i.kind, i.external_id, i.cs_id, i.language, i.use_id, i.text, i.active, i.preferred, ${rank.expr}
+      FROM st.s_item i JOIN st.s_node m ON m.old = -i.id JOIN st.s_node mc ON mc.old = i.concept ${rank.join} ORDER BY 1`);
+    // duplicates by key collapse; a link in several rows keeps its first seq
+    run('link', `INSERT INTO link SELECT ms.new, l.prop, l.grp, mt.new, l.active, min(l.seq) FROM st.s_link l
+      JOIN st.s_node ms ON ms.old = l.subject JOIN st.s_node mt ON mt.old = l.target
+      GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 2, 3, 4, 5`);
+    run('literal', `INSERT OR IGNORE INTO literal SELECT m.new, l.prop, l.grp, l.value, l.active FROM st.s_literal l
+      JOIN st.s_node m ON m.old = l.subject ORDER BY 1, 2, 3, 4, 5`);
+    run('identifier', `INSERT OR IGNORE INTO identifier SELECT i.prop, i.value, m.new, i.resolves FROM st.s_identifier i
+      JOIN st.s_node m ON m.old = i.subject ORDER BY 1, 2, 3`);
+    this._time('rewrite record', () => this._rewriteRecords(db));
+    run('value_label', `INSERT OR IGNORE INTO value_label SELECT prop, value, display FROM st.s_value_label ORDER BY 1, 2`);
+    run('mapping', `INSERT OR IGNORE INTO mapping SELECT m.new, x.prop, x.system, x.version, x.code, x.display, x.relationship
+      FROM st.s_mapping x JOIN st.s_node m ON m.old = x.concept ORDER BY 1, 3, 5`);
+
+    // catalog, with its computed fields from the rows just written
+    const nodeId = (h) => (h == null ? null : h >= 0 ? idOf[h] : db.prepare('SELECT new FROM st.s_node WHERE old = ?').pluck().get(h));
+    const computed = this._time('catalog computed fields', () => catalogStats(db, n));
+    const insProp = db.prepare(`INSERT INTO property (id, cs_id, code, uri, display, concept_id, shape, role, fhir_type, subject_kind,
+      target_kind, n_rows, subsumption, closure_from, filterable, refinable, wildcard, inverse_of, by_target, by_subject, ordered, filter_ops, report, fields)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const parents = new Set(this.members.map(([a]) => a));
+    for (const p of this.properties) {
+      // subject_kind NULL for a catalog row with no rows
+      const c = computed.get(p.id) || { subjectKind: null, targetKind: null, n: 0 };
+      // shape 'union': a link row whose only rows are its members'
+      let shape = p.shape;
+      if (parents.has(p.id)) {
+        if (c.n > 0) throw new Error(`property ${p.code}: a union (property_member) with rows of its own`);
+        if (shape !== 'link' && shape !== 'union') throw new Error(`property ${p.code}: shape ${shape} with property_member rows`);
+        shape = 'union';
+      } else if (shape === 'union') throw new Error(`property ${p.code}: shape union without members`);
+      const byTarget = p.byTarget != null ? p.byTarget
+        : ((shape === 'link' || shape === 'both') && (p.subsumption || p.refinable) ? 1 : 0);
+      insProp.run(p.id, p.cs, p.code, p.uri, p.display, nodeId(p.concept), shape, p.role, p.fhirType, c.subjectKind,
+        (shape === 'link' || shape === 'both' || shape === 'record') ? c.targetKind : null, c.n,
+        p.subsumption, p.closureFrom, p.filterable, p.refinable, p.wildcard, p.inverseOf, byTarget, p.bySubject, p.ordered, p.filterOps, p.report, p.fields);
+    }
+    const insMember = db.prepare('INSERT OR IGNORE INTO property_member VALUES (?, ?)');
+    for (const [a, b] of this.members) insMember.run(a, b);
     db.exec('COMMIT');
     db.exec('DETACH DATABASE st');
-    // a one-block file has each code once (concept() keeps the first): its code index is UNIQUE.
-    // (Content files, several blocks in one file, keep schema-v2.sql's plain index.) A lookup by
-    // code on a unique index stops at the match: 2.6 against 10 us for the row on SNOMED CT
-    const oneBlockIndexes = indexDdl.replace('CREATE INDEX concept_code ON concept(code);', 'CREATE UNIQUE INDEX concept_code ON concept(code);');
-    if (oneBlockIndexes === indexDdl) throw new Error('schema-v2.sql: the concept_code index is not where the builder expects it');
-    this._time('indexes', () => db.exec(oneBlockIndexes));
-    const checks = this._time('checks', () => this._check(n, activeCount, num));
-    // the built-in providers' answer orders (LOINC, SNOMED CT), computed here once so that a
-    // server reads them from the file (tx/sqlite-v2/orders.js), not from every row at load
-    const orderKindHere = orderKind(dialectFor(this.codeSystem.uri).name);
-    if (orderKindHere) this._time('system_order', () => writeOrder(db, computeOrder(db, orderKindHere, n)));
-    // the built-in providers' text search data (SNOMED CT word index, RxNorm stems:
-    // tx/sqlite-v2/text-index.js), so that a server does not build it in memory
-    this._time('text index', () => {
-      db.exec('BEGIN');
-      const r = writeTextTables(db, dialectFor(this.codeSystem.uri).name, n);
-      db.exec('COMMIT');
-      return r ? r.words : 0;
-    });
-    if (this.hierEntries) {
-      this._time('hierarchy order', () => {
-        const { xs, others, child } = this.hierEntries;
-        const arrays = hierarchyArrays(n, xs.map((i) => idOf[i]), others.map((i) => idOf[i]), child);
-        db.exec('BEGIN');
-        writeHierarchyOrder(db, arrays);
-        db.exec('COMMIT');
-        return xs.length;
-      });
-    }
+    this._time('fact indexes', () => db.exec(ddl.factIndexes));
+    this._time('checks', () => checkFacts(db, n, activeCount));
 
-    // 5. provenance -----------------------------------------------------------------------
+    // meta: format and provenance (release facts were set by the importer); behaviour settings
+    // as a reader checks them
+    require('../../sqlite-v2/store').readBehaviour(this.meta, this.dest);
+    const insMeta = db.prepare('INSERT OR REPLACE INTO meta VALUES (?, ?)');
+    for (const [k, v] of [...this.meta].sort()) insMeta.run(k, v);
+    insMeta.run('format', FORMAT);
+    // the languages of the served system's items, in order of first appearance (a release fact)
+    insMeta.run('languages', JSON.stringify(db.prepare(`SELECT language FROM item WHERE cs_id = 1 AND language IS NOT NULL
+      GROUP BY language ORDER BY min(id)`).pluck().all()));
+    this._time('hash', () => { for (const s of this.sources) s.sha256 = sha256File(s.path); });
+    insMeta.run('provenance.importer', this.importer);
+    insMeta.run('provenance.builtAt', new Date().toISOString());
+    insMeta.run('provenance.node', process.version);
+    insMeta.run('provenance.sources', JSON.stringify(this.sources.map((s) => ({ name: path.basename(s.path), size: s.size, sha256: s.sha256 }))));
+    insMeta.run('provenance.importerStats', JSON.stringify(extra));
+
+    // indexes: from the fact tables only
+    const ixStats = buildIndexes(db, { log: this.log, time: (name, fn) => this._time(name, fn) });
+    this._time('analyze', () => analyze(db));
+    this.timings.total = (Date.now() - this.t0) / 1000;
+    insMeta.run('provenance.timings', JSON.stringify(this.timings));
+    db.pragma('journal_mode = DELETE');
+    if (opts.vacuum !== false) this._time('vacuum', () => { db.exec('VACUUM'); });
+
     const tables = {};
-    for (const t of ['concept', 'concept_link', 'concept_literal', 'designation', 'designation_acceptability',
-      'refset_member', 'external_map', 'alternate_identifier', 'concept_set']) {
+    for (const t of ['concept', 'item', 'property', 'link', 'literal', 'identifier', 'record', 'mapping', 'ix_set', 'ix_in', 'ix_order', 'ix_word']) {
       tables[t] = db.prepare(`SELECT count(*) AS c FROM ${t}`).get().c;
     }
-    const summary = {
-      concepts: n, activeConcepts: activeCount, inactiveConcepts: n - activeCount,
-      numbering: { roots: num.roots, reachedByWalk: num.reached, unreachedActive: num.unreached },
-      tables, sets: setStats, checks, staged: this.counts, importer: extra,
-    };
-    this._time('hash', () => { for (const s of this.sources) s.sha256 = sha256File(s.path); });
-    db.exec('ANALYZE');
-    this.timings.total = (Date.now() - this.t0) / 1000;
-    const insProv = db.prepare('INSERT INTO provenance VALUES (?, ?)');
-    const prov = {
-      schemaVersion: String(SCHEMA_VERSION),
-      importer: this.importer,
-      builtAt: new Date().toISOString(),
-      node: process.version,
-      sources: JSON.stringify(this.sources.map(s => ({ name: path.basename(s.path), size: s.size, sha256: s.sha256 }))),
-      summary: JSON.stringify(summary),
-      timings: JSON.stringify(this.timings),
-      roaringFormat: 'portable',
-    };
-    for (const [k, v] of Object.entries(prov)) insProv.run(k, v);
-    db.pragma('journal_mode = DELETE');
     db.close();
     fs.rmSync(this.stagePath, { force: true });
-    summary.fileBytes = fs.statSync(this.dest).size;
-    summary.timings = this.timings;
+    const summary = { concepts: n, activeConcepts: activeCount, items: this.counts.items || 0, tables, indexes: ixStats,
+      staged: this.counts, importer: extra, fileBytes: fs.statSync(this.dest).size, timings: this.timings };
     this.log(`Done: ${this.dest} (${(summary.fileBytes / 1048576).toFixed(1)} MiB, ${this.timings.total.toFixed(0)} s)`);
     return summary;
   }
-
-  _buildSets(n, activeCount, hier) {
-    const db = this.db;
-    const ins = db.prepare('INSERT INTO concept_set VALUES (?, ?, ?, ?, ?)');
-    const stats = {};
-    const out = [];
-    const put = (kind, prop, value, bm) => {
-      const card = bm.size;
-      if (card === 0) return;
-      const buf = serialize(bm);
-      out.push([kind, prop, value, card, buf]); // written after the reads (one connection)
-      const s = stats[kind] || (stats[kind] = { sets: 0, members: 0, bytes: 0 });
-      s.sets++; s.members += card; s.bytes += buf.length;
-    };
-    db.exec('BEGIN');
-    put(SET_KIND.all, 0, 0, rangeSet(1, n));
-    put(SET_KIND.active, 0, 0, rangeSet(1, activeCount));
-
-    // descendants: explicit pairs if the importer gave any, else the transitive closure of
-    // the active hierarchy links.
-    const tDesc = Date.now();
-    const pairCount = db.prepare('SELECT count(*) AS c FROM st.s_ancestor').get().c;
-    let res;
-    if (pairCount > 0) {
-      const [d, a] = intPairs(db.prepare(`SELECT md.new, ma.new FROM st.s_ancestor a
-        JOIN st.s_map md ON md.old = a.descendant JOIN st.s_map ma ON ma.old = a.ancestor`));
-      res = descendantsFromPairs(n, d, a);
-      this.descendantSource = 'explicit-pairs';
-    } else {
-      const [c, p] = hier.length
-        ? intPairs(db.prepare(`SELECT source_id, target_id FROM concept_link WHERE active = 1 AND property_id IN (${hier.join(',')})`))
-        : [new Int32Array(0), new Int32Array(0)];
-      res = descendantsFromEdges(n, c, p);
-      this.descendantSource = 'hierarchy-closure';
-    }
-    this._record('sets descendants', tDesc, n);
-    if (res.cyclic) throw new Error(`hierarchy has a cycle: ${res.cyclic} concepts could not be closed`);
-    this.desc = res.desc;
-    const leaf = new sets.RoaringBitmap32();
-    for (let id = 1; id <= n; id++) {
-      const d = res.desc[id];
-      if (d) put(SET_KIND.descendants, 0, id, d);
-      else if (id <= activeCount) leaf.add(id);
-    }
-    put(SET_KIND.leaf, 0, 0, leaf);
-
-    const tProp = Date.now();
-    // prop = value and hasProp, from the active fact rows.
-    const has = new Map();
-    const hasOf = (p) => { let b = has.get(p); if (!b) has.set(p, b = new sets.RoaringBitmap32()); return b; };
-    for (const [table, src, val] of [['concept_link', 'source_id', 'target_id'], ['concept_literal', 'concept_id', 'value']]) {
-      const it = db.prepare(`SELECT property_id, ${val}, ${src} FROM ${table} WHERE active = 1
-        ORDER BY property_id, ${val}, ${src}`).raw().iterate();
-      // Rows arrive grouped by (property, value); !== keeps 1 and '1' apart.
-      let curP = null, curV, members = [];
-      const flush = () => {
-        if (curP === null) return;
-        const bm = new sets.RoaringBitmap32(members);
-        put(SET_KIND.prop, curP, curV, bm);
-        hasOf(curP).orInPlace(bm);
-        members = [];
-      };
-      for (const [p, v, s] of it) {
-        if (p !== curP || v !== curV) { flush(); curP = p; curV = v; }
-        members.push(s);
-      }
-      flush();
-    }
-    for (const [p, bm] of [...has].sort((a, b) => a[0] - b[0])) put(SET_KIND.hasProp, p, 0, bm);
-
-    // refset membership (active members, any refset with concept members).
-    const it = db.prepare(`SELECT mr.new, mc.new FROM st.s_refset r
-      JOIN st.s_map mr ON mr.old = r.refset JOIN st.s_map mc ON mc.old = r.concept ORDER BY 1, 2`).raw().iterate();
-    groupSorted(it, (refset, bm) => put(SET_KIND.refset, 0, refset, bm));
-    this._record('sets prop/hasProp/refset', tProp, out.length);
-    const tWrite = Date.now();
-    for (const row of out) ins.run(...row);
-    db.exec('COMMIT');
-    this._record('sets write', tWrite, out.length);
-
-    const names = Object.fromEntries(Object.entries(SET_KIND).map(([k, v]) => [v, k]));
-    return Object.fromEntries(Object.entries(stats).map(([k, s]) => [names[k], s]));
-  }
-
-  _check(n, activeCount) {
-    const db = this.db;
-    const one = (sql) => db.prepare(sql).get();
-    const fail = (msg) => { throw new Error(`integrity: ${msg}`); };
-    if (one('SELECT count(*) AS c FROM concept').c !== n) fail('concept count');
-    const badActive = one(`SELECT count(*) AS c FROM concept WHERE active <> (concept_id <= ${activeCount})`).c;
-    if (badActive) fail(`${badActive} concepts break the active prefix`);
-    const dupCode = one('SELECT code, count(*) AS c FROM concept GROUP BY code HAVING c > 1 LIMIT 1');
-    if (dupCode) fail(`duplicate code ${dupCode.code}`);
-    // Every descendant of an active concept has a larger id; count the exceptions (inactive ancestors).
-    let ancestorOrderExceptions = 0;
-    for (let id = 1; id <= n; id++) {
-      const d = this.desc[id];
-      if (d && d.minimum() <= id) {
-        if (id <= activeCount) fail(`descendant of active ${id} numbered before it`);
-        ancestorOrderExceptions++;
-      }
-    }
-    return { activePrefix: true, uniqueCodes: true, inactiveAncestorsBeforeDescendants: ancestorOrderExceptions,
-      descendantSource: this.descendantSource };
-  }
 }
 
-// Stream a two-integer-column query into two Int32Arrays.
-function intPairs(stmt) {
-  let a = new Int32Array(1 << 16), b = new Int32Array(1 << 16), n = 0;
-  for (const [x, y] of stmt.raw().iterate()) {
-    if (n === a.length) {
-      const a2 = new Int32Array(n * 2); a2.set(a); a = a2;
-      const b2 = new Int32Array(n * 2); b2.set(b); b = b2;
-    }
-    a[n] = x; b[n] = y; n++;
+/** per property: n_rows, subject_kind, target_kind from the fact rows (ids <= n are concepts) */
+function catalogStats(db, n) {
+  const out = new Map();
+  const kind = (lo, hi) => (lo == null ? null : hi <= n ? 'concept' : lo > n ? 'item' : 'both');
+  const merge = (pid, rows, sLo, sHi, tLo, tHi) => {
+    const c = out.get(pid) || { n: 0, s: [], t: [] };
+    c.n += rows; c.s.push(sLo, sHi);
+    if (tLo != null) c.t.push(tLo, tHi);
+    out.set(pid, c);
+  };
+  for (const r of db.prepare('SELECT property_id p, count(*) c, min(subject_id) a, max(subject_id) b, min(target_id) x, max(target_id) y FROM link GROUP BY 1').all()) merge(r.p, r.c, r.a, r.b, r.x, r.y);
+  for (const r of db.prepare('SELECT property_id p, count(*) c, min(subject_id) a, max(subject_id) b FROM literal GROUP BY 1').all()) merge(r.p, r.c, r.a, r.b);
+  for (const r of db.prepare('SELECT property_id p, count(*) c, min(subject_id) a, max(subject_id) b FROM identifier GROUP BY 1').all()) merge(r.p, r.c, r.a, r.b);
+  for (const r of db.prepare('SELECT relation_id p, count(*) c, min(subject_id) a, max(subject_id) b, min(target_id) x, max(target_id) y FROM record GROUP BY 1').all()) merge(r.p, r.c, r.a, r.b, r.x, r.y);
+  const res = new Map();
+  for (const [pid, c] of out) {
+    res.set(pid, { n: c.n, subjectKind: kind(Math.min(...c.s), Math.max(...c.s)),
+      targetKind: c.t.length ? kind(Math.min(...c.t), Math.max(...c.t)) : null });
   }
-  return [a.slice(0, n), b.slice(0, n)];
+  return res;
+}
+
+function checkFacts(db, n, activeCount) {
+  const one = (sql) => db.prepare(sql).pluck().get();
+  const fail = (m) => { throw new Error(`integrity: ${m}`); };
+  if (one('SELECT count(*) FROM concept') !== n) fail('concept count');
+  if (one(`SELECT count(*) FROM concept WHERE active <> (id <= ${activeCount})`)) fail('active concepts are not a prefix');
+  if (one(`SELECT count(*) FROM item WHERE id <= ${n}`)) fail('an item id is not above every concept id');
+  if (one('SELECT count(*) FROM item i LEFT JOIN code_system c ON c.cs_id = i.cs_id WHERE c.cs_id IS NULL')) fail('an item has an unknown cs_id');
+  return true;
+}
+
+function intPairs(stmt) {
+  let a = new Int32Array(1 << 16), b = new Int32Array(1 << 16), k = 0;
+  for (const [x, y] of stmt.raw().iterate()) {
+    if (k === a.length) { const a2 = new Int32Array(k * 2); a2.set(a); a = a2; const b2 = new Int32Array(k * 2); b2.set(b); b = b2; }
+    a[k] = x; b[k] = y; k++;
+  }
+  return [a.slice(0, k), b.slice(0, k)];
 }
 
 function sha256File(p) {
   const h = crypto.createHash('sha256');
   const fd = fs.openSync(p, 'r');
   const buf = Buffer.allocUnsafe(1 << 22);
-  try {
-    let r;
-    while ((r = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, r));
-  } finally { fs.closeSync(fd); }
+  try { let r; while ((r = fs.readSync(fd, buf, 0, buf.length, null)) > 0) h.update(buf.subarray(0, r)); } finally { fs.closeSync(fd); }
   return h.digest('hex');
 }
 
-module.exports = { V2Builder, SCHEMA_VERSION };
+/**
+ * ANALYZE (the whole file, or `what`: a table or index) and keep sqlite_stat1 only: the format ships no
+ * sqlite_stat4 (with it SQLite re-plans a `col = ?` statement on every bind)
+ */
+function analyze(db, what = null) {
+  db.exec(what ? `ANALYZE ${what}` : 'ANALYZE');
+  db.exec('DROP TABLE IF EXISTS sqlite_stat4');
+}
+
+/** VACUUM a built file (after the importer's derived-by-importer rows), without sqlite_stat4 */
+function vacuumFile(file) {
+  const db = new Database(file);
+  try { db.exec('DROP TABLE IF EXISTS sqlite_stat4'); db.exec('VACUUM'); } finally { db.close(); }
+}
+
+module.exports = { TerminologyBuilder, FORMAT, USER_VERSION, schemaSections, vacuumFile, analyze, externalIdValue };

@@ -1,16 +1,16 @@
 'use strict';
-// The built-in providers' answer orders for LOINC, SNOMED CT and RxNorm, as typed arrays over concept_id:
+// The built-in providers' answer orders for LOINC, SNOMED CT and RxNorm, as typed arrays over concept ids:
 //   rank[id]  the concept's place in the system order (rank.length = concept count + 1)
 //   ids[r]    the concept at place r
 //   walk      the whole system in the built-in walk order (SNOMED CT: walk.reached is how many
-//             the walk reaches; files without link_order, and LOINC files without concept_order:
-//             none)
+//             the walk reaches; RxNorm: none)
 //
-// They are computed from the file's own rows (computeOrder) at import time and stored in the
-// file's system_order table as little-endian Uint32 BLOBs (writeOrder), one row per array. A
-// provider reads each array from its BLOB the first time an answer needs it (storedOrder): no
-// row objects, 4 bytes per concept per array, and nothing for an array no request uses. A file
-// without system_order (built before it) computes the arrays at load, as before.
+// Stored in the file's ix_order table as little-endian Uint32 arrays in 1,024-entry blocks, the
+// array's `reached` in meta 'ix.ix_order.<name>.reached'. The index builder computes them from the
+// fact tables (computeOrder: SNOMED CT and RxNorm by code); an importer may write them itself (meta
+// derived-by-importer: LOINC's orders are the built-in importer's numbering, SNOMED CT's walk). A
+// provider reads each array the first time an answer needs it (storedOrder): no row objects, 4
+// bytes per concept per array, and nothing for an array no request uses.
 
 const os = require('os');
 
@@ -21,103 +21,37 @@ function orderKind(dialectName) {
   return dialectName === 'loinc' || dialectName === 'snomed' || dialectName === 'rxnorm' ? dialectName : null;
 }
 
-function hasTable(db, name) {
-  return !!db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(name);
-}
+/** text order of codes (SQLite BINARY for BMP text) */
+function byText(a, b) { return a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0; }
 
-/**
- * Compute the order arrays from a file's rows.
- * @param {object} db better-sqlite3 database of a one-block sqlite-v2 file
- * @param {string} kind 'loinc' | 'snomed'
- * @param {number} [n] concept count (default: the file's block 1)
- * @returns {{rank: Uint32Array, ids: Uint32Array, walk: Uint32Array|null, selfFirst: boolean}}
- */
-function computeOrder(db, kind, n = db.prepare('SELECT concept_count FROM code_system WHERE id = 1').pluck().get()) {
-  if (kind === 'loinc') return loincOrder(db, n);
-  if (kind === 'snomed') return snomedOrder(db, n);
-  if (kind === 'rxnorm') return rxnormOrder(db, n);
-  throw new Error(`no system order for ${kind}`);
-}
+/** numeric order of digit strings without leading zeros: by length, then as text */
+function byNumber(a, b) { return (a[1].length - b[1].length) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0); }
 
-/**
- * LOINC results in cs-loinc.js's order. Files built with concept_order have the built-in
- * importer's keys: filter results by the built-in importer's key (its filter SQL orders by
- * CodeKey: parts both before and after the terms); the whole system in expand.js's walk of it
- * (concept_order.walk: by type, then key, each part followed by what is below it; files without
- * walk: by type, then key). Older files: terms, then parts, answer lists, answers, each by code
- * with its hyphen removed, compared as text (the built-in order for terms and lists only).
- */
-function loincOrder(db, n) {
-  const rank = new Uint32Array(n + 1);
-  const ids = new Uint32Array(n + 1);
-  if (hasTable(db, 'concept_order')) {
-    const rows = db.prepare('SELECT concept_id, kind, walk FROM concept_order ORDER BY seq').raw().all();
-    rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
-    const byWalk = rows.every((r) => r[2] != null);
-    const walk = Uint32Array.from(rows.slice().sort(byWalk ? (a, b) => a[2] - b[2] : (a, b) => a[1] - b[1]).map((r) => r[0]));
-    return { rank, ids, walk, selfFirst: false };
-  }
-  const rows = db.prepare('SELECT concept_id, code FROM concept').raw().all();
-  const kindOf = (c) => (c.startsWith('LP') ? 1 : c.startsWith('LL') ? 2 : c.startsWith('LA') ? 3 : 0);
-  for (const r of rows) r.push(kindOf(r[1]), r[1].replace(/-/g, ''));
-  rows.sort((a, b) => (a[2] - b[2]) || (a[3] < b[3] ? -1 : a[3] > b[3] ? 1 : 0) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
-  rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
-  return { rank, ids, walk: null, selfFirst: false };
-}
-
-/**
- * RxNorm results in cs-rxnorm.js's order: by RXCUI as text ('10' before '9'). Its filter queries
- * group by RXCUI (a text column), and the whole system is ORDER BY RXCUI. concept_id is the
- * importer's (TTY rank, ingredient group) order here
- */
-function rxnormOrder(db, n) {
-  const rows = db.prepare('SELECT concept_id, code FROM concept').raw().all();
-  rows.sort((a, b) => (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
+/** rank / ids arrays from [id, code] rows sorted by cmp */
+function rankBy(n, rows, cmp) {
+  rows.sort(cmp);
   const rank = new Uint32Array(n + 1);
   const ids = new Uint32Array(n + 1);
   rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
-  return { rank, ids, walk: null, selfFirst: false };
+  return { rank, ids };
 }
 
 /**
- * SNOMED CT results in cs-snomed.js's order: by concept index, which is the concept id as a
- * number (the cache's concepts are sorted by id), and for is-a (and ECL <<) the concept itself
- * first, as filterIsA lists it (selfFirst). concept_id is the hierarchy's depth-first order
- * here, so a result is sorted by rank.
+ * The walk (snomedWalk) from its facts, whatever the file format: pairs [parent, child] of the
+ * active group-0 is-a links by parent, in release order; the concepts with any is-a link (a
+ * root has none, active or not: cs-snomed's import, activeRoots); the active concepts
  */
-function snomedOrder(db, n) {
-  const rows = db.prepare('SELECT concept_id, code FROM concept').raw().all();
-  // numeric order of digit strings without leading zeros: by length, then as text
-  rows.sort((a, b) => (a[1].length - b[1].length) || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0));
-  const rank = new Uint32Array(n + 1);
-  const ids = new Uint32Array(n + 1);
-  rows.forEach((r, i) => { rank[r[0]] = i; ids[i] = r[0]; });
-  const walk = hasTable(db, 'link_order') ? snomedWalk(db, n, ids) : null;
-  return { rank, ids, walk, selfFirst: true };
-}
-
-/**
- * The whole code system in cs-snomed.js's walk order (iterator + includeCodeAndDescendants):
- * from each active root (no active parent; by id), depth first, the children in release order
- * (inbound active is-a rows by row), each concept once, where first reached. Concepts the walk
- * does not reach (the inactive ones: they have no active is-a row) follow, by id: walk.reached
- * is how many it reaches. cs-snomed.js's expansion of the whole system has only those; other
- * selections of every concept (ECL *) have them all. From link_order.
- */
-function snomedWalk(db, n, byCode) {
-  const hid = db.prepare('SELECT property_id FROM property_def WHERE is_hierarchy = 1 ORDER BY property_id LIMIT 1').pluck().get();
-  const pairs = db.prepare('SELECT target_id, source_id FROM link_order WHERE property_id = ? AND active = 1 AND group_id = 0 ORDER BY target_id, seq').raw().all(hid);
+function walkFrom(n, byCode, pairs, withParent, activeIds) {
   const start = new Uint32Array(n + 2);
   for (const [t] of pairs) start[t + 1]++;
   for (let i = 1; i <= n + 1; i++) start[i] += start[i - 1];
   const kids = new Uint32Array(pairs.length);
   const fill = start.slice();
   for (const [t, c] of pairs) kids[fill[t]++] = c;
-  // a root has no is-a row at all, active or not (cs-snomed's import: activeRoots)
   const hasParent = new Uint8Array(n + 1);
-  for (const c of db.prepare('SELECT DISTINCT source_id FROM link_order WHERE property_id = ?').pluck().iterate(hid)) hasParent[c] = 1;
+  for (const c of withParent) hasParent[c] = 1;
   const isActive = new Uint8Array(n + 1);
-  for (const id of db.prepare('SELECT concept_id FROM concept WHERE active = 1').pluck().iterate()) isActive[id] = 1;
+  for (const id of activeIds) isActive[id] = 1;
   const out = new Uint32Array(n);
   const seen = new Uint8Array(n + 1);
   let k = 0;
@@ -139,13 +73,6 @@ function snomedWalk(db, n, byCode) {
   return out;
 }
 
-function toBlob(a) {
-  if (LITTLE) return Buffer.from(a.buffer, a.byteOffset, a.byteLength);
-  const b = Buffer.alloc(a.length * 4);
-  for (let i = 0; i < a.length; i++) b.writeUInt32LE(a[i], i * 4);
-  return b;
-}
-
 function fromBlob(b) {
   const len = b.length >>> 2;
   if (LITTLE && b.byteOffset % 4 === 0) return new Uint32Array(b.buffer, b.byteOffset, len);
@@ -154,36 +81,17 @@ function fromBlob(b) {
   return a;
 }
 
-const DDL = `CREATE TABLE system_order (name TEXT PRIMARY KEY, length INTEGER NOT NULL, reached INTEGER,
-  data BLOB NOT NULL) WITHOUT ROWID`;
-
-const ORDER_ROWS = ['rank', 'ids', 'walk'];
-
-/** store computed arrays in the file (replaces the rank, ids and walk rows already there) */
-function writeOrder(db, order) {
-  db.exec(DDL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'));
-  db.prepare(`DELETE FROM system_order WHERE name IN (${ORDER_ROWS.map(() => '?').join(', ')})`).run(...ORDER_ROWS);
-  const ins = db.prepare('INSERT INTO system_order VALUES (?, ?, ?, ?)');
-  ins.run('rank', order.rank.length, null, toBlob(order.rank));
-  ins.run('ids', order.ids.length, null, toBlob(order.ids));
-  if (order.walk) ins.run('walk', order.walk.length, order.walk.reached ?? null, toBlob(order.walk));
-  return (order.rank.byteLength + order.ids.byteLength + (order.walk ? order.walk.byteLength : 0));
-}
-
 /**
- * The stored arrays of a file with system_order, read on first use. `walk` is a getter the
- * engine reads only for an include of the whole system (hasWalk says whether there is one).
- * @param {object} store V2Store
- * @param {string} kind 'loinc' | 'snomed'
+ * The lazy order object over stored arrays: meta name -> [name, length, reached], read(name) ->
+ * the array's bytes (whatever the file format keeps them in)
  */
-function storedOrder(store, kind) {
-  const meta = new Map(store.db.prepare('SELECT name, length, reached FROM system_order').raw().all().map((r) => [r[0], r]));
+function orderOf(store, kind, meta, readBytes) {
   for (const k of ['rank', 'ids']) {
-    if (!meta.has(k) || meta.get(k)[1] !== store.conceptCount + 1) throw new Error(`${store.file}: system_order ${k} does not match concept_count`);
+    if (!meta.has(k) || meta.get(k)[1] !== store.conceptCount + 1) throw new Error(`${store.file}: ix_order ${k} does not match concept_count`);
   }
   const read = (name) => {
     const t0 = Date.now();
-    const buf = store.withoutMmap(() => store.stmt('SELECT data FROM system_order WHERE name = ?').pluck().get(name));
+    const buf = store.withoutMmap(() => readBytes(name));
     const a = fromBlob(buf);
     const r = meta.get(name)[2];
     if (r != null) a.reached = r;
@@ -193,7 +101,8 @@ function storedOrder(store, kind) {
   let rank = null, ids = null, walk;
   const order = {
     kind,
-    selfFirst: kind === 'snomed',
+    // behaviour.expansionOrder 'stored-self-first': an is-a / << filter lists its concept first
+    selfFirst: kind === 'stored-self-first',
     hasWalk: meta.has('walk'),
     stored: true,
     readMs: 0,
@@ -206,13 +115,86 @@ function storedOrder(store, kind) {
   return order;
 }
 
-/** an order computed now (a file without system_order) in the same shape */
-function builtOrder(computed, kind) {
+const readArray = (store, name) => Buffer.concat(store.stmt('SELECT data FROM main.ix_order WHERE name = ? ORDER BY block').pluck().all(name));
+
+/** the stored rank / ids / walk arrays, read on first use */
+function storedOrder(store, kind) {
+  // each array's length from its block count and its last block (no other block's data is read at open)
+  const meta = new Map(store.db.prepare(`SELECT g.name, g.last * 1024 + (SELECT length(l.data) / 4 FROM main.ix_order l WHERE l.name = g.name AND l.block = g.last),
+    (SELECT CAST(value AS INTEGER) FROM main.meta WHERE key = 'ix.ix_order.' || g.name || '.reached')
+    FROM (SELECT name, max(block) AS last FROM main.ix_order GROUP BY name) g`).raw().all().map((r) => [r[0], r]));
+  return orderOf(store, kind, meta, (name) => readArray(store, name));
+}
+
+/**
+ * A concept's parent and child entries in the built-in provider's order (LOINC): the stored
+ * hier_start / hier arrays where the importer kept them; else from the facts, the concept's parent
+ * links (by subject) and its children's (ix_in, by target) merged by seq (the hierarchy-file row of
+ * the pair). Null for a file whose hierarchy is not read by target.
+ */
+function hierarchyOrder(store) {
+  const names = new Set(store.db.prepare("SELECT DISTINCT name FROM main.ix_order WHERE name IN ('hier_start', 'hier')").pluck().all());
+  if (names.size === 2) {
+    let start = null, entries = null;
+    const read = (name) => fromBlob(store.withoutMmap(() => readArray(store, name)));
+    return {
+      of(id) {
+        if (!start) {
+          start = read('hier_start'); entries = read('hier');
+          if (start.length !== store.conceptCount + 2) throw new Error(`${store.file}: ix_order hier_start does not match concept_count`);
+        }
+        return entries.subarray(start[id], start[id + 1]);
+      },
+      loadedBytes() { return start ? start.byteLength + entries.byteLength : 0; },
+    };
+  }
+  const h = store.hierarchy;
+  if (!h || !h.byTarget) return null;
+  const up = store.stmt('SELECT target_id, seq FROM main.link WHERE subject_id = +? AND property_id = +? AND active = 1').raw();
+  const down = store.stmt('SELECT subject_id, seq FROM main.ix_in WHERE target_id = +? AND property_id = +? AND active = 1 AND group_id = 0').raw();
   return {
-    kind, selfFirst: computed.selfFirst, hasWalk: !!computed.walk, stored: false, readMs: 0,
-    rank: computed.rank, ids: computed.ids, walk: computed.walk,
-    loadedBytes() { return computed.rank.byteLength + computed.ids.byteLength + (computed.walk ? computed.walk.byteLength : 0); },
+    of(id) {
+      const e = [];
+      for (const [t, seq] of up.all(id, h.id)) e.push([seq ?? 0, t >>> 0]);
+      for (const [c, seq] of down.all(id, h.id)) e.push([seq, (c | HIER_CHILD) >>> 0]);
+      e.sort((a, b) => a[0] - b[0]);
+      return Uint32Array.from(e.map((x) => x[1]));
+    },
+    loadedBytes() { return 0; },
   };
+}
+
+/**
+ * The order arrays from the fact tables, for the index builder: kind 'snomed' (by concept id as
+ * a number, as cs-snomed.js lists results; the walk from the is-a links in source order: for is-a
+ * and ECL << the concept itself first, selfFirst), 'rxnorm' (by RXCUI as text, '10' before '9':
+ * cs-rxnorm.js groups by a text column). LOINC's order is the upstream importer's numbering,
+ * which only its importer can compute (derived-by-importer).
+ * @param {object} db a connection to the file
+ * @param {object} [opts] { walk: false to leave the SNOMED walk out }
+ */
+function computeOrder(db, kind, n, opts = {}) {
+  const rows = db.prepare('SELECT id, code FROM main.concept WHERE cs_id = (SELECT cs_id FROM main.code_system WHERE served = 1)').raw().all();
+  if (kind === 'rxnorm') return { ...rankBy(n, rows, byText), walk: null, selfFirst: false };
+  if (kind !== 'snomed') throw new Error(`no system order computable from the facts for ${kind}`);
+  const { rank, ids } = rankBy(n, rows, byNumber);
+  return { rank, ids, walk: opts.walk === false ? null : snomedWalk(db, n, ids), selfFirst: true };
+}
+
+/**
+ * The whole code system in cs-snomed.js's walk order (iterator + includeCodeAndDescendants): from
+ * each active root (no active parent; by id), depth first, the children in release order (inbound
+ * active is-a links by seq), each concept once, where first reached. Concepts the walk does not
+ * reach (the inactive ones: they have no active is-a row) follow, by id: walk.reached is how many
+ * it reaches. cs-snomed.js's expansion of the whole system has only those; other selections of
+ * every concept (ECL *) have them all.
+ */
+function snomedWalk(db, n, byCode) {
+  const hid = db.prepare('SELECT id FROM main.property WHERE subsumption = 1 ORDER BY id LIMIT 1').pluck().get();
+  return walkFrom(n, byCode,
+    db.prepare('SELECT target_id, subject_id FROM main.ix_in WHERE target_id <= ? AND property_id = ? AND active = 1 AND group_id = 0 AND subject_id <= ? ORDER BY target_id, seq').raw().all(n, hid, n),
+    db.prepare('SELECT DISTINCT subject_id FROM main.link WHERE property_id = ? AND subject_id <= ? AND target_id <= ?').pluck().iterate(hid, n, n),
+    db.prepare('SELECT id FROM main.concept WHERE active = 1 AND id <= ?').pluck().iterate(n));
 }
 
 // ---- LOINC hierarchy order -----------------------------------------------------------------
@@ -224,9 +206,10 @@ function builtOrder(computed, kind) {
 // and only when the parent already has a CodeKey. So a part's children come in hierarchy-file
 // order, and a part on two paths has its second parent among its children.
 //
-// Stored as two more system_order rows: hier_start (concept count + 2 offsets, by concept_id)
-// and hier, each concept's entries in that order: the other concept's id, with HIER_CHILD set
-// for a child. Read on the first $lookup that needs it (store.hierarchyOrderOf).
+// Where the parent links' seq (the hierarchy-file row of each pair) does not give that order, the
+// importer stores two ix_order arrays: hier_start (concept count + 2 offsets, by concept id) and
+// hier, each concept's entries in that order: the other concept's id, with HIER_CHILD set for a
+// child. Read on the first $lookup that needs it (store.hierarchyOrderOf).
 
 const HIER_CHILD = 0x80000000;
 
@@ -248,35 +231,5 @@ function hierarchyArrays(n, xs, others, isChild) {
   return { start, entries };
 }
 
-/** store the hierarchy order (replaces hier_start and hier; the other rows stay) */
-function writeHierarchyOrder(db, arrays) {
-  db.exec(DDL.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS'));
-  db.prepare("DELETE FROM system_order WHERE name IN ('hier_start', 'hier')").run();
-  const ins = db.prepare('INSERT INTO system_order VALUES (?, ?, ?, ?)');
-  ins.run('hier_start', arrays.start.length, null, toBlob(arrays.start));
-  ins.run('hier', arrays.entries.length, null, toBlob(arrays.entries));
-  return arrays.start.byteLength + arrays.entries.byteLength;
-}
-
-/**
- * The stored hierarchy order of a file, or null without one: { of(id) -> Uint32Array of entries }.
- * Both arrays are read on the first call.
- */
-function storedHierarchyOrder(store) {
-  if (!hasTable(store.db, 'system_order')) return null;
-  const meta = new Map(store.db.prepare("SELECT name, length FROM system_order WHERE name IN ('hier_start', 'hier')").raw().all());
-  if (!meta.has('hier_start') || !meta.has('hier')) return null;
-  if (meta.get('hier_start') !== store.conceptCount + 2) throw new Error(`${store.file}: system_order hier_start does not match concept_count`);
-  let start = null, entries = null;
-  const read = (name) => fromBlob(store.withoutMmap(() => store.stmt('SELECT data FROM system_order WHERE name = ?').pluck().get(name)));
-  return {
-    of(id) {
-      if (!start) { start = read('hier_start'); entries = read('hier'); }
-      return entries.subarray(start[id], start[id + 1]);
-    },
-    loadedBytes() { return start ? start.byteLength + entries.byteLength : 0; },
-  };
-}
-
-module.exports = { orderKind, computeOrder, writeOrder, storedOrder, builtOrder, hasTable,
-  HIER_CHILD, hierarchyArrays, writeHierarchyOrder, storedHierarchyOrder };
+module.exports = { orderKind, rankBy, byText, byNumber, walkFrom, fromBlob, orderOf, storedOrder, hierarchyOrder, computeOrder, snomedWalk,
+  HIER_CHILD, hierarchyArrays };

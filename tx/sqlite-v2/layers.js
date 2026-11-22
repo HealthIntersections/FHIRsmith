@@ -2,8 +2,8 @@
 // CodeSystem supplements as layers.
 //
 // A supplement (loaded with the server, or supplied per request through tx-resource /
-// useSupplement) becomes an in-memory SQLite database with the same v2 schema as the base
-// file. Its concepts carry the BASE concept_ids, so its bitmaps (prop, hasProp) combine with the
+// useSupplement) becomes an in-memory terminology file (the base file's schema, read by the same
+// Store). Its concepts carry the BASE concept ids, so its bitmaps (prop, hasProp) combine with the
 // base sets by ordinary set algebra: a filter on a supplement-defined property is just another
 // IR leaf ({t:'layer'}), evaluated against the layer's store. Supplement codes the base does not
 // contain are not imported (upstream treats them as unknown codes) and are counted.
@@ -21,16 +21,20 @@
 // concurrent requests; each request holds a reference, so an evicted layer is closed only when
 // the last request using it ends.
 
-const fs = require('fs');
 const crypto = require('crypto');
-const path = require('path');
 const Database = require('better-sqlite3');
-const { V2Store, KIND } = require('./store');
+const { Store, KIND, VK, FORMAT } = require('./store');
 const { serialize, rangeSet, RoaringBitmap32 } = require('../importers/sqlite-v2/sets');
+const { schemaSections } = require('../importers/sqlite-v2/builder');
 const { settings } = require('./settings');
 
-const SCHEMA = fs.readFileSync(path.join(__dirname, '..', 'importers', 'sqlite-v2', 'schema-v2.sql'), 'utf8')
-  .split('-- @indexes')[0];
+let schema = null;
+const SCHEMA = () => {
+  if (!schema) { const d = schemaSections(); schema = d.facts + d.factIndexes + d.ix; }
+  return schema;
+};
+// a supplement property's FHIR type -> the literal type the file records
+const LITERAL_TYPE = { code: 'code', string: 'string', integer: 'integer', decimal: 'decimal', boolean: 'boolean', datetime: 'dateTime', dateTime: 'dateTime', Coding: 'Coding' };
 
 let layerSeq = 0;
 
@@ -51,66 +55,76 @@ function propValue(p) {
 }
 
 /**
- * Write a supplement's layer into an open, empty database: the v2 schema, its concepts under the
- * BASE concept_ids, designations, property values and their sets (buildLayer: an in-memory
- * database, kept in the process's LayerCache).
+ * Write a supplement's layer into an open, empty database: the terminology file schema, its
+ * concepts under the BASE concept ids, its designations as items (ids above the base's concepts),
+ * its property values as literals, and their sets (buildLayer: an in-memory database, kept in the
+ * process's LayerCache).
  * @returns {{concepts: object[], unknown: number, props: Map<string, number>}}
  */
 function fillLayer(db, base, json) {
-  db.exec(SCHEMA);
+  db.exec(SCHEMA());
   const concepts = [];
   const walk = (list) => { for (const c of list || []) { concepts.push(c); walk(c.concept); } };
   walk(json.concept);
   const ids = base.resolveCodes(concepts.map((c) => c.code));
   let unknown = 0;
   const props = new Map();
-  const insConcept = db.prepare('INSERT OR IGNORE INTO concept (concept_id, code, active, display, definition) VALUES (?, ?, 1, ?, ?)');
-  const insUse = db.prepare('INSERT OR IGNORE INTO designation_use (system, code, display) VALUES (?, ?, ?)');
-  const useId = db.prepare('SELECT use_id FROM designation_use WHERE system IS ? AND code = ?');
-  const insDesig = db.prepare('INSERT INTO designation (concept_id, language, use_id, term, active, preferred) VALUES (?, ?, ?, ?, 1, 0)');
-  const insProp = db.prepare('INSERT INTO property_def (code, uri, fhir_type, value_kind) VALUES (?, ?, ?, \'literal\')');
-  const insLit = db.prepare('INSERT OR IGNORE INTO concept_literal (concept_id, property_id, group_id, value, active) VALUES (?, ?, 0, ?, 1)');
+  const types = new Map();
+  const insConcept = db.prepare('INSERT OR IGNORE INTO concept (id, cs_id, code, active, display) VALUES (?, 1, ?, 1, ?)');
+  const insUse = db.prepare('INSERT INTO item_use (use_id, system, code, display) VALUES (?, ?, ?, ?)');
+  const insItem = db.prepare('INSERT INTO item (id, concept_id, kind, cs_id, language, use_id, text, active, preferred) VALUES (?, ?, 0, 1, ?, ?, ?, 1, 0)');
+  const insLit = db.prepare('INSERT OR IGNORE INTO literal (subject_id, property_id, group_id, value, active) VALUES (?, ?, 0, ?, 1)');
   const pending = [];
   const tx = db.transaction(() => {
-    for (const pd of json.property || []) {
-      const info = insProp.run(pd.code, pd.uri || null, pd.type || 'string');
-      props.set(pd.code, Number(info.lastInsertRowid));
-    }
+    const prop = (code, uri, type) => {
+      let pid = props.get(code);
+      if (pid === undefined) {
+        pid = props.size + 1;
+        props.set(code, pid);
+        types.set(pid, { code, uri: uri || null, type: LITERAL_TYPE[type] || 'string' });
+      }
+      return pid;
+    };
+    for (const pd of json.property || []) prop(pd.code, pd.uri, pd.type || 'string');
     const uses = new Map();
+    let item = base.conceptCount;
     for (const c of concepts) {
       const id = ids.get(c.code);
       if (id == null) { unknown++; continue; }
-      insConcept.run(id, c.code, c.display || null, c.definition || null);
+      insConcept.run(id, c.code, c.display || null);
       for (const d of c.designation || []) {
+        if (d.value == null || d.value === '') continue;
         let uid = null;
         if (d.use) {
           const k = (d.use.system || '') + '|' + d.use.code;
           uid = uses.get(k);
           if (uid === undefined) {
-            insUse.run(d.use.system || null, d.use.code, d.use.display || null);
-            uid = useId.get(d.use.system || null, d.use.code).use_id;
+            uid = uses.size + 1;
+            insUse.run(uid, d.use.system || null, d.use.code, d.use.display || null);
             uses.set(k, uid);
           }
         }
-        insDesig.run(id, d.language || json.language || null, uid, d.value);
+        insItem.run(++item, id, d.language || json.language || null, uid, d.value);
       }
       for (const p of c.property || []) {
-        let pid = props.get(p.code);
         const [type, v] = propValue(p);
         if (v == null) continue;
-        if (pid === undefined) {
-          pid = Number(insProp.run(p.code, null, type).lastInsertRowid);
-          props.set(p.code, pid);
-        }
+        const pid = prop(p.code, null, type);
         insLit.run(id, pid, v);
         pending.push([pid, v, id]);
       }
     }
+    // the catalog: literal properties of concepts
+    const counts = new Map();
+    for (const [pid] of pending) counts.set(pid, (counts.get(pid) || 0) + 1);
+    const insProp = db.prepare(`INSERT INTO property (id, cs_id, code, uri, shape, fhir_type, subject_kind, n_rows)
+      VALUES (?, 1, ?, ?, 'literal', ?, ?, ?)`);
+    for (const [pid, t] of types) insProp.run(pid, t.code, t.uri, t.type, counts.get(pid) ? 'concept' : null, counts.get(pid) || 0);
     // sets: all / active are the BASE ranges, so layer-side complements mean the same thing
-    const insSet = db.prepare('INSERT INTO concept_set (kind, property_id, value, card, data) VALUES (?, ?, ?, ?, ?)');
-    const put = (kind, pid, value, bm) => { if (bm.size) insSet.run(kind, pid, value, bm.size, serialize(bm)); };
-    put(KIND.all, 0, 0, rangeSet(1, base.conceptCount));
-    put(KIND.active, 0, 0, rangeSet(1, base.activeCount));
+    const insSet = db.prepare('INSERT INTO ix_set (kind, property_id, value_kind, value, card, data) VALUES (?, ?, ?, ?, ?, ?)');
+    const put = (kind, pid, vk, value, bm) => { if (bm.size) insSet.run(kind, pid, vk, value, bm.size, serialize(bm)); };
+    put(KIND.all, 0, VK.none, 0, rangeSet(1, base.conceptCount));
+    put(KIND.active, 0, VK.none, 0, rangeSet(1, base.activeCount));
     const groups = new Map(); // pid -> Map(value -> ids)
     for (const [pid, v, id] of pending) {
       let g = groups.get(pid);
@@ -123,22 +137,23 @@ function fillLayer(db, base, json) {
       const all = [];
       for (const [v, l] of g) {
         const bm = new RoaringBitmap32(l);
-        put(KIND.prop, pid, v, bm);
+        put(KIND.prop, pid, VK.literal, v, bm);
         all.push(bm);
       }
-      put(KIND.hasProp, pid, 0, RoaringBitmap32.orMany(all));
+      put(KIND.hasProp, pid, VK.none, 0, RoaringBitmap32.orMany(all));
     }
-    db.prepare(`INSERT INTO code_system (id, uri, version, name, content, concept_count, active_count) VALUES (1, ?, ?, ?, 'supplement', ?, ?)`)
+    db.prepare(`INSERT INTO code_system (cs_id, uri, version, name, content, served, concept_count, active_count) VALUES (1, ?, ?, ?, 'supplement', 1, ?, ?)`)
       .run(json.url || 'urn:supplement', json.version || '', json.name || null, base.conceptCount, base.activeCount);
-    db.exec('CREATE INDEX designation_concept ON designation(concept_id);');
+    db.prepare("INSERT INTO meta (key, value) VALUES ('format', ?)").run(FORMAT);
   });
   tx();
+  db.pragma('user_version = 1');
   return { concepts, unknown, props };
 }
 
 /**
  * Build a layer for one supplement over a base store.
- * @param {V2Store} base
+ * @param {Store} base
  * @param {object} json CodeSystem (content = supplement)
  */
 function buildLayer(base, json) {
@@ -146,21 +161,9 @@ function buildLayer(base, json) {
   const db = new Database(':memory:');
   db.pragma('journal_mode = OFF');
   const { concepts, unknown, props } = fillLayer(db, base, json);
-  const store = new V2Store(':memory:', { db, unregistered: true });
+  const store = new Store(':memory:', { db, unregistered: true });
   // read-only from here on: a layer may be shared by concurrent requests (LayerCache)
   db.pragma('query_only = ON');
-  // the trigram index costs more than the rest of the layer: built on the first text search
-  // (synchronously, so no other request sees it half built)
-  store.ensureFts = () => {
-    db.pragma('query_only = OFF');
-    try {
-      db.exec(`INSERT INTO search_display (rowid, term) SELECT concept_id, display FROM concept WHERE display IS NOT NULL;
-               INSERT INTO search_designation (rowid, term) SELECT designation_id, term FROM designation;`);
-    } finally {
-      db.pragma('query_only = ON');
-    }
-    store.ensureFts = null;
-  };
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   const bytes = db.pragma('page_count', { simple: true }) * db.pragma('page_size', { simple: true });
   return new Layer(store, Object.freeze({ url: json.url, version: json.version, concepts: concepts.length - unknown, unknownCodes: unknown,
@@ -333,4 +336,4 @@ class SupplementLayers {
   }
 }
 
-module.exports = { SupplementLayers, LayerSet, LayerCache, layerCache, buildLayer, fillLayer, Layer, contentHash, SCHEMA };
+module.exports = { SupplementLayers, LayerSet, LayerCache, layerCache, buildLayer, fillLayer, Layer, contentHash };

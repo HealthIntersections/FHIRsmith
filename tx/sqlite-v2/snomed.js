@@ -102,7 +102,20 @@ class SnomedV2Provider extends SqliteV2Provider {
     if (!isConceptId(code)) return this._nativeLocate(String(code));
     const r = await super._locate(code, prefetched);
     if (r.context) r.context.code = r.context.row ? r.context.row.code : r.context.code;
+    else r.message = this._descriptionIdMessage(code) || r.message;
     return r;
+  }
+
+  /**
+   * A code that is no concept of the edition but is one of its description ids (a file that keeps
+   * them: item external_id): a FHIR SNOMED CT code is a concept id or an expression, so the code
+   * stays unknown, and the message says whose description it is
+   */
+  _descriptionIdMessage(code) {
+    const hit = this.store.itemsByExternalId(String(code).trim())[0];
+    if (!hit) return null;
+    const row = this.store.conceptRows([hit.concept], this._stats()).get(hit.concept);
+    return row ? `${code} is a SNOMED CT description id (of the concept ${row.code} |${row.display}|), not a concept id` : null;
   }
 
   isDisplay(d) {
@@ -110,7 +123,7 @@ class SnomedV2Provider extends SqliteV2Provider {
   }
 
   /**
-   * Each designation's acceptability as [[refset id, acceptability id], ...] (d.accs). A v5 file's
+   * Each designation's acceptability as [[refset id, acceptability id], ...] (d.accs). The
    * designations come with their rank and not their acceptability (store.designationRows); the
    * dialect rules below need to know which language reference set prefers which term, so the
    * concept's acceptability rows are read here, in one statement, for the concepts that have two
@@ -124,14 +137,7 @@ class SnomedV2Provider extends SqliteV2Provider {
       for (const d of c.desigs) d.accs = parse(d.acc);
       return;
     }
-    const q = this.store.stmt(`SELECT a.designation_id, a.refset_id, a.acceptability_id FROM designation_acceptability a
-      WHERE a.designation_id IN (SELECT d.designation_id FROM designation d WHERE d.concept_id = +?)`).raw(true);
-    const rows = q.all(c.id);
-    const by = new Map();
-    for (const r of rows) {
-      if (!by.has(r[0])) by.set(r[0], []);
-      by.get(r[0]).push([r[1], r[2]]);
-    }
+    const by = this.store.acceptabilityOfConcept(c.id);
     for (const d of c.desigs) d.accs = by.get(d.id) || [];
   }
 
@@ -153,7 +159,8 @@ class SnomedV2Provider extends SqliteV2Provider {
     const refsets = this.f.displayRefsetIds();
     const preferred = this.f.preferredId();
     const isPreferredIn = (d, ids) => !!d.acc && d.acc.split(',').some((a) => { const [r, v] = a.split(':'); return v === String(preferred) && (!ids || ids.includes(Number(r))); });
-    // v5 files: the rank the importer stored (0 preferred in a display refset, 1 in another, 2 not)
+    // the rank the builder derived (0 preferred in a display refset, 1 in another, 2 not); from the
+    // acceptability where an item has none
     const rankOf = (d) => (d.rank != null ? d.rank : (!d.use || d.use.code !== SYNONYM ? 2 : isPreferredIn(d, refsets) ? 0 : isPreferredIn(d, null) ? 1 : 2));
     const use = (d) => (d.use ? { system: SCT, code: d.use.code, display: d.use.display } : null);
     // the active preferred synonyms; which reference set prefers which matters when a language
@@ -280,7 +287,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     const children = S.getSet(KIND.prop, hid, c.id, st).toArray();
     const childOrder = S.linkSourcesInOrder(hid, c.id);
     const want = new Set([...links.map((l) => l.t), ...children]);
-    const attrCodes = [...new Set(links.map((l) => S.propsById.get(l.p)).filter((p) => p && /^\d+$/.test(p.code)).map((p) => p.code))];
+    const attrCodes = [...new Set(links.map((l) => S.propsById.get(l.p)).filter((p) => p && p.attribute).map((p) => p.code))];
     const attrIds = S.resolveCodes(attrCodes, st);
     for (const id of attrIds.values()) want.add(id);
     want.delete(undefined);
@@ -310,7 +317,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     // moduleId, as the SNOMED CT on FHIR page names it ("module" asked for by name is still
     // understood, and answered as moduleId), as main (#331)
     if (this._hasProp(props, 'moduleId', true) || askedFor(props, 'module')) {
-      const m = links.find((l) => S.propsById.get(l.p).code === 'module');
+      const m = links.find((l) => S.propsById.get(l.p).code === 'moduleId');
       if (m) this._addCodeProperty(params, 'property', 'moduleId', code(m.t), null, disp(m.t));
     }
     // returned for property=* or by name, not by default
@@ -337,7 +344,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     const seen = new Set();
     for (const l of links) {
       const p = S.propsById.get(l.p);
-      if (!p || !/^\d+$/.test(p.code) || p.code === IS_A || !this._hasProp(props, p.code, true)) continue;
+      if (!p || !p.attribute || p.code === IS_A || !this._hasProp(props, p.code, true)) continue;
       const k = p.code + ':' + code(l.t);
       if (seen.has(k)) continue;
       seen.add(k);
@@ -347,7 +354,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     }
     // concrete values (literal attributes), when asked for by id: typed as the attribute's range
     // in the MRCM says (int / dec), booleans and strings as stored
-    const concreteLits = lits.filter((l) => { const p = S.propsById.get(l.p); return p && /^\d+$/.test(p.code) && this._hasProp(props, p.code, true); })
+    const concreteLits = lits.filter((l) => { const p = S.propsById.get(l.p); return p && p.attribute && this._hasProp(props, p.code, true); })
       .sort((a, b) => (S.propsById.get(a.p).code < S.propsById.get(b.p).code ? -1 : 1));
     for (const l of concreteLits) {
       const p = S.propsById.get(l.p);
@@ -359,7 +366,7 @@ class SnomedV2Provider extends SqliteV2Provider {
       else value = this._concreteIsInteger(p.code) ? { valueInteger: Math.round(Number(l.v)) } : { valueDecimal: Number(l.v) };
       params.push({ name: 'property', part: [{ name: 'code', valueCode: p.code }, { name: 'value', ...value }, { name: 'code-display', valueString: adisp }] });
     }
-    const ids = S.stmt('SELECT s.code AS scheme, a.identifier FROM alternate_identifier a JOIN concept s ON s.concept_id = a.scheme_id WHERE a.concept_id = ?').all(c.id);
+    const ids = S.alternateIdsOf(c.id);
     for (const r of ids) {
       const scheme = IDENTIFIER_SCHEMES[r.scheme];
       if (scheme && this._hasProp(props, scheme.property, true)) {
@@ -389,7 +396,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     const rs = S.idOf('723562003');
     const a = S.idOf(attrCode);
     if (rs == null || a == null) return false;
-    const r = S.stmt('SELECT fields FROM refset_member WHERE refset_id = +? AND concept_id = +? LIMIT 1').get(rs, a);
+    const r = S.refsetMemberRows(rs, a)[0];
     return !!r && /^\s*int\(/i.test(JSON.parse(r.fields || '[]')[0] || '');
   }
 
@@ -493,7 +500,7 @@ class SnomedV2Provider extends SqliteV2Provider {
     if (coding.system === SCT) {
       const id = S.idOf(this.normaliseCode(coding.code));
       if (id == null) return [];
-      for (const r of S.stmt('SELECT s.code AS scheme, a.identifier FROM alternate_identifier a JOIN concept s ON s.concept_id = a.scheme_id WHERE a.concept_id = ?').all(id)) {
+      for (const r of S.alternateIdsOf(id)) {
         const scheme = IDENTIFIER_SCHEMES[r.scheme];
         if (scheme && schemes.includes(r.scheme) && (!targetSystem || targetSystem === scheme.system)) {
           out.push({ map: map.vurl, system: scheme.system, code: r.identifier, relationship: 'equivalent' });
@@ -505,8 +512,8 @@ class SnomedV2Provider extends SqliteV2Provider {
         if (!scheme || scheme.system !== coding.system) continue;
         const sid = S.idOf(schemeId);
         if (sid == null) continue;
-        for (const r of S.stmt('SELECT c.code FROM alternate_identifier a JOIN concept c ON c.concept_id = a.concept_id WHERE a.scheme_id = ? AND a.identifier = ?').all(sid, coding.code)) {
-          out.push({ map: map.vurl, system: SCT, version: this.version(), code: r.code, display: await this.display(r.code), relationship: 'equivalent' });
+        for (const code of S.codesByAlternateId(sid, coding.code)) {
+          out.push({ map: map.vurl, system: SCT, version: this.version(), code, display: await this.display(code), relationship: 'equivalent' });
         }
       }
     }
@@ -552,7 +559,7 @@ class SnomedV2Provider extends SqliteV2Provider {
       if (used.every(inTarget)) {
         // a concept of the target edition with the same normal form (lowest id, as main's index)
         const rendered = svc.renderExpression(nf, E.SnomedServicesRenderOption.Minimal);
-        const same = S.stmt('SELECT n.concept_id, c.code FROM concept_normal_form n JOIN concept c USING (concept_id) WHERE n.nf = ? AND c.active = 1').all(rendered)
+        const same = S.conceptsWithNormalForm(rendered)
           .filter((r) => r.concept_id !== src && inTarget(r.concept_id)).sort((a, b) => (BigInt(a.code) < BigInt(b.code) ? -1 : 1))[0];
         if (same) return [mk(same.code, name(same.concept_id), 'equivalent')];
         const out = svc.ungroupNeverGroupedRefinements(nf);
@@ -747,7 +754,7 @@ class SnomedV2Factory extends SqliteV2Factory {
     LOADED.add(this); // the SNOMED files this server loaded (load-time data, for edition-only URLs)
     // data read at load (no caches): the acceptability and display refset ids
     this._preferredId = this.store.idOf(PREFERRED);
-    this._displayRefsets = [].concat(this.store.config.displayRefsets || ['900000000000509007'])
+    this._displayRefsets = [].concat(this.store.displayRefsets || ['900000000000509007'])
       .map((c) => this.store.idOf(String(c))).filter((x) => x != null);
     this._dialectRefsets = LANGUAGE_REFSET_DIALECTS
       .map((d) => ({ id: this.store.idOf(String(d.refset)), lang: d.lang, tag: d.tag })).filter((d) => d.id != null);
@@ -810,8 +817,8 @@ class SnomedV2Factory extends SqliteV2Factory {
       return { ...base, name: 'ALLSNOMEDCT', title: 'SNOMED CT Reference Set (All of SNOMED CT)', description: 'SNOMED CT Reference Set (All of SNOMED CT)', compose: { include: [{ system: SCT }] } };
     }
     if (id === '?fhir_vs=refset') {
-      const rows = this.store.db.prepare('SELECT c.code FROM concept_set s JOIN concept c ON c.concept_id = s.value WHERE s.kind = 7 ORDER BY c.code').all();
-      return { ...base, name: 'SNOMEDCTReferenceSetList', title: 'SNOMED CT Reference Set List', description: 'Reference Sets defined in this SNOMED-CT version', compose: { include: [{ system: SCT, concept: rows.map((r) => ({ code: r.code })) }] } };
+      const codes = this.store.codesOf(this.store.refsetIds()).sort();
+      return { ...base, name: 'SNOMEDCTReferenceSetList', title: 'SNOMED CT Reference Set List', description: 'Reference Sets defined in this SNOMED-CT version', compose: { include: [{ system: SCT, concept: codes.map((code) => ({ code })) }] } };
     }
     if (id.startsWith('?fhir_vs=refset/')) {
       const code = id.substring(16);
@@ -852,9 +859,9 @@ class SnomedV2Factory extends SqliteV2Factory {
     return m ? m[1] : null;
   }
 
-  /** module -> [{module, targetEffectiveTime}] (cs_config.moduleDependencies) */
+  /** module -> [{module, targetEffectiveTime}] (meta moduleDependencies) */
   _moduleDeps(code) {
-    return (this.store.config.moduleDependencies || []).filter((r) => r[0] === code).map((r) => ({ module: r[1], sourceEffectiveTime: r[2], targetEffectiveTime: r[3] }));
+    return (this.store.moduleDependencies || []).filter((r) => r[0] === code).map((r) => ({ module: r[1], sourceEffectiveTime: r[2], targetEffectiveTime: r[3] }));
   }
 
   _editionDependency(targetEdition) {
@@ -893,12 +900,10 @@ class SnomedV2Factory extends SqliteV2Factory {
   /** modules carrying alternate identifiers, with their schemes: module code -> Set of scheme codes */
   _identifierModules() {
     const S = this.store;
-    const mp = S.props.get('module');
+    const mp = S.props.get('moduleId');
     const out = new Map();
     if (!mp) return out;
-    const rows = S.stmt(`SELECT DISTINCT m.code AS module, s.code AS scheme FROM alternate_identifier a
-      JOIN concept s ON s.concept_id = a.scheme_id
-      JOIN concept_link l ON l.source_id = a.concept_id AND l.property_id = ? JOIN concept m ON m.concept_id = l.target_id`).all(mp.id);
+    const rows = S.identifierModules(mp.id);
     for (const r of rows) { if (!out.has(r.module)) out.set(r.module, new Set()); out.get(r.module).add(r.scheme); }
     return out;
   }
@@ -925,7 +930,7 @@ class SnomedV2Factory extends SqliteV2Factory {
     const fromMe = source === SCT && sourceVersion && this.isMyEdition(sourceVersion);
     const toMe = destSystem === SCT && destVersion && this.isMyEdition(destVersion);
     const ident = fromMe ? destSystem : toMe ? source : null;
-    if (ident && this.store.stmt('SELECT 1 FROM alternate_identifier LIMIT 1').get()) {
+    if (ident && this.store.hasAlternateIds()) {
       const mods = this._identifierModules();
       for (const [moduleId, schemes] of mods) {
         if ([...schemes].some((x) => IDENTIFIER_SCHEMES[x] && IDENTIFIER_SCHEMES[x].system === ident)) {

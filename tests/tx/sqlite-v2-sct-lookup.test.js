@@ -117,17 +117,17 @@ describe('sqlite-v2 SNOMED CT $lookup and implicit value sets, as main', () => {
   });
 });
 
-describe('sqlite-v2 SNOMED CT designation rank (v5)', () => {
+describe('sqlite-v2 SNOMED CT designation rank', () => {
   test('the stored rank orders designations as acceptability does (files without it)', async () => {
     const { Designations } = require('../../tx/library/designations');
     const S = factory.store;
     expect(S.hasRank).toBe(true);
-    const ids = S.db.prepare('SELECT DISTINCT concept_id FROM designation ORDER BY concept_id').pluck().all();
+    const ids = S.db.prepare('SELECT DISTINCT concept_id FROM item ORDER BY concept_id').pluck().all();
     const run = async (significant) => {
       const out = [];
       for (const id of ids) {
         const p = await factory.build(op, []);
-        const r = await p.locate(S.db.prepare('SELECT code FROM concept WHERE concept_id = ?').pluck().get(id));
+        const r = await p.locate(S.db.prepare('SELECT code FROM concept WHERE id = ?').pluck().get(id));
         const d = new Designations(op.i18n.languageDefinitions);
         await p.designations(r.context, d, significant);
         out.push(d.designations.map((x) => [x.language && x.language.code, x.use && x.use.code, x.value]));
