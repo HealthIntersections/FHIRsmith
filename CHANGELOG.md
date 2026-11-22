@@ -41,6 +41,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- IPS: the analysis view's "Only show problems" no longer shows a section just because it says why it is empty (its emptyReason)
 - Search: the `url` parameter is an exact match again for ValueSets and ConceptMaps, as it is for CodeSystems and as FHIR says it is (1.0.0 made it a left match). A url that is a prefix of another found both: `ValueSet?url=http://cts.nlm.nih.gov/fhir/ValueSet/2.16.840.1.113762.1.4.1267.3` also found `...1267.39`, and the IG publisher rendered the binding with a link to the wrong value set. A left match is `url:below`
 - tx: a large code system a client sends (`tx-resource`) is checked, indexed and hashed (for the expansion cache key) letting other requests run, instead of in one go. The IG publisher sending the full ICD-10-CM (98,505 concepts, 28 MB) held tx.fhir.org's event loop for 2 s; other clients send code systems of 50-100,000 concepts. Parsing the request body is still done in one go (about 250 ms for 28 MB)
 - tx: large XML responses (the full ICD-10-CM CodeSystem, 64 MB) still held the event loop when several came together - for 2-4 s on tx.fhir.org - in joining, counting and encoding the whole text to send it. The XML kept for large arrays (`xmlCacheMB`) is now kept encoded, and a large response is written in its parts, as the socket takes them, never joined; `xmlCacheMB` counts the bytes of XML kept, not its characters

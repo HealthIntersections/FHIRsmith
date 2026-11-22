@@ -976,7 +976,8 @@ function findingHtml(f) {
 /**
  * Whether the analysis found nothing to say about a node: All OK, and nothing else but the
  * narrative - which doesn't matter for a resource, but a section without narrative is a problem -
- * and the Composition's negation (unless there's more than one approach: that's attention).
+ * the Composition's negation (unless there's more than one approach: that's attention), and why
+ * a section is empty (its emptyReason).
  */
 function analysisOk(findings, isSection) {
   if (!Array.isArray(findings) || findings.length === 0) {
@@ -984,7 +985,9 @@ function analysisOk(findings, isSection) {
   }
   // nothing that needs looking at: All OK, how negation is done, narrative (but a section
   // needs some), and extensions the validator knows - an unknown or modifier extension is a problem
-  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || (f.kind === 'extension' && f.found) ||
+  // (an analysis made before the emptyReason had a kind of its own has it as a note)
+  return findings.every(f => f && (f.kind === 'ok' || f.kind === 'negation' || f.kind === 'empty' ||
+    (f.kind === 'note' && typeof f.text === 'string' && f.text.startsWith('Empty: ')) || (f.kind === 'extension' && f.found) ||
     (f.kind === 'narrative' && !(isSection && f.text === 'No narrative'))));
 }
 
@@ -1081,7 +1084,7 @@ function renderAnalysisTable(row, r) {
     '<span class="ips-an-subject">a subject that is not the document\'s, or a focus</span>, ' +
     '<span class="ips-an-attention">dates in the future where none is expected (not period ends, expiry or due dates, schedules, nor appointments, requests and plans that are not over, or events still to come), values given as an extension instead (a data-absent-reason, say), a Patient\'s links, a Composition that is not final, and a document that uses more than one approach to negation</span>, ' +
     'a section\'s emptyReason or an author other than its container\'s, whether there is narrative, and - on the Composition - how the document says there is nothing to report (negation): with a section\'s emptyReason (the IPS pattern), with entries whose code says so, like No known allergy (the US Core pattern), or not at all; and <span class="ips-an-error">SNOMED CT codes that do not say which edition they are from, when the jurisdiction of the document is unknown (the International Edition is assumed)</span>. A resource with nothing else to say is All OK. References to resources that are not in the document are left out. ' +
-    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK, or has nothing more to say than known extensions - an unknown extension, or a modifier extension, is a problem; and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem.</p></div>';
+    'An extension is known when the validator has its definition (hover over "known" to see it). Only show problems hides what is All OK, or has nothing more to say than known extensions - an unknown extension, or a modifier extension, is a problem; and, for a resource, whether it has narrative doesn\'t matter, but a section without narrative is a problem. Why a section is empty (its emptyReason) is not a problem.</p></div>';
   h += `<script>
 (function () {
   var KEY = 'fhirsmith.ips.analysis.problemsOnly';

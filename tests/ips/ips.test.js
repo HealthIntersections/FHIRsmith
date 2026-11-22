@@ -3553,6 +3553,13 @@ describe('the analysis step', () => {
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: false }, has], false)).toBe(false);
     expect(analysisOk([{ kind: 'modifier', url: 'http://example.org/x', found: true }, has], false)).toBe(false);
     expect(analysisOk([{ kind: 'extension', url: 'http://example.org/x', found: true }, none], true)).toBe(false);
+    // why a section is empty is not a problem (as stored before it had a kind of its own, too); the narrative still counts
+    const empty = { kind: 'empty', text: 'Empty: Not Asked' };
+    expect(analysisOk([empty, has], true)).toBe(true);
+    expect(analysisOk([{ kind: 'note', text: 'Empty: Not Asked' }, has], true)).toBe(true);
+    expect(analysisOk([empty, none], true)).toBe(false);
+    // other notes are (a section's author that isn't its container's)
+    expect(analysisOk([{ kind: 'note', text: 'The author (x) is not the Composition\'s' }, has], true)).toBe(false);
     expect(analysisOk([], false)).toBe(false);
     expect(analysisOk(undefined, false)).toBe(false);
   });
