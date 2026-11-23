@@ -214,5 +214,14 @@ describe('SNOMED CT display by English dialect', () => {
         }
       }
     });
+
+    test('a wrong display is told the number of choices listed, GB synonym included', async () => {
+      const list = "'Hematoma' (en), 'Haematoma' (en-GB), 'Hematoma, NOS' (en), 'Haematoma, NOS' (en) or 'Hematoma (morphologic abnormality)' (en)";
+      for (const lang of ['en', 'en-US', 'en-GB']) {
+        const r = await validate(US_FIRST, lang, 'Wrong');
+        expect(r.result).toBe(false);
+        expect(r.message).toContain(`Valid display is one of 5 choices: ${list} (for the language(s) '${lang}')`);
+      }
+    });
   });
 });

@@ -274,6 +274,20 @@ describe('Designations', () => {
       expect(presentation).toContain("'French term'");
       expect(presentation).toContain("'German term'");
     });
+
+    test('presentCount counts what present lists, across regions of the language', () => {
+      // displayCount stops at the best kind of match: for 'en' that is the plain 'en'
+      // designation, while present lists the 'en-US' one too
+      const langList = Languages.fromAcceptLanguage('en', languageDefinitions);
+      expect(designations.displayCount(langList, null, false)).toBe(1);
+      expect(designations.present(langList, null, false)).toBe("'English base' (en) or 'US English display' (en-US)");
+      expect(designations.presentCount(langList, null, false)).toBe(2);
+    });
+
+    test('presentCount counts the fallback list when no language matches', () => {
+      const langList = Languages.fromAcceptLanguage('zh', languageDefinitions);
+      expect(designations.presentCount(langList, null, false)).toBe(4);
+    });
   });
 
   describe('Complex language preference scenarios', () => {
