@@ -260,6 +260,21 @@ describe.each(engines())('rest search (%s)', (engine) => {
     expect(found(r.body)).toEqual([ids.p3]);
   });
 
+  test('_filter values are literal: backslashes, commas and dollars in them are just characters', async () => {
+    // the value has two backslashes in a row, a comma and a dollar: a\\b,c$d
+    const value = 'a' + '\\'.repeat(2) + 'b,c$d';
+    const id = await post({ resourceType: 'Practitioner', identifier: [{ system: 'urn:odd', value }] });
+    const f = (x) => search('/r4/Practitioner?_filter=' + encodeURIComponent(x)).then(found);
+    // in a _filter string a backslash escapes the next character, so each is written twice
+    const quoted = (v) => '"' + v.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+    expect(await f(`identifier eq ${quoted('urn:odd|' + value)}`)).toEqual([id]);
+    expect(await f(`identifier eq ${quoted('urn:odd|a\\b,c$d')}`)).toEqual([]);
+    expect(await f(`identifier eq ${quoted('urn:odd|ab,c$d')}`)).toEqual([]);
+    // and as an ordinary parameter, with \ , $ | escaped as the specification says
+    const escaped = value.replace(/([\\,$|])/g, '\\$1');
+    expect(found(await search('/r4/Practitioner?identifier=' + encodeURIComponent('urn:odd|' + escaped)))).toEqual([id]);
+  });
+
   test('a deleted resource is not found', async () => {
     const id = await post({ resourceType: 'Patient', name: [{ family: 'Gone' }] });
     expect(found(await search('/r4/Patient?family=gone'))).toEqual([id]);

@@ -15,7 +15,7 @@
  */
 
 const { badRequest, notFound, gone, preconditionFailed, unprocessable, FhirError } = require('../library/errors');
-const { ifMatchVersion, parseQuery } = require('../request');
+const { ifMatchVersion, etagVersion, parseQuery } = require('../request');
 const { applyPatch, PatchError } = require('../library/json-patch');
 const { ID_RE } = require('../store');
 
@@ -56,8 +56,7 @@ function checkBody(freq, type, id) {
 function notModified(freq, v) {
   const inm = freq.headers['if-none-match'];
   if (inm) {
-    const m = /^\s*(?:W\/)?"?([^"]*)"?\s*$/.exec(inm);
-    return m && m[1] === String(v.versionId);
+    return etagVersion(inm) === String(v.versionId);
   }
   const ims = freq.headers['if-modified-since'];
   if (ims) {

@@ -68,12 +68,28 @@ function corePackage(fhirVersion) {
   return p;
 }
 
-const REF_TYPE = /(?:^|\/)([A-Z][A-Za-z]+)\/[A-Za-z0-9\-.]{1,64}(?:\/_history\/[A-Za-z0-9\-.]{1,64})?$/;
+const TYPE_SEGMENT = /^[A-Z][A-Za-z]{0,63}$/;
+const ID_SEGMENT = /^[A-Za-z0-9\-.]{1,64}$/;
 
-/** The resource type a reference string names, or null */
+/**
+ * The resource type a reference string names ([base/]Type/id[/_history/vid]), or null. By its
+ * last path segments, not a regular expression over the whole string: the string is from a
+ * resource, and a pattern that can start anywhere is slow on a long one.
+ * @param {string} ref
+ */
 function referenceType(ref) {
-  const m = REF_TYPE.exec(ref || '');
-  return m ? m[1] : null;
+  if (typeof ref !== 'string' || !ref || ref.length > 4096) {
+    return null;
+  }
+  const parts = ref.split('/');
+  let n = parts.length;
+  if (n >= 4 && parts[n - 2] === '_history' && ID_SEGMENT.test(parts[n - 1])) {
+    n -= 2;
+  }
+  if (n >= 2 && TYPE_SEGMENT.test(parts[n - 2]) && ID_SEGMENT.test(parts[n - 1])) {
+    return parts[n - 2];
+  }
+  return null;
 }
 
 /**

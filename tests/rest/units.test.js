@@ -5,7 +5,9 @@
 //
 
 const { applyPatch, PatchError } = require('../../rest/library/json-patch');
-const { splitUrl, classify, parseQuery, ifMatchVersion } = require('../../rest/request');
+const { splitUrl, classify, parseQuery, ifMatchVersion, etagVersion } = require('../../rest/request');
+const { referenceType } = require('../../rest/indexing/definitions');
+const { rewriteNarrative } = require('../../rest/interactions/bundle');
 const { tokenise } = require('../../rest/search/filter');
 const { Definitions } = require('../../rest/indexing/definitions');
 const { Indexer } = require('../../rest/indexing/indexer');
@@ -82,6 +84,45 @@ describe('requests', () => {
     expect(ifMatchVersion({ headers: { 'if-match': 'W/"3"' } })).toBe('3');
     expect(ifMatchVersion({ headers: { 'if-match': '"3"' } })).toBe('3');
     expect(ifMatchVersion({ headers: {} })).toBeNull();
+  });
+});
+
+describe('parsing what clients send, in linear time', () => {
+  const quick = (fn) => {
+    const start = Date.now();
+    fn();
+    return Date.now() - start;
+  };
+
+  test('ETags', () => {
+    expect(etagVersion('W/"3"')).toBe('3');
+    expect(etagVersion('"3"')).toBe('3');
+    expect(etagVersion('3')).toBe('3');
+    expect(etagVersion('  W/"12"  ')).toBe('12');
+    expect(etagVersion('W/"3')).toBe('3');
+    expect(quick(() => etagVersion('\t'.repeat(1e6) + 'x'))).toBeLessThan(500);
+  });
+
+  test('the type a reference names', () => {
+    expect(referenceType('Patient/1')).toBe('Patient');
+    expect(referenceType('http://x.org/fhir/Patient/1/_history/2')).toBe('Patient');
+    expect(referenceType('Patient')).toBeNull();
+    expect(referenceType('#c1')).toBeNull();
+    expect(referenceType('urn:uuid:5d9b')).toBeNull();
+    expect(quick(() => referenceType('X'.repeat(4000)))).toBeLessThan(500);
+    expect(quick(() => referenceType('A'.repeat(1e6)))).toBeLessThan(500);
+  });
+
+  test('narrative links in a transaction', () => {
+    const map = new Map([['urn:uuid:1', 'Patient/5']]);
+    const out = rewriteNarrative('<div><a href="urn:uuid:1">x</a> <a title="href" href = \'urn:uuid:1#f\'/> ' +
+      '<img alt="urn:uuid:1" src="urn:uuid:1"/> urn:uuid:1 <abbr href="urn:uuid:1"/> <a hreflang="urn:uuid:1">y</a> <a href="urn:uuid:2">z</a></div>', map);
+    expect(out).toBe('<div><a href="Patient/5">x</a> <a title="href" href = \'Patient/5#f\'/> ' +
+      '<img alt="urn:uuid:1" src="Patient/5"/> urn:uuid:1 <abbr href="urn:uuid:1"/> <a hreflang="urn:uuid:1">y</a> <a href="urn:uuid:2">z</a></div>');
+    expect(rewriteNarrative('<a href="urn:uuid:1">', map)).toBe('<a href="Patient/5">');
+    expect(rewriteNarrative('no tags < at all', map)).toBe('no tags < at all');
+    expect(quick(() => rewriteNarrative('<a'.repeat(200000), map))).toBeLessThan(500);
+    expect(quick(() => rewriteNarrative('<a href="'.repeat(100000) + '>', map))).toBeLessThan(500);
   });
 });
 

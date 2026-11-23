@@ -237,14 +237,32 @@ function strict(freq) {
   return /handling=strict/.test(freq.headers.prefer || '');
 }
 
+// an ETag is short: anything longer than this isn't one of ours
+const MAX_ETAG = 200;
+
+/**
+ * The version an ETag names: W/"3", "3" or 3 all give '3'. Parsed by hand, not with a regular
+ * expression: a header is the client's, and a pattern like \s*"?([^"]*)"?\s* backtracks badly
+ * on a long run of spaces or tabs.
+ * @param {string} text
+ * @returns {string}
+ */
+function etagVersion(text) {
+  let s = String(text).substring(0, MAX_ETAG).trim();
+  if (s.startsWith('W/')) {
+    s = s.substring(2);
+  }
+  if (s.startsWith('"')) {
+    const close = s.indexOf('"', 1);
+    s = close >= 0 ? s.substring(1, close) : s.substring(1);
+  }
+  return s;
+}
+
 /** The version in If-Match (W/"3" or "3" or 3), or null */
 function ifMatchVersion(freq) {
   const v = freq.headers['if-match'];
-  if (!v) {
-    return null;
-  }
-  const m = /^\s*(?:W\/)?"?([^"]*)"?\s*$/.exec(v);
-  return m ? m[1] : v;
+  return v ? etagVersion(v) : null;
 }
 
-module.exports = { fromHttp, fromEntry, splitUrl, parseQuery, param, classify, preferReturn, strict, ifMatchVersion, TYPE_RE };
+module.exports = { fromHttp, fromEntry, splitUrl, parseQuery, param, classify, preferReturn, strict, ifMatchVersion, etagVersion, TYPE_RE };

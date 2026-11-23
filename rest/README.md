@@ -23,6 +23,8 @@ run it.
 - a subscription queue (`SubscriptionQueue`), filled by every write; nothing delivers it yet
 - users and roles from the server's logins (library/auth)
 
+What search supports, parameter by parameter, is in [search.md](search.md).
+
 Not yet: XML, subscription delivery, validation on write, SMART on FHIR, asynchronous
 operations, `$lastn`, `_text` and `_content`, FHIRPath Patch, admin pages.
 

@@ -148,19 +148,89 @@ function mapped(map, s) {
   return null;
 }
 
+/** An XHTML attribute's value as text (the entities an attribute holds) */
+function unescapeAttribute(s) {
+  return s.replace(/&(lt|gt|quot|#39|apos|amp);/g, (m, e) => ({ lt: '<', gt: '>', quot: '"', '#39': '\'', apos: '\'', amp: '&' })[e]);
+}
+
+/** A value for an XHTML attribute */
+function escapeAttribute(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 /**
  * Point the links in a narrative at the new resources: only <a href> and <img src>, and only
  * attributes that match exactly (or up to a #). Nothing else in the XHTML is touched.
  */
 function rewriteNarrative(div, map) {
-  return div.replace(/<(a|img)\b[^>]*>/gi, (tag, name) => {
-    const attr = name.toLowerCase() === 'a' ? 'href' : 'src';
-    return tag.replace(new RegExp(`(\\s${attr}\\s*=\\s*)(["'])([^"']*)\\2`, 'i'), (m, pre, q, value) => {
-      const unescaped = value.replace(/&amp;/g, '&');
-      const to = mapped(map, unescaped);
-      return to === null ? m : `${pre}${q}${to.replace(/&/g, '&amp;')}${q}`;
-    });
-  });
+  // a single pass over the text (the narrative is the client's: no pattern that can backtrack)
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const lt = div.indexOf('<', i);
+    if (lt < 0) {
+      break;
+    }
+    const gt = div.indexOf('>', lt);
+    if (gt < 0) {
+      break;
+    }
+    const tag = div.substring(lt, gt + 1);
+    const name = tagName(tag);
+    out += div.substring(i, lt) + (name === 'a' ? rewriteAttribute(tag, 'href', map) : name === 'img' ? rewriteAttribute(tag, 'src', map) : tag);
+    i = gt + 1;
+  }
+  return out + div.substring(i);
+}
+
+/** The lower-case name of an opening tag ('<a href=..>' is 'a'), or null */
+function tagName(tag) {
+  let j = 1;
+  while (j < tag.length && /[A-Za-z0-9]/.test(tag[j])) {
+    j++;
+  }
+  return j > 1 ? tag.substring(1, j).toLowerCase() : null;
+}
+
+function isSpace(c) {
+  return c === ' ' || c === '\t' || c === '\n' || c === '\r' || c === '\f';
+}
+
+/** A tag with one attribute's value mapped, if it is quoted and has a mapping */
+function rewriteAttribute(tag, attr, map) {
+  const lower = tag.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(attr, from);
+    if (at < 0) {
+      return tag;
+    }
+    from = at + attr.length;
+    if (!isSpace(lower[at - 1])) {
+      continue;
+    }
+    let k = from;
+    while (isSpace(lower[k])) {
+      k++;
+    }
+    if (lower[k] !== '=') {
+      continue;
+    }
+    k++;
+    while (isSpace(lower[k])) {
+      k++;
+    }
+    const q = tag[k];
+    if (q !== '"' && q !== '\'') {
+      return tag;
+    }
+    const end = tag.indexOf(q, k + 1);
+    if (end < 0) {
+      return tag;
+    }
+    const to = mapped(map, unescapeAttribute(tag.substring(k + 1, end)));
+    return to === null ? tag : tag.substring(0, k + 1) + escapeAttribute(to) + tag.substring(end);
+  }
 }
 
 /**

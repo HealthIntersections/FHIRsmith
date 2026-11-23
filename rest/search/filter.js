@@ -25,6 +25,16 @@ const { badRequest } = require('../library/errors');
 const { dateRange, numberRange } = require('../../library/fhir-search-values');
 const { normalise } = require('../indexing/values');
 
+/**
+ * A _filter value (already unquoted: every character in it is literal) in the form the search
+ * parser reads, where a backslash escapes the next character: so backslashes are doubled. A |
+ * stays a separator (system|code), as it is in _filter.
+ * @param {string} value
+ */
+function asSearchValue(value) {
+  return value.replace(/\\/g, '\\\\');
+}
+
 const OPS = new Set(['eq', 'ne', 'co', 'sw', 'ew', 'gt', 'lt', 'ge', 'le', 'ap', 'sa', 'eb', 'pr', 'po', 'ss', 'sb', 'in', 'ni', 're']);
 const MAX_LENGTH = 4000;
 
@@ -224,7 +234,7 @@ class FilterParser {
         if (op === 'in' || op === 'ni') {
           return node([{ mode: 'in', valueSet: value, negate: op === 'ni' }]);
         }
-        const v = sp.tokenValue(op === 'ss' ? 'below' : op === 'sb' ? 'above' : null, value.replace(/([,$])/g, '\\$1'));
+        const v = sp.tokenValue(op === 'ss' ? 'below' : op === 'sb' ? 'above' : null, asSearchValue(value));
         if (!['eq', 'ne', 'ss', 'sb'].includes(op)) {
           throw badRequest(`_filter: ${op} can't be used on the token parameter ${path}`);
         }
@@ -260,7 +270,7 @@ class FilterParser {
         if (!['eq', 'ne', 're'].includes(op)) {
           throw badRequest(`_filter: ${op} can't be used on the reference parameter ${path}`);
         }
-        const v = sp.referenceValue(l, null, value);
+        const v = sp.referenceValue(l, null, asSearchValue(value));
         v.negate = negate;
         return node([v]);
       }
@@ -286,4 +296,4 @@ function parseFilter(sp, types, text) {
   return new FilterParser(sp, types, text).parse();
 }
 
-module.exports = { parseFilter, tokenise };
+module.exports = { parseFilter, tokenise, asSearchValue };
