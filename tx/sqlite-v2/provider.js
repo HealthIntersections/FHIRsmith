@@ -1220,8 +1220,6 @@ class SqliteV2Provider extends BaseCSServices {
     set.complete = result.complete;
     set.result = result;
     if (trace) trace.annotate({ codesReturned: page.length, total: result.complete ? result.total : null });
-    const expressionsFalse = includes.some((inc) => (inc.filter || []).some((f) => f.property === 'expressions' && String(f.value) === 'false'));
-    const supplementOnly = includes.length > 0 && includes.every((inc) => (inc.filter || []).length > 0 && inc.filter.every((f) => this._isSupplementFilter(f)));
     // count=0 on the whole system: what expand.js asks the built-in provider for (countAllCodes:
     // cs-snomed.js the concepts, or the active ones for a compose without inactive codes; cs-loinc.js
     // every code), not the walk's count (activeOnly does not change it; SNOMED CT's walk does not
@@ -1231,7 +1229,33 @@ class SqliteV2Provider extends BaseCSServices {
     const whole = result.wholeSystem || (this.dialect.name === 'rxnorm' && includes.length === 1 && !excludes.length
       && ['filter', 'concept', 'valueSet'].every((k) => !(includes[0][k] || []).length));
     const total = count === 0 && whole ? await this.countAllCodes(excludeInactive) : result.total;
-    return { sets: [set], total: result.complete ? total : -1, notClosed: await this.filtersNotClosed({ expressionsFalse, supplementOnly }) };
+    return { sets: [set], total: result.complete ? total : -1, notClosed: await this._selectionNotClosed(includes, excludes) };
+  }
+
+  /**
+   * Whether a compose processSelection took is open, as the usual path decides it one include and
+   * exclude at a time (expand.js includeCodes / excludeCodes): the code system is open
+   * (isNotClosed) and an include of the whole system, or an include or exclude whose filters are
+   * open (filtersNotClosed: not every one a supplement's, and none `expressions = false`), makes
+   * the expansion open. So one include with `expressions = false` does not close a union.
+   */
+  async _selectionNotClosed(includes, excludes) {
+    const open = async (cset) => {
+      const filters = cset.filter || [];
+      const prep = {
+        expressionsFalse: filters.some((f) => f.property === 'expressions' && String(f.value) === 'false'),
+        supplementOnly: filters.length > 0 && filters.every((f) => this._isSupplementFilter(f))
+      };
+      return filters.length > 0 && await this.filtersNotClosed(prep);
+    };
+    if (!this.isNotClosed()) return false;
+    for (const cset of includes) {
+      if (!(cset.filter || []).length || await open(cset)) return true;
+    }
+    for (const cset of excludes) {
+      if (await open(cset)) return true;
+    }
+    return false;
   }
 
   /**

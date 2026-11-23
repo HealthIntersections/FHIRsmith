@@ -177,3 +177,37 @@ describe('SNOMED CT filter properties and operators: accepted and refused as mai
     expect(r.v2).toEqual(r.main);
   });
 });
+
+describe('SNOMED CT closedness of unions and excludes, as main', () => {
+  // main decides one include and exclude at a time (expand.js includeCodes / excludeCodes): an
+  // include of the whole system, or an include or exclude whose filters are not closed
+  // (cs-snomed.js filtersNotClosed: none of them `expressions = false`), makes the expansion
+  // unclosed; one include with `expressions = false` does not close a union
+  // 235856003 |Disease of liver|, 10200004 |Liver structure|, 192008 |Congenital syphilitic hepatomegaly| (a disease of liver)
+  const E = { property: 'expressions', op: '=', value: 'false' };
+  const isa = (code, closed) => ({ system: SCT, filter: [{ property: 'concept', op: 'is-a', value: code }, ...(closed ? [E] : [])] });
+  const cases = [
+    ['is-a+E', [isa('235856003', true)], [], false],
+    ['is-a', [isa('235856003', false)], [], true],
+    ['is-a+E, is-a+E', [isa('235856003', true), isa('10200004', true)], [], false],
+    ['is-a+E, is-a', [isa('235856003', true), isa('10200004', false)], [], true],
+    ['is-a, is-a+E', [isa('235856003', false), isa('10200004', true)], [], true],
+    ['is-a+E, whole system', [isa('235856003', true), { system: SCT }], [], true],
+    ['is-a+E exclude is-a', [isa('235856003', true)], [isa('192008', false)], true],
+    ['is-a+E exclude is-a+E', [isa('235856003', true)], [isa('192008', true)], false],
+    ['is-a+E, is-a+E exclude is-a', [isa('235856003', true), isa('10200004', true)], [isa('192008', false)], true],
+  ];
+  test.each(cases)('%s', async (name, include, exclude, unclosed) => {
+    const compose = exclude.length ? { include, exclude } : { include };
+    const vs = { resourceType: 'ValueSet', status: 'active', compose };
+    const r = await both(async () => {
+      const res = await call('post', '/tx/r5/ValueSet/$expand', { resourceType: 'Parameters', parameter: [{ name: 'valueSet', resource: vs }, { name: 'count', valueInteger: 10 }] });
+      const ext = (res.body.expansion || {}).extension || [];
+      return { status: res.status, unclosed: ext.some((e) => e.url.endsWith('valueset-unclosed') && e.valueBoolean),
+        reasons: ext.filter((e) => e.url.endsWith('valueset-unclosed-reason')).map((e) => e.valueString) };
+    });
+    expect(r.v2).toEqual(r.main);
+    expect(r.v2.status).toBe(200);
+    expect(r.v2.unclosed).toBe(unclosed);
+  });
+});
