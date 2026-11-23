@@ -9,10 +9,12 @@
   "kind": "operation",
   "date": "2026-11-22",
   "publisher": "Health Intersections Pty Ltd (FHIRsmith)",
-  "description": "Returns a document stored in a FHIRsmith IPS project as the web page's source view gives it for download or sharing: optionally with the narrative regenerated, signed by the user and/or the system, and with the patient's comments added - in that order. Any existing patient notes section (LOINC 51855-5) is removed before signing, and the patient's comments are added after signing, as the Composition's first section (LOINC 51855-5), so they are not signed.\n\nThe response is chosen by the Accept header, or by _format (a short name or the mime type):\n\n* application/fhir+json or application/json (json - the default): the document\n* application/zip (zip): a ZIP holding the document as {name}.json\n* application/pdf (pdf): a PDF of the document's narrative, with the document attached as {name}.json\n* application/smart-health-link (shl): the document shared as a SMART Health Link; the response is the QR code as a PNG, with the link in the X-Health-Link header, the manifest URL in X-Health-Link-Manifest, and the expiry in X-Health-Link-Expires\n* application/verified-health-link (vhl): the same, as a Verifiable Health Link (GDHCN)\n\nAnything else is 406. Errors are OperationOutcomes. $document shares the rate limit of the web page's sharing and signed downloads.",
+  "description": "Returns a document stored in a FHIRsmith IPS project as the web page's source view gives it for download or sharing: optionally with the narrative regenerated, signed by the user and/or the system, and with the patient's comments added - in that order. Any existing patient notes section (LOINC 51855-5) is removed before signing, and the patient's comments are added after signing, as the Composition's first section (LOINC 51855-5), so they are not signed.\n\nWhat comes back is chosen by the format-type parameter, when it is given; otherwise by the Accept header (or _format, which takes the same mime types):\n\n* json - application/fhir+json or application/json (the default): the document\n* zip - application/zip: a ZIP holding the document as {name}.json\n* pdf - application/pdf: a PDF of the document's narrative, with the document attached as {name}.json\n* vhl - image/png: the document shared as a Verifiable Health Link (GDHCN); the response is the QR code as a PNG, with what it carries in the X-Health-Link header, the manifest URL in X-Health-Link-Manifest, and the expiry in X-Health-Link-Expires\n* shl - image/png, with format-type=shl: the same, as a SMART Health Link\n\nAccept: image/png without format-type gives a VHL. Anything else is 406. Errors are OperationOutcomes. $document shares the rate limit of the web page's sharing and signed downloads.",
   "affectsState": false,
   "code": "document",
-  "resource": ["Bundle"],
+  "resource": [
+    "Bundle"
+  ],
   "system": false,
   "type": false,
   "instance": true,
@@ -23,6 +25,14 @@
       "min": 0,
       "max": "1",
       "documentation": "original (the default): the document as submitted; modified: the copy the processing pipeline made (translations, generated narrative, terminology checks). 409 if the document has not been processed yet",
+      "type": "code"
+    },
+    {
+      "name": "format-type",
+      "use": "in",
+      "min": 0,
+      "max": "1",
+      "documentation": "What to return: json (the document), pdf, zip, or a QR code (image/png) - shl (a SMART Health Link) or vhl (a Verifiable Health Link, the default for a QR code). When given, it decides, whatever the Accept header (or _format) says",
       "type": "code"
     },
     {

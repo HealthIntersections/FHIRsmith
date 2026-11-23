@@ -34,8 +34,27 @@
  *     usually asks a terminology server - asynchronously, so the evaluation must be
  *     (evaluateAsync); answers are best cached (membership.js).
  *
- * min and max are optional (together): with neither, there is no constraint; max may
- * be '*'. Being outside the bounds is not an error - the item adds nothing.
+ *   isKnown(), hasData()
+ *     The input: sections. isKnown(): each has no emptyReason, or a nil known one
+ *     (list-empty-reason#nilknown) - any other emptyReason is not known. hasData(): each has an
+ *     emptyReason, or else entries. Empty on no input; false for an item that isn't a section
+ *     of a Composition (the one above it, or the document's).
+ *
+ *   sameSubject([other])
+ *     On a section: true when it has no focus, otherwise whether the focus is the subject of
+ *     other - or, without other, of its Composition. On a resource: whether its subject (or
+ *     patient) is other's - or, without other, the document's Composition's (the evaluation
+ *     must be on a Bundle of type document). Empty when the input isn't one item, other is
+ *     given but isn't one item, or a subject is missing (or more than one). References are the
+ *     same when their reference strings are identical (both having one), else when their
+ *     identifiers' system and value are (both having one); otherwise not. (other is evaluated
+ *     as fhirpath.js does a function's argument, from the root: use %resource.)
+ *
+ *   These are the Java DocumentFunctions' (org.hl7.fhir.core), which the validator runs.
+ *
+ * min and max are optional (together): with neither, section() is 1..1 (one such section:
+ * two of the same is none) and entry() and entryIn() are 0..* (no constraint), as in the Java
+ * DocumentFunctions; max may be '*'. Being outside the bounds is not an error - the item adds nothing.
  *
  * References are resolved in the Bundle the section is in: found by walking up from the
  * section, or else the Bundle the expression was evaluated on (the evaluation's
@@ -66,10 +85,13 @@ function num(v) {
   return v && typeof v === 'object' && typeof v.toNumber === 'function' ? v.toNumber() : v;
 }
 
-/** min and max from the arguments: min an Integer, max an Integer or '*'. */
-function bounds(fnName, min, max) {
+/**
+ * min and max from the arguments: min an Integer, max an Integer or '*'; without them, the
+ * function's default (section(): 1..1; the others: 0..*), as the Java DocumentFunctions has them.
+ */
+function bounds(fnName, min, max, defaults = { min: 0, max: Infinity }) {
   if (min === undefined) {
-    return { min: 0, max: Infinity };
+    return { ...defaults };
   }
   min = num(min);
   if (!Number.isInteger(min) || min < 0) {
@@ -307,13 +329,73 @@ function membersOf(ctx, fnName, nodes, url, membership) {
  *   Composition, it returns the resource or null. membership: whether a CodeableConcept is
  *   in a value set (a canonical) - without it, entryIn() and resourcesIn() find nothing
  */
+// ---- the section checks, and sameSubject() --------------------------------------------------
+
+const LIST_EMPTY_REASON = 'http://terminology.hl7.org/CodeSystem/list-empty-reason';
+
+/** Whether data is one of a Composition's sections, at any depth (by identity). */
+function isSectionOf(comp, data) {
+  const walk = (list) => Array.isArray(list) && list.some(s => s === data || (isObject(s) && walk(s.section)));
+  return isObject(comp) && walk(comp.section);
+}
+
+/**
+ * The Composition an item is a section of, at any depth: the one above it, or the document's
+ * the evaluation is on (or the Composition it is on) - null when the item isn't a section of one.
+ */
+function sectionComposition(ctx, item) {
+  const data = valData(item);
+  if (!isObject(data) || data.resourceType) {
+    return null;
+  }
+  const above = item instanceof ResourceNode ? ancestor(item, 'Composition') : null;
+  if (above && isSectionOf(valData(above), data)) {
+    return valData(above);
+  }
+  const roots = Array.isArray(ctx.dataRoot) ? ctx.dataRoot : [ctx.dataRoot];
+  for (const r of roots) {
+    const comp = compositionNode(ctx, r);
+    if (comp && isSectionOf(valData(comp), data)) {
+      return valData(comp);
+    }
+  }
+  return null;
+}
+
+/** A resource's subject (or patient), when it has one: null when it has neither, or more than one (R5+ Composition.subject repeats). */
+function subjectOf(resource) {
+  if (!isObject(resource)) {
+    return null;
+  }
+  const s = resource.subject !== undefined ? resource.subject : resource.patient;
+  const list = Array.isArray(s) ? s : (s === undefined ? [] : [s]);
+  return list.length === 1 && isObject(list[0]) ? list[0] : null;
+}
+
+/**
+ * Whether two references are to the same thing: identical reference strings, when both have one;
+ * else, when both have an identifier, the same system and value; otherwise false.
+ */
+function sameReference(a, b) {
+  const refA = typeof a.reference === 'string' ? a.reference : '';
+  const refB = typeof b.reference === 'string' ? b.reference : '';
+  if (refA && refB) {
+    return refA === refB;
+  }
+  if (isObject(a.identifier) && isObject(b.identifier)) {
+    const value = a.identifier.value;
+    return typeof value === 'string' && value !== '' && value === b.identifier.value && a.identifier.system === b.identifier.system;
+  }
+  return false;
+}
+
 function ipsFunctions(options = {}) {
   const resolve = typeof options.resolve === 'function' ? options.resolve : null;
   const membership = typeof options.membership === 'function' ? options.membership : () => false;
 
   function section(inputs, system, code, min, max) {
     const ctx = this;
-    const b = bounds('section', min, max);
+    const b = bounds('section', min, max, { min: 1, max: 1 });
     const out = [];
     for (const item of inputs) {
       const comp = compositionNode(ctx, item);
@@ -367,12 +449,75 @@ function ipsFunctions(options = {}) {
   const arity = { 2: ['String', 'String'], 4: ['String', 'String', 'Integer', 'Any'] };
   // internalStructures: the input and output are nodes, so the paths (and the Bundle a
   // section is in) are known; and fhirpath.js calls the function with the context as this
+  // isKnown(): each input a section with no emptyReason, or a nil known one
+  function isKnown(inputs) {
+    if (inputs.length === 0) {
+      return [];
+    }
+    return [inputs.every(item => {
+      if (!sectionComposition(this, item)) {
+        return false;
+      }
+      const reason = valData(item).emptyReason;
+      return reason === undefined || hasCoding(reason, LIST_EMPTY_REASON, 'nilknown');
+    })];
+  }
+
+  // hasData(): each input a section with an emptyReason, or else entries
+  function hasData(inputs) {
+    if (inputs.length === 0) {
+      return [];
+    }
+    return [inputs.every(item => {
+      if (!sectionComposition(this, item)) {
+        return false;
+      }
+      const s = valData(item);
+      return s.emptyReason !== undefined || (Array.isArray(s.entry) && s.entry.length > 0);
+    })];
+  }
+
+  // sameSubject([other]): as the Java DocumentFunctions.sameSubject
+  function sameSubject(inputs, other) {
+    if (inputs.length !== 1) {
+      return [];
+    }
+    if (other !== undefined && other.length !== 1) {
+      return [];
+    }
+    const item = inputs[0];
+    const comp = sectionComposition(this, item);
+    if (comp) {
+      // a section: its focus, if it has one, against the Composition's subject (or other's)
+      const focus = valData(item).focus;
+      if (!isObject(focus)) {
+        return [true];
+      }
+      const target = subjectOf(other !== undefined ? valData(other[0]) : comp);
+      return target ? [sameReference(focus, target)] : [];
+    }
+    let o;
+    if (other !== undefined) {
+      o = valData(other[0]);
+    } else {
+      const bundle = rootBundle(this);
+      const doc = bundle ? valData(bundle) : null;
+      o = doc && doc.type === 'document' ? valData(compositionNode(this, bundle)) : null;
+    }
+    const a = subjectOf(valData(item));
+    const b = subjectOf(o);
+    return a && b ? [sameReference(a, b)] : [];
+  }
+
   return {
     section: { fn: section, arity, internalStructures: true },
     entry: { fn: entry, arity, internalStructures: true },
     resources: { fn: resources, arity: { 2: ['String', 'String'], 3: ['String', 'String', 'String'] }, internalStructures: true },
     entryIn: { fn: entryIn, arity: { 1: ['String'], 3: ['String', 'Integer', 'Any'] }, internalStructures: true },
-    resourcesIn: { fn: resourcesIn, arity: { 1: ['String'], 2: ['String', 'String'] }, internalStructures: true }
+    resourcesIn: { fn: resourcesIn, arity: { 1: ['String'], 2: ['String', 'String'] }, internalStructures: true },
+    isKnown: { fn: isKnown, arity: { 0: [] }, internalStructures: true },
+    hasData: { fn: hasData, arity: { 0: [] }, internalStructures: true },
+    sameSubject: { fn: sameSubject, arity: { 0: [], 1: ['Any'] }, internalStructures: true }
   };
 }
 
