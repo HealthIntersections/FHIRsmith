@@ -556,6 +556,27 @@
         "autoLoadPackages": true
         // , "profiles": ["http://hl7.org/fhir/uv/ips/StructureDefinition/Bundle-uv-ips"]
       }
+    },
+    // Database-backed FHIR RESTful servers. See rest/README.md. config.json says only where
+    // each endpoint is and which database it uses: everything else about an endpoint is kept
+    // in its own database. Users get the rest read / write / manage roles per endpoint
+    "rest": {
+      "enabled": false,
+      "endpoints": [
+        {
+          "path": "/fhir/r4",
+          // fixed when the database is made
+          "fhirVersion": "4.0.1",
+          // a SQLite file (relative paths resolve under the databases directory), or MySQL:
+          // { "type": "mysql", "host": "localhost", "database": "fhir_r4", "user": "fhirsmith",
+          //   "passwordEnv": "FHIR_R4_DB_PASSWORD" } - never a password here: passwordEnv names
+          // an environment variable, passwordFile a file only the server can read
+          "database": { "type": "sqlite", "file": "rest/fhir-r4.db" },
+          // settings written into a new database (rest/README.md, "Settings"); after that the
+          // database's own values are used
+          "initialSettings": { "name": "FHIRsmith R4 test server", "anonymous": "read", "txServer": "/tx/r4" }
+        }
+      ]
     }
   }
 }

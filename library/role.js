@@ -13,14 +13,42 @@
  * - master: every configured module, every background job, $closure and the syndication
  *   feed. The VSAC provider syncs and, after each sync, bumps a generation counter that the
  *   workers watch.
- * - tx-worker: the tx module only. No background jobs, no statistics database, no $closure
- *   or syndication store (those requests go to the master), and the VSAC provider only
- *   reads what the master's sync wrote.
+ * - tx-worker: the modules in server.cluster.workerModules - the tx module by default, and
+ *   the rest module if it is listed (["tx", "rest"]). No background jobs, no statistics
+ *   database, no $closure or syndication store (those requests go to the master), the VSAC
+ *   provider only reads what the master's sync wrote, and the rest module's endpoints wait
+ *   for the master's schema migrations and leave its jobs to the master.
  *
  * @module library/role
  */
 
 const ROLES = ['master', 'tx-worker'];
+
+// the modules a worker can run (server.cluster.workerModules): those whose state is all in
+// files or databases every process can share. The tx module is always one of them
+const WORKER_MODULES = ['tx', 'rest'];
+const DEFAULT_WORKER_MODULES = ['tx'];
+
+/**
+ * The modules a worker runs: server.cluster.workerModules, checked.
+ * @param {Object} config
+ * @returns {string[]}
+ */
+function workerModules(config) {
+  const list = config.server && config.server.cluster && config.server.cluster.workerModules;
+  if (list === undefined || list === null) {
+    return DEFAULT_WORKER_MODULES;
+  }
+  if (!Array.isArray(list) || list.some(m => typeof m !== 'string')) {
+    throw new Error('server.cluster.workerModules must be a list of module names, e.g. ["tx", "rest"]');
+  }
+  for (const m of list) {
+    if (!WORKER_MODULES.includes(m)) {
+      throw new Error(`server.cluster.workerModules: a worker can't run the ${m} module (only ${WORKER_MODULES.join(' and ')})`);
+    }
+  }
+  return list.includes('tx') ? list : ['tx', ...list];
+}
 
 /**
  * An instance code goes in front of every cache-id the process issues, and a front door
@@ -172,9 +200,10 @@ function applyRole(config, role) {
     const interval = stats.intervalMinutes > 0 ? stats.intervalMinutes * 60 : 600;
     config.stats = { ...stats, sampleSeconds: Math.min(ROLE_SAMPLE_SECONDS, interval) };
   }
+  const keep = workerModules(config);
   if (role.role === 'tx-worker') {
     for (const [name, mod] of Object.entries(config.modules)) {
-      if (name !== 'tx' && mod) {
+      if (!keep.includes(name) && mod) {
         mod.enabled = false;
       }
     }
@@ -190,8 +219,8 @@ function describeRole(role, config) {
   const code = config.modules.tx.instanceCode;
   return role.role === 'master'
     ? `Role: master (instance code ${code}): all modules, background jobs, $closure`
-    : `Role: tx-worker (instance code ${code}): the tx module only, no background jobs`;
+    : `Role: tx-worker (instance code ${code}): the ${workerModules(config).join(' and ')} module${workerModules(config).length > 1 ? 's' : ''} only, no background jobs`;
 }
 
-module.exports = { parseRole, applyRole, describeRole, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
+module.exports = { parseRole, applyRole, describeRole, workerModules, WORKER_MODULES, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
   DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, ROLE_SAMPLE_SECONDS, READY, ROLES };

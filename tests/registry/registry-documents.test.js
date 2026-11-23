@@ -181,7 +181,10 @@ describe('documents', () => {
     r = await form(admin, '/tx-reg/docs', { name: 'bad', type: 'json', content: '{oops' }, '/tx-reg/docs/new');
     expect(r.status).toBe(400);
     expect(r.text).toContain('not valid JSON');
-    r = await form(admin, '/tx-reg/docs', { name: 'config.v1', type: 'md', content: 'x' }, '/tx-reg/docs/new');
+    // its own document to collide with, so that it runs on its own (jest -t) as well as after the others
+    r = await form(admin, '/tx-reg/docs', { name: 'taken', type: 'md', content: 'x' }, '/tx-reg/docs/new');
+    expect(r.status).toBe(302);
+    r = await form(admin, '/tx-reg/docs', { name: 'taken', type: 'md', content: 'y' }, '/tx-reg/docs/new');
     expect(r.status).toBe(400);
     expect(r.text).toContain('already a document');
     expect((await html(request(app).get('/tx-reg/docs/nothing'))).status).toBe(404);

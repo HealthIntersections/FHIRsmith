@@ -103,19 +103,14 @@ function isOn(v) {
 // its OperationDefinition (ips/OperationDefinition-ips-document.json), where it is on GitHub
 const DOCUMENT_OPERATION_DEFINITION = 'https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json';
 
-// what $document gives, by the name _format takes (a short name, or the mime type)
-const DOCUMENT_FORMATS = {
-  json: 'application/fhir+json',
-  zip: 'application/zip',
-  pdf: 'application/pdf',
-  shl: 'application/smart-health-link',
-  vhl: 'application/verified-health-link'
-};
+// what $document gives (format-type), and the mime types (Accept, _format) that ask for each:
+// image/png is a QR code - a VHL, unless format-type says shl
+const DOCUMENT_FORMAT_TYPES = ['json', 'pdf', 'zip', 'shl', 'vhl'];
 const DOCUMENT_MIME = {
-  'application/fhir+json': 'json', 'application/json': 'json', 'fhir+json': 'json', '*/*': 'json', 'application/*': 'json',
-  'application/zip': 'zip', 'application/pdf': 'pdf',
-  'application/smart-health-link': 'shl', 'application/verified-health-link': 'vhl'
+  'application/fhir+json': 'json', 'application/json': 'json', 'fhir+json': 'json', json: 'json', '*/*': 'json', 'application/*': 'json',
+  'application/zip': 'zip', 'application/pdf': 'pdf', 'image/png': 'vhl'
 };
+const DOCUMENT_ACCEPTS = 'application/fhir+json (or application/json), application/zip, application/pdf, or image/png';
 const DOCUMENT_BOOLEANS = { 'user-sign': 'userSign', 'system-sign': 'systemSign', 'patient-notes': 'patientNotes', 'regenerate-narrative': 'regenerateNarrative' };
 // the outcome code for each status a copy can fail with
 const OUTCOME_CODES = { 401: 'login', 404: 'not-supported', 409: 'conflict', 422: 'processing', 429: 'throttled', 503: 'transient' };
@@ -125,7 +120,7 @@ const OUTCOME_CODES = { 401: 'login', 404: 'not-supported', 409: 'conflict', 422
  * @returns {{source: string, userSign: boolean, systemSign: boolean, patientNotes: boolean, regenerateNarrative: boolean, problems: string[]}}
  */
 function documentParameters(req) {
-  const out = { source: 'original', userSign: false, systemSign: false, patientNotes: false, regenerateNarrative: false, problems: [] };
+  const out = { source: 'original', formatType: null, userSign: false, systemSign: false, patientNotes: false, regenerateNarrative: false, problems: [] };
   const given = [];
   if (req.method === 'POST') {
     let b = req.body;
@@ -159,6 +154,12 @@ function documentParameters(req) {
       } else {
         out.problems.push(`source is original or modified, not '${v}'`);
       }
+    } else if (k === 'format-type') {
+      if (DOCUMENT_FORMAT_TYPES.includes(v)) {
+        out.formatType = v;
+      } else {
+        out.problems.push(`format-type is ${DOCUMENT_FORMAT_TYPES.join(', ')}, not '${v}'`);
+      }
     } else if (DOCUMENT_BOOLEANS[k]) {
       if (v === true || v === 'true') {
         out[DOCUMENT_BOOLEANS[k]] = true;
@@ -166,17 +167,21 @@ function documentParameters(req) {
         out.problems.push(`${k} is true or false, not '${v}'`);
       }
     } else {
-      out.problems.push(`$document has no parameter '${k}' (it takes source, ${Object.keys(DOCUMENT_BOOLEANS).join(', ')})`);
+      out.problems.push(`$document has no parameter '${k}' (it takes source, format-type, ${Object.keys(DOCUMENT_BOOLEANS).join(', ')})`);
     }
   }
   return out;
 }
 
-/** What $document should give: _format (a short name or mime type), else Accept (by preference). @returns {string|null} */
+/**
+ * What $document should give, when format-type doesn't say: _format (a mime type, or json), else
+ * Accept (by preference). image/png is a VHL's QR code (format-type=shl for an SHL's).
+ * @returns {string|null} json, zip, pdf or vhl; null for nothing it gives
+ */
 function documentFormat(req) {
   const f = typeof req.query._format === 'string' ? req.query._format.trim().toLowerCase().replace(/ /g, '+') : '';
   if (f) {
-    return DOCUMENT_FORMATS[f] ? f : (DOCUMENT_MIME[f] || null);
+    return DOCUMENT_MIME[f] || null;
   }
   const accept = req.get('Accept');
   if (!accept) {
@@ -635,15 +640,21 @@ class IpsModule {
     r.get('/lookup', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.systemLookup(req, res)));
     r.get('/lookup-vs', this.session, adminJson, ...this.lookups, h('lookup', (req, res) => this.valueSetLookup(req, res)));
     r.get('/StructureDefinition', ...this.web, h('profiles', (req, res) => this.profileList(req, res)));
-    r.get('/StructureDefinition/new', this.session, this.csrf, admin, h('profiles', (req, res) => this.profileEditor(req, res, null)));
     r.post('/StructureDefinition', this.sameOrigin, this.session, json, this.csrf, adminJson, h('profiles', (req, res) => this.profileSave(req, res, null)));
     r.get('/StructureDefinition/:id', profile, ...this.web, h('profile', (req, res) => this.profileRead(req, res)));
-    r.get('/StructureDefinition/:id/edit', profile, this.session, this.csrf, admin, h('profile', (req, res) => this.profileEditor(req, res, req.profile)));
+    // an old link to the full editor (there is no full editor now): the profile's page
+    r.get('/StructureDefinition/:id/edit', profile, (req, res) => res.redirect(`${req.baseUrl}/StructureDefinition/${req.profile.id}`));
+    r.post('/StructureDefinition/:id/title', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.profileRename(req, res)));
     r.post('/StructureDefinition/:id', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.profileSave(req, res, req.profile)));
     // one constraint at a time, from the profile's page: add, edit (keeping its key), delete
     r.post('/StructureDefinition/:id/constraint', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.constraintSave(req, res, null)));
     r.post('/StructureDefinition/:id/constraint/:key', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.constraintSave(req, res, req.params.key)));
     r.post('/StructureDefinition/:id/constraint/:key/delete', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.constraintDelete(req, res)));
+    // guided input, one guide at a time: add, edit, delete, and move up or down in its section
+    r.post('/StructureDefinition/:id/guide', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.guideSave(req, res, null)));
+    r.post('/StructureDefinition/:id/guide/:n', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.guideSave(req, res, req.params.n)));
+    r.post('/StructureDefinition/:id/guide/:n/delete', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.guideDelete(req, res)));
+    r.post('/StructureDefinition/:id/guide/:n/move', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.guideMove(req, res)));
     r.post('/StructureDefinition/:id/delete', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => {
       this.store.deleteProfile(req.profileId);
       res.redirect(req.baseUrl + '/StructureDefinition');
@@ -1715,7 +1726,8 @@ class IpsModule {
   /**
    * $document on a stored document (GET, or POST with a Parameters resource): the document as the
    * source view's banner gives it - signed, with the patient's comments, the narrative regenerated
-   * (preparedCopy) - as JSON, a ZIP, a PDF, or an SHL/VHL QR code (a PNG), by Accept or _format.
+   * (preparedCopy) - as JSON, a ZIP, a PDF, or an SHL/VHL QR code (image/png), by the format-type
+   * parameter, else _format or Accept (image/png is a VHL's QR code).
    * Its OperationDefinition is ips/OperationDefinition-ips-document.json.
    */
   async documentOperation(req, res) {
@@ -1728,9 +1740,10 @@ class IpsModule {
     if (p.problems.length > 0) {
       return this.sendOutcome(res, 400, 'invalid', p.problems);
     }
-    const format = documentFormat(req);
+    // format-type, when given, decides (over Accept and _format)
+    const format = p.formatType || documentFormat(req);
     if (!format) {
-      return this.sendOutcome(res, 406, 'not-supported', `$document gives ${Object.keys(DOCUMENT_FORMATS).map(k => DOCUMENT_FORMATS[k]).join(', ')}: not ${req.query._format || req.get('Accept')}`);
+      return this.sendOutcome(res, 406, 'not-supported', `$document gives ${DOCUMENT_ACCEPTS}: not ${req.query._format || req.get('Accept')} (or use format-type)`);
     }
     const modified = p.source === 'modified';
     const doc = modified ? row.analysed : row.bundle;
@@ -2540,8 +2553,9 @@ class IpsModule {
     const ctx = { ...this.ctx(req, res), valueSetTitle: (url) => this.valueSetTitle(url), profileTitle: (url) => this.profileTitle(url) };
     // the administrator edits the rows in place, a row at a time
     const editor = ctx.user?.isAdmin ? {
-      constraints: this.editorConstraints(sd),
-      sections: profiles.IPS_SECTIONS, systems: profiles.SYSTEMS, resourceTypes: profiles.RESOURCE_TYPES, sectionSystem: editorSchema.LOINC, canLookup: !!this.tx
+      constraints: this.editorConstraints(sd), guides: profiles.guidesOf(sd),
+      sections: profiles.IPS_SECTIONS, systems: profiles.SYSTEMS, resourceTypes: profiles.RESOURCE_TYPES, sectionSystem: editorSchema.LOINC, canLookup: !!this.tx,
+      questionTypes: profiles.QUESTION_TYPES, guideResources: profiles.GUIDE_RESOURCES
     } : null;
     this.sendHtml(res, `Clinical Profile: ${sd.title}`, render.renderProfile(sd, ctx, editor), Date.now(), req);
   }
@@ -2570,23 +2584,15 @@ class IpsModule {
     return vs ? (vs.title || vs.name || null) : null;
   }
 
-  /** The editor, for a new profile or an existing one. */
+  /** A profile's constraints, with the shapes the profile page's editor shows them in. */
   editorConstraints(sd) {
     return profiles.constraintsOf(sd).map(c => ({ ...c, shape: profiles.parseShape(c.expression), rshape: profiles.parseResourceShape(c.expression) }));
   }
 
-  profileEditor(req, res, sd) {
-    const constraints = this.editorConstraints(sd);
-    this.sendHtml(res, sd ? `Edit Clinical Profile: ${sd.title}` : 'New Clinical Profile',
-      render.renderProfileEditor(sd, this.ctx(req, res), {
-        profile: { id: sd ? sd.id : null, title: sd ? sd.title : '', constraints },
-        sections: profiles.IPS_SECTIONS, systems: profiles.SYSTEMS, resourceTypes: profiles.RESOURCE_TYPES, sectionSystem: editorSchema.LOINC, canLookup: !!this.tx
-      }), Date.now(), req);
-  }
-
   /**
-   * Save a profile from the editor ({title, constraints}), or a new one from an uploaded
-   * StructureDefinition ({upload}). 200/201 with {id, url}, or 422 with {problems}.
+   * Save a profile ({title, constraints[, guides]} - a new one can be just a title; without guides,
+   * a profile keeps its own), or a new one from an uploaded StructureDefinition ({upload}).
+   * 200/201 with {id, url}, or 422 with {problems}.
    */
   profileSave(req, res, previous) {
     const body = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
@@ -2602,12 +2608,13 @@ class IpsModule {
       input = up.input;
     }
     const checked = profiles.checkInput(input, previous);
-    if (checked.problems.length) {
-      return res.status(422).json({ problems: checked.problems });
+    const guided = profiles.checkGuides(input.guides !== undefined ? input.guides : profiles.guidesOf(previous), previous);
+    if (checked.problems.length || guided.problems.length) {
+      return res.status(422).json({ problems: [...checked.problems, ...guided.problems] });
     }
     const id = previous ? previous.id.substring('profile-'.length) : profiles.newId();
     const url = previous ? previous.url : `${this.baseUrl(req)}/StructureDefinition/profile-${id}`;
-    const sd = profiles.build({ id, url, title: checked.title, constraints: checked.constraints });
+    const sd = profiles.build({ id, url, title: checked.title, constraints: checked.constraints, guides: guided.guides });
     this.store.saveProfile(id, sd);
     this.log.info(`IPS module: clinical profile ${sd.id} (${sd.title}) ${previous ? 'saved' : (body.upload !== undefined ? 'uploaded' : 'created')}, ${checked.constraints.length} constraints`);
     res.status(previous ? 200 : 201).json({ id: sd.id, url: `${req.baseUrl}/StructureDefinition/${sd.id}` });
@@ -2656,8 +2663,97 @@ class IpsModule {
   }
 
   saveConstraints(previous, constraints) {
+    this.saveProfileParts(previous, { constraints });
+  }
+
+  /** Save a profile with some of its parts changed: title, constraints, guides (each as it was when not given). */
+  saveProfileParts(previous, parts) {
     const id = previous.id.substring('profile-'.length);
-    this.store.saveProfile(id, profiles.build({ id, url: previous.url, title: previous.title, constraints }));
+    this.store.saveProfile(id, profiles.build({
+      id, url: previous.url,
+      title: parts.title !== undefined ? parts.title : previous.title,
+      constraints: parts.constraints !== undefined ? parts.constraints : profiles.constraintsOf(previous),
+      guides: parts.guides !== undefined ? parts.guides : profiles.guidesOf(previous)
+    }));
+  }
+
+  /** A new title for a profile (its name follows it), back to the profile's page. */
+  profileRename(req, res) {
+    const previous = req.profile;
+    const checked = profiles.checkInput({ title: req.body?.title, constraints: [] }, null);
+    if (checked.problems.length) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(checked.problems.join('; ')), 400);
+    }
+    this.saveProfileParts(previous, { title: checked.title });
+    this.log.info(`IPS module: clinical profile ${previous.id} renamed '${checked.title}'`);
+    res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}`);
+  }
+
+  /** The guide a request names (:n, its place in the profile's guided input), or -1. */
+  guideIndex(req, guides) {
+    const n = /^\d{1,4}$/.test(req.params.n || '') ? parseInt(req.params.n, 10) : -1;
+    return n >= 0 && n < guides.length ? n : -1;
+  }
+
+  /**
+   * Add an input guide to a profile ({guide}: section, questions, resource, code), or replace
+   * one (its questions keep their linkIds). 201/200 with {index}, 404 when there is no such
+   * guide, 422 with {problems}.
+   */
+  guideSave(req, res, n) {
+    const previous = req.profile;
+    const guides = profiles.guidesOf(previous);
+    const at = n === null ? guides.length : this.guideIndex(req, guides);
+    if (at < 0) {
+      return res.status(404).json({ problems: [`The profile has no input guide ${n}`] });
+    }
+    const guide = req.body?.guide;
+    // the guide by itself first, so what is wrong is said of it, not of a number in the list
+    const alone = profiles.checkGuides([guide], previous);
+    if (alone.problems.length) {
+      return res.status(422).json({ problems: alone.problems.map(p => p.replace(/^Input guide 1/, 'The guide')) });
+    }
+    guides.splice(at, n === null ? 0 : 1, guide);
+    const checked = profiles.checkGuides(guides, previous);
+    if (checked.problems.length) {
+      return res.status(422).json({ problems: checked.problems });
+    }
+    this.saveProfileParts(previous, { guides: checked.guides });
+    this.log.info(`IPS module: clinical profile ${previous.id}: input guide ${at + 1} ${n === null ? 'added' : 'saved'}`);
+    res.status(n === null ? 201 : 200).json({ index: at });
+  }
+
+  /** Delete an input guide (its questions go from the Questionnaire), back to the profile's page. */
+  guideDelete(req, res) {
+    const previous = req.profile;
+    const guides = profiles.guidesOf(previous);
+    const at = this.guideIndex(req, guides);
+    if (at < 0) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`The profile has no input guide ${req.params.n}`), 404);
+    }
+    guides.splice(at, 1);
+    this.saveProfileParts(previous, { guides });
+    this.log.info(`IPS module: clinical profile ${previous.id}: input guide ${at + 1} deleted`);
+    res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}#guided-input`);
+  }
+
+  /** Move an input guide up or down (direction) past the next one in its section, back to the profile's page. */
+  guideMove(req, res) {
+    const previous = req.profile;
+    const guides = profiles.guidesOf(previous);
+    const at = this.guideIndex(req, guides);
+    if (at < 0) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`The profile has no input guide ${req.params.n}`), 404);
+    }
+    const key = (g) => `${g.section?.system}|${g.section?.code}`;
+    const same = guides.map((g, i) => i).filter(i => key(guides[i]) === key(guides[at]));
+    const k = same.indexOf(at);
+    const other = req.body?.direction === 'up' ? same[k - 1] : same[k + 1];
+    if (other !== undefined) {
+      [guides[at], guides[other]] = [guides[other], guides[at]];
+      this.saveProfileParts(previous, { guides });
+    }
+    res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}#guided-input`);
   }
 
   // ---- the editor ----

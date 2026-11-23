@@ -21,6 +21,7 @@ This server provides a set of server-side services that are useful for the FHIR 
 ## Under development, prototyping
 
 * [IPS](ips/readme.md) (`ips`) - collections of International Patient Summary documents, each with its own FHIR endpoint, processing (validation, terminology checks, translation, narrative, clinical profiles) and web pages
+* [REST](rest/README.md) (`rest`) - database-backed FHIR RESTful servers (SQLite or MySQL): the interactions, search, batch and transaction, AuditEvents, each endpoint configured on its own
 
 ## On the back-burner
 

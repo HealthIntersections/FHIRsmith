@@ -34,7 +34,9 @@ const ev = (expr, res = doc(), options) => evaluate(res, expr, options);
 
 describe('section()', () => {
   test('finds the sections with the code, nested ones too', () => {
-    expect(ev(`section('${L}', '11450-4').count()`)).toEqual([2]);
+    expect(ev(`section('${L}', '11450-4', 0, '*').count()`)).toEqual([2]);
+    // without bounds, one such section (as the Java DocumentFunctions): there are two, so none
+    expect(ev(`section('${L}', '11450-4')`)).toEqual([]);
     expect(ev(`section('${L}', '10160-0').entry.reference`)).toEqual(['urn:uuid:m1', 'urn:uuid:m2']);
     expect(ev(`section('${L}', '99999-9')`)).toEqual([]);
     expect(ev(`section('http://other', '11450-4')`)).toEqual([]);
@@ -50,7 +52,7 @@ describe('section()', () => {
 
   test('takes Compositions, and several inputs each on its own', () => {
     expect(ev(`entry.resource.ofType(Composition).section('${L}', '10160-0').count()`)).toEqual([1]);
-    expect(evaluate(doc().entry[0].resource, `section('${L}', '11450-4').count()`)).toEqual([2]);
+    expect(evaluate(doc().entry[0].resource, `section('${L}', '11450-4', 0, '*').count()`)).toEqual([2]);
     // two documents: each is counted alone
     const one = doc();
     one.entry[0].resource.section[1].section = [];
@@ -69,7 +71,7 @@ describe('section()', () => {
 
 describe('entry()', () => {
   test('resolves the entries and matches their code, medicationCodeableConcept or vaccineCode', () => {
-    expect(ev(`section('${L}', '11450-4').entry('${S}', '38341003').resourceType`)).toEqual(['Condition', 'Condition']);
+    expect(ev(`section('${L}', '11450-4', 0, '*').entry('${S}', '38341003').resourceType`)).toEqual(['Condition', 'Condition']);
     expect(ev(`section('${L}', '10160-0').entry('${S}', '774421004').resourceType`)).toEqual(['MedicationStatement']);
     expect(ev(`section('${L}', '11369-6').entry('${S}', '836377006').resourceType`)).toEqual(['Immunization']);
     // what comes back can be navigated
@@ -82,8 +84,8 @@ describe('entry()', () => {
 
   test('all or nothing for each section, by min..max', () => {
     // in the top problems section once, and in the nested one once
-    expect(ev(`section('${L}', '11450-4').entry('${S}', '38341003', 1, 1).count()`)).toEqual([2]);
-    expect(ev(`section('${L}', '11450-4').entry('${S}', '44054006', 1, 1).count()`)).toEqual([1]);
+    expect(ev(`section('${L}', '11450-4', 0, '*').entry('${S}', '38341003', 1, 1).count()`)).toEqual([2]);
+    expect(ev(`section('${L}', '11450-4', 0, '*').entry('${S}', '44054006', 1, 1).count()`)).toEqual([1]);
     expect(ev(`section('${L}', '11450-4').entry('${S}', '44054006', 0, 0)`)).toEqual([]);
     expect(ev(`section('${L}', '11450-4').entry('${S}', '38341003', 2, '*')`)).toEqual([]);
   });
@@ -98,7 +100,7 @@ describe('entry()', () => {
     const all = Object.fromEntries(doc().entry.map(e => [e.fullUrl, e.resource]));
     const seen = [];
     const resolve = (ref, c) => { seen.push([ref, c?.id]); return all[ref] || null; };
-    expect(evaluate(comp, `section('${L}', '11450-4').entry('${S}', '38341003').count()`, { resolve })).toEqual([2]);
+    expect(evaluate(comp, `section('${L}', '11450-4', 0, '*').entry('${S}', '38341003').count()`, { resolve })).toEqual([2]);
     expect(seen).toContainEqual(['urn:uuid:p1', 'comp']);
   });
 
@@ -167,8 +169,8 @@ describe('entryIn() and resourcesIn()', () => {
 
   test('match by value set, synchronously when the answers are', () => {
     const membership = inVs;
-    expect(ev(`section('${L}', '11450-4').entryIn('${PROBLEMS}').count()`, doc(), { membership })).toEqual([3]);
-    expect(ev(`section('${L}', '11450-4').entryIn('${PROBLEMS}', 2, 2).count()`, doc(), { membership })).toEqual([2]);
+    expect(ev(`section('${L}', '11450-4', 0, '*').entryIn('${PROBLEMS}').count()`, doc(), { membership })).toEqual([3]);
+    expect(ev(`section('${L}', '11450-4', 0, '*').entryIn('${PROBLEMS}', 2, 2).count()`, doc(), { membership })).toEqual([2]);
     expect(ev(`section('${L}', '11450-4').entryIn('${MEDS}')`, doc(), { membership })).toEqual([]);
     expect(ev(`resourcesIn('${MEDS}').resourceType`, doc(), { membership })).toEqual(['MedicationStatement', 'Medication']);
     expect(ev(`resourcesIn('${MEDS}', 'Medication').count()`, doc(), { membership })).toEqual([1]);
@@ -192,5 +194,74 @@ describe('entryIn() and resourcesIn()', () => {
     expect(await evaluateAsync(doc(), `resourcesIn('${PROBLEMS}', 'Condition').count() = 2`, { membership })).toEqual([true]);
     // asynchronous answers need an asynchronous evaluation
     expect(() => ev(`resourcesIn('${PROBLEMS}')`, doc(), { membership })).toThrow(/async/i);
+  });
+});
+
+describe('the section checks: isKnown(), hasData(), sameSubject() - as the Java DocumentFunctionsSectionTests', () => {
+  const ER = 'http://terminology.hl7.org/CodeSystem/list-empty-reason';
+  const sec = (code, rest) => ({ code: { coding: [{ system: 'http://loinc.org', code }] }, ...rest });
+  const reason = (code) => ({ emptyReason: { coding: [{ system: ER, code }] } });
+  const doc = {
+    resourceType: 'Bundle', type: 'document', entry: [
+      {
+        fullUrl: 'urn:uuid:c',
+        resource: {
+          resourceType: 'Composition', status: 'final', subject: { reference: 'urn:uuid:p' }, title: 'x',
+          section: [
+            sec('11450-4', { entry: [{ reference: 'urn:uuid:c1' }] }),
+            sec('48765-2', reason('nilknown')),
+            sec('10160-0', reason('notasked')),
+            sec('46264-8', { text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml">x</div>' } }),
+            sec('11369-6', { emptyReason: { text: 'we didn\'t look' } }),
+            sec('42348-3', { focus: { reference: 'urn:uuid:p' }, ...reason('nilknown') }),
+            sec('18776-5', { focus: { reference: 'urn:uuid:other' }, ...reason('nilknown') }),
+            sec('47519-4', { entry: [{ reference: 'urn:uuid:c1' }], section: [sec('30954-2', reason('withheld'))] })
+          ]
+        }
+      },
+      { fullUrl: 'urn:uuid:p', resource: { resourceType: 'Patient', name: [{ family: 'x' }] } },
+      { fullUrl: 'urn:uuid:c1', resource: { resourceType: 'Condition', id: 'c1', code: { coding: [{ system: 'http://snomed.info/sct', code: '38341003' }] }, subject: { reference: 'urn:uuid:p' } } }
+    ]
+  };
+  const s = (code) => `Bundle.section('http://loinc.org', '${code}')`;
+  const cases = [
+    [`${s('11450-4')}.isKnown()`, [true]], [`${s('48765-2')}.isKnown()`, [true]], [`${s('10160-0')}.isKnown()`, [false]],
+    [`${s('46264-8')}.isKnown()`, [true]], [`${s('11369-6')}.isKnown()`, [false]], [`${s('30954-2')}.isKnown()`, [false]],
+    [`${s('11450-4')}.hasData()`, [true]], [`${s('48765-2')}.hasData()`, [true]], [`${s('10160-0')}.hasData()`, [true]], [`${s('46264-8')}.hasData()`, [false]],
+    [`${s('11450-4')}.sameSubject()`, [true]], [`${s('42348-3')}.sameSubject()`, [true]], [`${s('18776-5')}.sameSubject()`, [false]],
+    ['Bundle.entry.resource.ofType(Condition).sameSubject()', [true]],
+    [`${s('99999-9')}.isKnown()`, []], [`${s('99999-9')}.hasData()`, []],
+    ['Bundle.entry.resource.ofType(Condition).isKnown()', [false]], ['Bundle.entry.resource.ofType(Condition).hasData()', [false]],
+    [`${s('11450-4')}.where(isKnown() and hasData() and sameSubject()).exists()`, [true]],
+    [`${s('46264-8')}.where(isKnown() and hasData()).exists()`, [false]],
+    [`${s('18776-5')}.where(isKnown() and sameSubject()).exists()`, [false]],
+    [`${s('11450-4')}.where(hasData()).entry('http://snomed.info/sct', '38341003').exists()`, [true]],
+    // sections reached by ordinary navigation are sections too
+    ["Bundle.entry.resource.ofType(Composition).section.where(code.coding.code = '10160-0').isKnown()", [false]]
+  ];
+  test.each(cases)('%s', (expression, expected) => {
+    expect(evaluate(doc, expression)).toEqual(expected);
+  });
+
+  test('sameSubject(other): the subject of other; and on resources, a subject compared by reference, else identifier', () => {
+    const vars = { vars: { resource: doc } };
+    expect(evaluate(doc, `${s('18776-5')}.sameSubject(%resource.entry.resource.ofType(Condition))`, vars)).toEqual([false]);
+    expect(evaluate(doc, `${s('42348-3')}.sameSubject(%resource.entry.resource.ofType(Condition))`, vars)).toEqual([true]);
+    // other given, but empty: empty
+    expect(evaluate(doc, `${s('42348-3')}.sameSubject({})`)).toEqual([]);
+    const ids = (a, b) => ({
+      resourceType: 'Bundle', type: 'document', entry: [
+        { resource: { resourceType: 'Composition', subject: a, section: [] } },
+        { resource: { resourceType: 'Observation', id: 'o', subject: b } }
+      ]
+    });
+    const id = (value, system = 'http://x') => ({ identifier: { system, value } });
+    expect(evaluate(ids(id('1'), id('1')), 'Bundle.entry.resource.ofType(Observation).sameSubject()')).toEqual([true]);
+    expect(evaluate(ids(id('1'), id('1', 'http://y')), 'Bundle.entry.resource.ofType(Observation).sameSubject()')).toEqual([false]);
+    expect(evaluate(ids(id('1'), { display: 'x' }), 'Bundle.entry.resource.ofType(Observation).sameSubject()')).toEqual([false]);
+    expect(evaluate(ids(id('1'), undefined), 'Bundle.entry.resource.ofType(Observation).sameSubject()')).toEqual([]);
+    // not a document: no Composition to compare with
+    const notDoc = { ...ids(id('1'), id('1')), type: 'collection' };
+    expect(evaluate(notDoc, 'Bundle.entry.resource.ofType(Observation).sameSubject()')).toEqual([]);
   });
 });

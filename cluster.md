@@ -71,6 +71,7 @@ as before.
 | | master | tx-worker |
 |---|---|---|
 | tx module (`/r4`, `/r5` and the other endpoints) | yes (may also serve tx requests) | yes |
+| rest module (its endpoints), with `"workerModules": ["rest"]` | yes, and its background jobs (schema migrations, expired searches, the closure, reindexing) | yes: every request, since all its state is in its databases |
 | Every other module (packages, xig, registry, publisher, shl, ips, ...) | yes | no |
 | Logins (`/auth`, [library/auth](library/auth/README.md)) | yes | the users and sessions are in one database every process reads: a login on one is one on all (with `auth.sessionSecret` set) |
 | `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
@@ -525,6 +526,7 @@ both only apply with a role: `node server.js` with no role ignores them.
 | `server.cluster.sharedCacheMaxMB` | 256 | With `sharedCache`: the most client resources (their JSON, in MB) the file holds, every endpoint's caches together. Past it, the caches least recently used are dropped whole, and a request with a dropped cache-id gets `404` `cache-id-unknown` (`CACHE_ID_EVICTED_SIZE`, which names the cap), so the client starts a new cache. 256: the largest IG Publisher cache session in a corpus of 2,817 from builds against tx.fhir.org held 3.5 MB of resources (p99 2.8 MB, median 55 KB), so this is about 70 times the largest; `cacheMaxTotalConcepts` gives one endpoint about 40 times the largest session's concepts, and this is that room for two busy endpoints. The file on disk is larger than what it holds (indexes, and the pages SQLite keeps for reuse). Each process logs the cap as it starts. 0: no cap. |
 | `server.cluster.sharedClosure` | false | Every tx process answers `$closure`, on the one closure database. |
 | `modules.tx.closure.writeRetries` | 10 | With `sharedClosure`: how many times an add is worked out again when another process changed the table first. |
+| `server.cluster.workerModules` | `["tx"]` | The modules the workers run besides tx: `"rest"` is the only other one a worker can run. With it, the launcher sends the rest module's endpoints to any process, as it does tx requests. A rest endpoint on SQLite needs every process on this one machine (SQLite's locking is unreliable on network file systems); on MySQL the workers can be anywhere. See [rest/README.md](rest/README.md#clustering). |
 
 ### Shared cache
 
