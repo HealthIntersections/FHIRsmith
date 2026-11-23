@@ -47,7 +47,7 @@
 const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
-const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY } = require('./library/role');
+const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY, workerModules } = require('./library/role');
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS, COUNTS_INTERVAL_MS } = require('./library/cluster-counts');
 const { CacheFanout, ASK: CACHES_ASK, DONE: CACHES_DONE } = require('./library/cluster-caches');
@@ -178,7 +178,9 @@ function loadSettings(argv, env, config, cpu = {}) {
   return {
     port,
     procs,
-    txPaths: (tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')),
+    // the paths the workers serve: the tx endpoints, and the rest module's when the workers run
+    // it too (server.cluster.workerModules). Every other path goes to the master
+    txPaths: [...(tx.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')), ...restPaths(config)],
     drainMs: Number(cluster.drainSeconds ?? DRAIN_MS / 1000) * 1000,
     maxOutstanding: Number(cluster.maxOutstanding ?? MAX_OUTSTANDING),
     queueMs: Number(cluster.queueSeconds ?? QUEUE_MS / 1000) * 1000,
@@ -199,6 +201,19 @@ function loadSettings(argv, env, config, cpu = {}) {
     statusMs: statusSeconds * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true, sharedCache }
   };
+}
+
+/**
+ * The rest module's endpoint paths, when the workers run it (server.cluster.workerModules):
+ * any process can serve any rest request, since all its state is in the database.
+ * @param {Object} config
+ */
+function restPaths(config) {
+  const rest = config.modules && config.modules.rest;
+  if (!rest || !rest.enabled || !workerModules(config).includes('rest')) {
+    return [];
+  }
+  return (rest.endpoints || []).map(e => String(e.path).replace(/\/+$/, '')).filter(p => p);
 }
 
 // the path after the tx endpoint ('' for the endpoint itself), or null if not a tx path

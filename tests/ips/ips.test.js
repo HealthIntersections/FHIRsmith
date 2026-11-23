@@ -2233,7 +2233,7 @@ describe('sharing as SHL / VHL', () => {
     await post(app, 'demo', ips());
     mod.store.savePatientComment(1, 'Mine', 'Jane');
     const png = (r) => r.buffer(true).parse((res, cb) => { const c = []; res.on('data', d => c.push(d)); res.on('end', () => cb(null, Buffer.concat(c))); });
-    let r = await png(request(app).get('/ips/demo/Bundle/1/$document?patient-notes=true').set('Host', 'example.org').set('Accept', 'application/smart-health-link'));
+    let r = await png(request(app).get('/ips/demo/Bundle/1/$document?patient-notes=true&format-type=shl').set('Host', 'example.org').set('Accept', 'image/png'));
     expect(r.status).toBe(200);
     expect(r.headers['content-type']).toBe('image/png');
     expect(r.body.subarray(0, 8)).toEqual(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
@@ -2245,10 +2245,16 @@ describe('sharing as SHL / VHL', () => {
     const jwe = Buffer.from(mod.shlEntries.get('u1').files[0].cnt, 'base64').toString('utf8');
     const shared = JSON.parse(Buffer.from((await jose.compactDecrypt(jwe, Buffer.from(payload.key, 'base64url'))).plaintext).toString('utf8'));
     expect(shared.entry[0].resource.section[0].title).toBe('Patient\'s Comments');
-    r = await png(request(app).get('/ips/demo/Bundle/1/$document?_format=vhl').set('Host', 'example.org'));
+    // image/png on its own is a VHL
+    expect(calls.some(c => c.sign)).toBe(false);
+    r = await png(request(app).get('/ips/demo/Bundle/1/$document').set('Host', 'example.org').set('Accept', 'image/png'));
     expect(r.status).toBe(200);
     expect(r.headers['content-type']).toBe('image/png');
     expect(calls.some(c => c.sign)).toBe(true);
+    // format-type decides: a QR code whatever Accept says
+    r = await png(request(app).get('/ips/demo/Bundle/1/$document?format-type=vhl').set('Host', 'example.org').set('Accept', 'application/fhir+json'));
+    expect(r.headers['content-type']).toBe('image/png');
+    expect(r.headers['x-health-link']).toMatch(/^HC1:/);
   });
 
   test('shares a document as an SHL: encrypted on the SHL server, the key in the link, the QR of the viewer link', async () => {
@@ -2867,7 +2873,7 @@ describe('clinical profiles', () => {
   let mod;
   const L = 'http://loinc.org';
   const S = 'http://snomed.info/sct';
-  const rule = `Bundle.section('${L}', '11450-4', 1, '*').entry('${S}', '38341003').exists()`;
+  const rule = `Bundle.section('${L}', '11450-4').where(isKnown() and hasData()).entry('${S}', '38341003').exists()`;
   beforeEach(async () => {
     ({ app, mod } = await makeApp({ txServer: '/tx/r4' }));
     app.get('/tx/r4/metadata', (req, res) => res.type('application/fhir+json').send(JSON.stringify({ resourceType: 'CapabilityStatement' })));
@@ -2883,9 +2889,11 @@ describe('clinical profiles', () => {
   // the administrator, and the token the editor sends
   const asAdmin = async () => {
     const { agent } = await loginAs(app, 'admin', ADMIN_PASSWORD);
-    const page = await agent.get('/ips/StructureDefinition/new').set('Accept', 'text/html');
+    // the list page has the New profile box, and the token its script sends
+    const page = await agent.get('/ips/StructureDefinition').set('Accept', 'text/html');
     expect(page.status).toBe(200);
-    const csrf = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]).csrf;
+    expect(page.text).toContain('id="ips-pf-new"');
+    const csrf = /_csrf: "([^"]+)"/.exec(page.text)[1];
     const send = (url, body) => agent.post(url).set('Origin', 'http://example.org').set('Host', 'example.org').set('Accept', 'application/json').send({ ...body, _csrf: csrf });
     return { agent, send };
   };
@@ -2907,7 +2915,7 @@ describe('clinical profiles', () => {
     expect(dl.headers['content-disposition']).toBe('attachment; filename="CardiologyReferral.json"');
     // the pages: the rule as words for a shaped one, the expression for the other; no editing for a visitor
     const page = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
-    expect(page.text).toContain('<td>A problem list with hypertension</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> [1..*]</td><td>Code is <b>SNOMED CT|38341003</b></td></tr>');
+    expect(page.text).toContain('<td>A problem list with hypertension</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> <span class="ips-small">- must be asked/known, must have supporting entries</span></td><td>Code is <b>SNOMED CT|38341003</b></td></tr>');
     expect(page.text).toContain('<th style="width: 40%">Expectation</th><th>Section</th><th>Entry</th></tr>');
     expect(page.text).toContain('<code>Bundle.entry.count() &gt;= 2</code>');
     expect(page.text).toContain('<td>Hypertension is active</td><td>Conditions where Code is <b>SNOMED CT|38341003</b></td><td><code>.all(clinicalStatus.coding.code = &#39;active&#39;)</code></td></tr>');
@@ -2922,17 +2930,19 @@ describe('clinical profiles', () => {
     const listPage = await request(app).get('/ips/StructureDefinition').set('Accept', 'text/html');
     expect(listPage.text).toContain('Cardiology referral');
     expect(listPage.text).not.toContain('New profile');
-    // the administrator's editor gets the shapes
-    const editor = await agent.get(`/ips/StructureDefinition/${id}/edit`).set('Accept', 'text/html');
+    // the administrator's page gets the shapes; there is no full editor (an old link to it lands on the page)
+    expect((await agent.get(`/ips/StructureDefinition/${id}/edit`)).headers.location).toBe(`/ips/StructureDefinition/${id}`);
+    const editor = await agent.get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
+    expect(editor.text).not.toContain('Edit all');
     const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
-    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: '*' }, entry: { system: S, code: '38341003', min: null, max: null } } });
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', checks: ['isKnown', 'hasData'] }, entry: { system: S, code: '38341003', min: null, max: null } } });
     expect(cfg.profile.constraints[1].shape).toBeNull();
     expect(cfg.profile.constraints[1].rshape).toBeNull();
     expect(cfg.profile.constraints[2].rshape).toEqual({ type: 'Condition', system: S, code: '38341003', rest: ".all(clinicalStatus.coding.code = 'active')" });
     expect(cfg.parts.map(p => p[0])).toEqual(['section', 'resource', 'other']);
     expect(cfg.resourceTypes).toContain('Condition');
     expect(cfg.sections[0]).toEqual({ code: '11450-4', title: 'Problem List' });
-    expect(cfg.urls).toEqual({ save: `/ips/StructureDefinition/${id}`, lookup: '/ips/lookup', lookupVs: '/ips/lookup-vs', back: `/ips/StructureDefinition/${id}` });
+    expect(cfg.urls).toEqual({ constraint: `/ips/StructureDefinition/${id}/constraint`, guide: `/ips/StructureDefinition/${id}/guide`, lookup: '/ips/lookup', lookupVs: '/ips/lookup-vs' });
     // an edit keeps the url and the kept keys
     const saved = await send(`/ips/StructureDefinition/${id}`, { title: 'Cardiology referral v2', constraints: [{ key: 'cp-2', human: 'At least two sections', expression: 'Bundle.entry.count() >= 2' }, { human: 'Medications', expression: `Bundle.section('${L}', '10160-0', 1, 1).exists()` }] });
     expect(saved.status).toBe(200);
@@ -2971,29 +2981,29 @@ describe('clinical profiles', () => {
   test('the administrator adds, edits and deletes a rule at a time, on the profile\'s page', async () => {
     const { agent, send } = await asAdmin();
     const vs = 'http://example.org/ValueSet/heart';
-    const made = await send('/ips/StructureDefinition', { title: 'Rows', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4', 1, 1).exists()` }, { human: 'Two entries', expression: 'Bundle.entry.count() >= 2' }] });
+    const made = await send('/ips/StructureDefinition', { title: 'Rows', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4').isKnown()` }, { human: 'Two entries', expression: 'Bundle.entry.count() >= 2' }] });
     const id = made.body.id;
     const at = `/ips/StructureDefinition/${id}`;
     // the same page as a visitor's, with the rows' actions and the script
     const page = await agent.get(at).set('Accept', 'text/html');
-    expect(page.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td><td class="ips-pf-actions">');
+    expect(page.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> <span class="ips-small">- must be asked/known</span></td><td></td><td class="ips-pf-actions">');
     expect(page.text).toContain(`action="${at}/constraint/cp-1/delete"`);
     expect(page.text).toContain('<button type="button" class="btn btn-default ips-pf-add" data-part="resource">');
     const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]);
     expect(cfg.mode).toBe('rows');
     expect(page.text).toMatch(/<script src="\/ips\/profile-editor\.js\?v=[A-Za-z0-9_-]{12}"><\/script>/);
     expect(cfg.urls.constraint).toBe(`${at}/constraint`);
-    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', min: 1, max: 1 }, entry: null } });
+    expect(cfg.profile.constraints[0]).toMatchObject({ key: 'cp-1', shape: { section: { system: L, code: '11450-4', checks: ['isKnown'] }, entry: null } });
     const visitor = await request(app).get(at).set('Accept', 'text/html');
     expect(visitor.text).not.toContain('IPS_PROFILE');
     expect(visitor.text).not.toContain('class="ips-pf-actions"');
-    expect(visitor.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span></td><td></td></tr>');
+    expect(visitor.text).toContain('<td>Problems</td><td>Problem List <span class="ips-small">(LOINC|11450-4)</span> <span class="ips-small">- must be asked/known</span></td><td></td></tr>');
     // add: a new key, at the end
-    const added = await send(`${at}/constraint`, { human: 'Heart things', expression: `Bundle.section('http://example.org/cs', 'x1', 0, 2).entryIn('${vs}', 1, '*').exists()` });
+    const added = await send(`${at}/constraint`, { human: 'Heart things', expression: `Bundle.section('http://example.org/cs', 'x1').where(sameSubject()).entryIn('${vs}', 1, '*').exists()` });
     expect(added.status).toBe(201);
     expect(added.body.key).toBe('cp-3');
     const shown = await request(app).get(at).set('Accept', 'text/html');
-    expect(shown.text).toContain(`<td>Heart things</td><td>http://example.org/cs|x1 [0..2]</td><td>Code is in <b>${vs}</b> [1..*]</td></tr>`);
+    expect(shown.text).toContain(`<td>Heart things</td><td>http://example.org/cs|x1 <span class="ips-small">- about the same Patient</span></td><td>Code is in <b>${vs}</b> [1..*]</td></tr>`);
     // edit: the key stays, the others are as they were
     const edited = await send(`${at}/constraint/cp-1`, { human: 'Problems, with a SNOMED one', expression: `Bundle.section('${L}', '11450-4').entry('${S}', '38341003', 1, 1).exists()` });
     expect(edited.status).toBe(200);
@@ -3096,14 +3106,110 @@ describe('clinical profiles', () => {
     }
   });
 
+  test('guided input: the administrator adds, edits, moves and deletes a guide at a time; the page groups them by section', async () => {
+    const { agent, send } = await asAdmin();
+    // a new profile is just a title
+    const made = await send('/ips/StructureDefinition', { title: 'Guided', constraints: [] });
+    expect(made.status).toBe(201);
+    const at = made.body.url;
+    const id = made.body.id.substring('profile-'.length);
+    const problems = { section: { system: L, code: '11450-4' }, questions: [{ text: 'Any problems?', type: 'boolean' }], resource: 'Condition:problem', code: { system: S, code: '38341003', display: 'Hypertension' } };
+    const vitals = { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weight', type: 'quantity', units: [{ system: 'http://unitsofmeasure.org', code: 'kg' }], definition: 'Observation.value[x]' }], resource: 'Observation:vitals' };
+    const story = { section: { system: L, code: '81338-6' }, questions: [{ text: 'In your own words', type: 'display' }] };
+    for (const g of [vitals, problems, story]) {
+      expect((await send(`${at}/guide`, { guide: g })).status).toBe(201);
+    }
+    // a second for problems: added at the end of the profile, shown with the other problems guide
+    const more = { section: { system: L, code: '11450-4' }, questions: [{ text: 'Since when?', type: 'date', definition: 'Condition.onset[x]' },
+      { text: 'How bad?', type: 'choice', answers: [{ system: S, code: '24484000', display: 'Severe' }, { system: S, code: '6736007', display: 'Moderate' }] }] };
+    expect((await send(`${at}/guide`, { guide: more })).body).toEqual({ index: 3 });
+    // the guide by itself is checked first
+    const bad = await send(`${at}/guide`, { guide: { section: { system: L, code: '1' }, questions: [] } });
+    expect(bad.status).toBe(422);
+    expect(bad.body.problems).toEqual(['The guide has no questions']);
+    expect((await send(`${at}/guide/9`, { guide: story })).status).toBe(404);
+
+    let sd = mod.store.profile(id);
+    expect(sd.contained[0].item.map(i => i.text)).toEqual(['Weight', 'Any problems?', 'In your own words', 'Since when?', 'How bad?']);
+    expect(sd.extension.length).toBe(4);
+    // the page: grouped by section, in the IPS order - Patient Story, Problems (both), Vital Signs
+    let page = await agent.get(at).set('Accept', 'text/html');
+    const table = page.text.substring(page.text.indexOf('id="guided-input"'));
+    const order = ['Patient Story', 'Problem List', 'Vital Signs'].map(t => table.indexOf(`<td rowspan`, table.indexOf(t) - 40) >= 0 ? table.indexOf(t) : -1);
+    expect(order.every(i => i > 0) && order[0] < order[1] && order[1] < order[2]).toBe(true);
+    expect(table).toContain('<td rowspan="2">Problem List <span class="ips-small">(LOINC|11450-4)</span></td>');
+    expect(table).toContain('<li>How bad? <span class="ips-small">(choice: Severe, Moderate)</span></li>');
+    expect(table).toContain('<li>Weight <span class="ips-small">(quantity, in kg)</span></li>');
+    expect(table).toContain('<td>Condition (problem)</td><td>SNOMED CT|38341003 <span class="ips-small">Hypertension</span></td>');
+    // the problems guides: the first can move down only, the second up only
+    expect(table).toContain(`action="${at}/guide/1/move"`);
+    expect(table.match(new RegExp(`action="${at}/guide/1/move"`, 'g')).length).toBe(1);
+    const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(page.text)[1]);
+    expect(cfg.profile.guides.length).toBe(4);
+    expect(cfg.questionTypes).toEqual(['display', 'boolean', 'quantity', 'date', 'choice']);
+    expect(cfg.guideResources.map(r => r.code)).toEqual(['Condition:problem', 'Condition:diagnosis', 'Observation:vitals', 'MedicationStatement', 'AllergyIntolerance']);
+
+    // edit: the questions it keeps keep their linkIds
+    const before = cfg.profile.guides[3].questions.map(q => q.linkId);
+    const edited = { ...cfg.profile.guides[3], questions: [cfg.profile.guides[3].questions[1], cfg.profile.guides[3].questions[0], { text: 'Anything else?', type: 'boolean' }] };
+    expect((await send(`${at}/guide/3`, { guide: edited })).status).toBe(200);
+    sd = mod.store.profile(id);
+    const after = profiles.guidesOf(sd)[3].questions.map(q => q.linkId);
+    expect(after.slice(0, 2)).toEqual([before[1], before[0]]);
+    expect(before).not.toContain(after[2]);
+    // move: within the section - guide 3 (problems) up past guide 1 (problems), not past the others
+    expect((await form(agent, `${at}/guide/3/move`, { direction: 'up' })).status).toBe(302);
+    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weight', 'How bad?', 'In your own words', 'Any problems?']);
+    await form(agent, `${at}/guide/1/move`, { direction: 'up' });
+    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weight', 'How bad?', 'In your own words', 'Any problems?']);
+    // rules and renaming leave the guided input alone
+    expect((await send(`${at}/constraint`, { human: 'Problems', expression: `Bundle.section('${L}', '11450-4').exists()` })).status).toBe(201);
+    expect((await form(agent, `${at}/title`, { title: 'Guided v2' })).status).toBe(302);
+    sd = mod.store.profile(id);
+    expect(sd).toMatchObject({ title: 'Guided v2', name: 'GuidedV2' });
+    expect(profiles.guidesOf(sd).length).toBe(4);
+    // delete: its questions go from the Questionnaire; the last one takes the Questionnaire with it
+    expect((await form(agent, `${at}/guide/0/delete`)).headers.location).toBe(`${at}#guided-input`);
+    sd = mod.store.profile(id);
+    expect(sd.contained[0].item.map(i => i.text)).not.toContain('Weight');
+    for (let n = 0; n < 3; n++) {
+      await form(agent, `${at}/guide/0/delete`);
+    }
+    sd = mod.store.profile(id);
+    expect(sd.contained).toBeUndefined();
+    expect(sd.extension).toBeUndefined();
+    expect((await form(agent, `${at}/guide/0/delete`)).status).toBe(404);
+
+    // an upload brings guided input with it; a guide naming a question that isn't there is refused
+    const withGuides = profiles.build({ id: 'aaaaaaaaaaaa', url: 'http://x/sd', title: 'Uploaded', constraints: [], guides: profiles.checkGuides([problems, story]).guides });
+    const up = await send('/ips/StructureDefinition', { upload: withGuides });
+    expect(up.status).toBe(201);
+    expect(profiles.guidesOf(mod.store.profile(up.body.id.substring(8))).map(g => g.section.code)).toEqual(['11450-4', '81338-6']);
+    withGuides.extension[0].extension.push({ url: 'question', valueId: 'qnothere' });
+    const refused = await send('/ips/StructureDefinition', { upload: withGuides });
+    expect(refused.status).toBe(422);
+    expect(refused.body.problems).toEqual(["Input guide 1 names question 'qnothere', which the Questionnaire doesn't have"]);
+
+    // only the administrator: a visitor's page has no editing, and the routes refuse others
+    const visitor = await request(app).get(`/ips/StructureDefinition/${up.body.id}`).set('Accept', 'text/html');
+    expect(visitor.text).toContain('<h4>Guided input</h4>');
+    expect(visitor.text).not.toContain('Add guided input</button>');
+    expect(visitor.text).not.toContain('/guide/0/delete');
+    expect((await request(app).post(`/ips/StructureDefinition/${up.body.id}/guide`).send({ guide: story })).status).toBe(403);
+    await makeUser('jo2', 'jo-secret', { name: 'Jo' });
+    const jo = (await loginAs(app, 'jo2', 'jo-secret')).agent;
+    expect((await form(jo, `/ips/StructureDefinition/${up.body.id}/guide/0/delete`)).status).toBe(403);
+    expect((await form(jo, `/ips/StructureDefinition/${up.body.id}/title`, { title: 'x' })).status).toBe(403);
+  });
+
   test('only the administrator changes them, or looks codes up', async () => {
     expect((await request(app).post('/ips/StructureDefinition').send({ title: 'x', constraints: [] })).status).toBe(403);
     const visitor = request.agent(app);
-    expect((await visitor.get('/ips/StructureDefinition/new')).status).toBe(302);
+    expect((await visitor.get('/ips/StructureDefinition').set('Accept', 'text/html')).text).not.toContain('ips-pf-new');
     expect((await visitor.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(401);
     await makeUser('jo', 'jo-secret', { name: 'Jo' });
     const { agent } = await loginAs(app, 'jo', 'jo-secret');
-    expect((await agent.get('/ips/StructureDefinition/new')).status).toBe(403);
+    expect((await agent.get('/ips/StructureDefinition').set('Accept', 'text/html')).text).not.toContain('ips-pf-new');
     expect((await agent.get('/ips/lookup?system=http://snomed.info/sct&q=asth')).status).toBe(403);
   });
 
@@ -3141,7 +3247,7 @@ describe('clinical profiles', () => {
     const page = await request(app).get(made.body.url).set('Accept', 'text/html');
     expect(page.text).toContain(`<td>Code is in <b>Conditions (IPS international exchange)</b> <span class="ips-small">(${ours})</span> [1..*]</td>`);
     expect(page.text).toContain('<td>Conditions where Code is in <b>http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips</b></td><td>Must be present somewhere</td></tr>');
-    const editor = await agent.get(`${made.body.url}/edit`).set('Accept', 'text/html');
+    const editor = await agent.get(made.body.url).set('Accept', 'text/html');
     const cfg = JSON.parse(/window\.IPS_PROFILE = (.*?);<\/script>/.exec(editor.text)[1]);
     expect(cfg.urls.lookupVs).toBe('/ips/lookup-vs');
     expect(cfg.profile.constraints[0].shape.entry).toEqual({ valueSet: ours, min: 1, max: '*' });
@@ -4406,7 +4512,7 @@ describe('the $document operation', () => {
     expect(cs.rest[0].resource[0].operation).toEqual([{ name: 'document', definition: 'https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json' }]);
     const od = require('../../ips/OperationDefinition-ips-document.json');
     expect(od.url).toBe(cs.rest[0].resource[0].operation[0].definition);
-    expect(od.parameter.filter(p => p.use === 'in').map(p => p.name)).toEqual(['source', 'user-sign', 'system-sign', 'patient-notes', 'regenerate-narrative']);
+    expect(od.parameter.filter(p => p.use === 'in').map(p => p.name)).toEqual(['source', 'format-type', 'user-sign', 'system-sign', 'patient-notes', 'regenerate-narrative']);
     // the source view says so, under its links
     const page = await request(app).get('/ips/demo/Bundle/1?view=source').set('Accept', 'text/html');
     expect(page.text).toContain('with the <a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json"><code>$document</code></a> operation: <code>/ips/demo/Bundle/1/$document</code>.</p>');
@@ -4422,9 +4528,12 @@ describe('the $document operation', () => {
     expect((await op('?user-sign=yes')).status).toBe(400);
     const r = await op('?colour=blue&source=both');
     expect(r.status).toBe(400);
-    expect(r.body.issue.map(i => i.details.text)).toEqual(['$document has no parameter \'colour\' (it takes source, user-sign, system-sign, patient-notes, regenerate-narrative)', 'source is original or modified, not \'both\'']);
+    expect(r.body.issue.map(i => i.details.text)).toEqual(['$document has no parameter \'colour\' (it takes source, format-type, user-sign, system-sign, patient-notes, regenerate-narrative)', 'source is original or modified, not \'both\'']);
     expect((await op('', 'application/fhir+xml')).status).toBe(406);
     expect((await op('?_format=xml')).status).toBe(406);
+    // the mime types that were once going to ask for a QR code don't
+    expect((await op('', 'application/smart-health-link')).status).toBe(406);
+    expect((await op('?format-type=gif')).status).toBe(400);
     expect((await op('?source=modified')).status).toBe(409);
     expect((await request(app).get('/ips/demo/Bundle/9/$document')).status).toBe(404);
     // false is false
@@ -4488,7 +4597,13 @@ describe('the $document operation', () => {
     const files = unzip(r.body);
     expect(Object.keys(files)).toEqual(['ips-demo-1.json']);
     expect(JSON.parse(files['ips-demo-1.json']).entry[0].resource.section[0].title).toBe('Patient\'s Comments');
-    expect(unzip((await binary(op('?_format=zip'))).body)['ips-demo-1.json']).toBe(JSON.stringify(mod.store.read(1).bundle, null, 2));
+    expect(unzip((await binary(op('?format-type=zip'))).body)['ips-demo-1.json']).toBe(JSON.stringify(mod.store.read(1).bundle, null, 2));
+    // format-type decides, whatever Accept says
+    r = await binary(op('?format-type=zip', 'application/pdf'));
+    expect(r.headers['content-type']).toBe('application/zip');
+    r = await binary(op('?format-type=pdf', 'application/fhir+json'));
+    expect(r.headers['content-type']).toBe('application/pdf');
+    expect((await op('?format-type=json', 'application/zip')).body.resourceType).toBe('Bundle');
 
     r = await binary(op('', 'application/pdf'));
     expect(r.status).toBe(200);

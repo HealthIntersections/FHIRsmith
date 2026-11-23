@@ -1,0 +1,289 @@
+//
+// Copyright 2026, Health Intersections Pty Ltd (http://www.healthintersections.com.au)
+//
+// Licensed under BSD-3: https://opensource.org/license/bsd-3-clause
+//
+
+/**
+ * The _filter parameter: parsed into the same tree as ordinary parameters (parser.js).
+ *
+ *   filter     = expr
+ *   expr       = andExpr ("or" andExpr)*
+ *   andExpr    = unary ("and" unary)*
+ *   unary      = "not" "(" expr ")" | "(" expr ")" | comparison
+ *   comparison = path op value
+ *   path       = name ("." name)*            a chain through reference parameters
+ *   op         = eq ne co sw ew gt lt ge le ap sa eb pr po ss sb in ni re
+ *   value      = "quoted string" | token
+ *
+ * Filters on path elements (name[filter]) are not supported yet.
+ *
+ * @module rest/search/filter
+ */
+
+const { badRequest } = require('../library/errors');
+const { dateRange, numberRange } = require('../../library/fhir-search-values');
+const { normalise } = require('../indexing/values');
+
+const OPS = new Set(['eq', 'ne', 'co', 'sw', 'ew', 'gt', 'lt', 'ge', 'le', 'ap', 'sa', 'eb', 'pr', 'po', 'ss', 'sb', 'in', 'ni', 're']);
+const MAX_LENGTH = 4000;
+
+function tokenise(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (/\s/.test(c)) {
+      i++;
+    } else if (c === '(' || c === ')') {
+      out.push({ t: c });
+      i++;
+    } else if (c === '"') {
+      let s = '';
+      i++;
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\' && i + 1 < text.length) {
+          s += text[i + 1];
+          i += 2;
+        } else {
+          s += text[i++];
+        }
+      }
+      if (i >= text.length) {
+        throw badRequest('_filter: a quoted value is not closed');
+      }
+      i++;
+      out.push({ t: 'str', v: s });
+    } else {
+      let s = '';
+      while (i < text.length && !/[\s()]/.test(text[i])) {
+        s += text[i++];
+      }
+      out.push({ t: 'word', v: s });
+    }
+  }
+  return out;
+}
+
+class FilterParser {
+  constructor(sp, types, text) {
+    this.sp = sp;
+    this.types = types;
+    if (text.length > MAX_LENGTH) {
+      throw badRequest(`_filter is limited to ${MAX_LENGTH} characters`);
+    }
+    this.tokens = tokenise(text);
+    this.pos = 0;
+  }
+
+  peek() {
+    return this.tokens[this.pos];
+  }
+
+  next() {
+    return this.tokens[this.pos++];
+  }
+
+  isWord(tok, w) {
+    return tok && tok.t === 'word' && tok.v.toLowerCase() === w;
+  }
+
+  parse() {
+    const e = this.expr(0);
+    if (this.pos < this.tokens.length) {
+      throw badRequest(`_filter: unexpected '${this.peek().v || this.peek().t}'`);
+    }
+    return e;
+  }
+
+  expr(depth) {
+    if (depth > 20) {
+      throw badRequest('_filter: nested too deeply');
+    }
+    const items = [this.andExpr(depth)];
+    while (this.isWord(this.peek(), 'or')) {
+      this.next();
+      items.push(this.andExpr(depth));
+    }
+    return items.length === 1 ? items[0] : { kind: 'or', items };
+  }
+
+  andExpr(depth) {
+    const items = [this.unary(depth)];
+    while (this.isWord(this.peek(), 'and')) {
+      this.next();
+      items.push(this.unary(depth));
+    }
+    return items.length === 1 ? items[0] : { kind: 'and', items };
+  }
+
+  unary(depth) {
+    const tok = this.peek();
+    if (!tok) {
+      throw badRequest('_filter: incomplete expression');
+    }
+    if (this.isWord(tok, 'not') && this.tokens[this.pos + 1] && this.tokens[this.pos + 1].t === '(') {
+      this.next();
+      return { kind: 'not', item: this.group(depth) };
+    }
+    if (tok.t === '(') {
+      return this.group(depth);
+    }
+    return this.comparison();
+  }
+
+  group(depth) {
+    this.next();
+    const e = this.expr(depth + 1);
+    const close = this.next();
+    if (!close || close.t !== ')') {
+      throw badRequest('_filter: missing )');
+    }
+    return e;
+  }
+
+  comparison() {
+    const path = this.next();
+    const op = this.next();
+    const value = this.next();
+    if (!path || path.t !== 'word' || !op || op.t !== 'word' || !value || (value.t !== 'word' && value.t !== 'str')) {
+      throw badRequest('_filter: expected parameter operator value');
+    }
+    if (path.v.includes('[')) {
+      throw badRequest('_filter: filters on path elements ([...]) are not supported yet');
+    }
+    const o = op.v.toLowerCase();
+    if (!OPS.has(o)) {
+      throw badRequest(`_filter: unknown operator '${op.v}'`);
+    }
+    return this.compare(this.types, path.v, o, value.v, 0);
+  }
+
+  compare(types, path, op, value, depth) {
+    const sp = this.sp;
+    const dot = path.indexOf('.');
+    if (dot > 0) {
+      if (depth >= 3) {
+        throw badRequest('_filter: chains are limited to 3 links');
+      }
+      const code = path.substring(0, dot);
+      const l = sp.lookup(types, code);
+      if (!l || l.spType !== 'reference') {
+        throw badRequest(`_filter: '${code}' is not a reference parameter`);
+      }
+      const rest = path.substring(dot + 1);
+      const nextCode = rest.split('.')[0];
+      let targets = [...new Set(l.defs.flatMap(d => d.target || []))].filter(t => sp.ep.typeKeys.has(t));
+      if (!nextCode.startsWith('_')) {
+        targets = targets.filter(t => sp.defs.param(t, nextCode));
+      }
+      if (!targets.length) {
+        throw badRequest(`_filter: none of the targets of ${code} has a parameter '${nextCode}'`);
+      }
+      return { kind: 'chain', keys: l.keys, targetTypes: null, inner: this.compare(targets, rest, op, value, depth + 1) };
+    }
+    if (path === '_id') {
+      if (op !== 'eq' && op !== 'ne') {
+        throw badRequest(`_filter: _id takes eq or ne, not ${op}`);
+      }
+      return { kind: 'id', ids: [value], negate: op === 'ne' };
+    }
+    if (path === '_lastUpdated') {
+      const r = dateRange(value, sp.ep.timeZone);
+      if (!r) {
+        throw badRequest(`_filter: '${value}' is not a date`);
+      }
+      return { kind: 'lastUpdated', values: [{ prefix: op === 'po' ? 'ap' : op, range: r }] };
+    }
+    if (path === '_tag' || path === '_security' || path === '_profile') {
+      if (op !== 'eq' && op !== 'ne') {
+        throw badRequest(`_filter: ${path} takes eq or ne`);
+      }
+      return sp.tagNode(path, op === 'ne' ? 'not' : null, value);
+    }
+    const l = sp.lookup(types, path);
+    if (!l) {
+      throw badRequest(`_filter: unknown search parameter '${path}'`);
+    }
+    l.keys.forEach(k => sp.keysUsed.add(k));
+    if (op === 'pr') {
+      return { kind: 'missing', spType: l.spType, keys: l.keys, missing: value === 'false' };
+    }
+    const node = (values, modifier = null) => ({ kind: 'param', spType: l.spType, keys: l.keys, defs: l.defs, modifier, values, code: path });
+    const negate = op === 'ne';
+    switch (l.spType) {
+      case 'string': {
+        const norm = normalise(value).substring(0, 255);
+        const mode = { eq: 'eqnorm', ne: 'eqnorm', co: 'contains', sw: 'start', ew: 'end', gt: 'gt', lt: 'lt', ge: 'ge', le: 'le' }[op];
+        if (!mode) {
+          throw badRequest(`_filter: ${op} can't be used on the string parameter ${path}`);
+        }
+        return node([{ mode, text: value, norm, negate }]);
+      }
+      case 'token': {
+        if (op === 'in' || op === 'ni') {
+          return node([{ mode: 'in', valueSet: value, negate: op === 'ni' }]);
+        }
+        const v = sp.tokenValue(op === 'ss' ? 'below' : op === 'sb' ? 'above' : null, value.replace(/([,$])/g, '\\$1'));
+        if (!['eq', 'ne', 'ss', 'sb'].includes(op)) {
+          throw badRequest(`_filter: ${op} can't be used on the token parameter ${path}`);
+        }
+        v.negate = negate;
+        return node([v]);
+      }
+      case 'date': {
+        const r = dateRange(value, sp.ep.timeZone);
+        if (!r) {
+          throw badRequest(`_filter: '${value}' is not a date`);
+        }
+        const prefix = op === 'po' ? 'ap' : op === 'ne' ? 'eq' : op;
+        if (!['eq', 'gt', 'lt', 'ge', 'le', 'ap', 'sa', 'eb'].includes(prefix)) {
+          throw badRequest(`_filter: ${op} can't be used on the date parameter ${path}`);
+        }
+        const range = op === 'ap' ? require('../../library/fhir-search-values').approxDateRange(r) : r;
+        return node([{ prefix, range, negate }]);
+      }
+      case 'number':
+      case 'quantity': {
+        const parts = value.split('|');
+        const r = numberRange(parts[0]);
+        if (!r) {
+          throw badRequest(`_filter: '${value}' is not a number`);
+        }
+        const prefix = op === 'ne' ? 'eq' : op;
+        if (!['eq', 'gt', 'lt', 'ge', 'le', 'ap', 'sa', 'eb'].includes(prefix)) {
+          throw badRequest(`_filter: ${op} can't be used on ${path}`);
+        }
+        return node([{ prefix, ...r, system: parts[1] || null, unit: parts.slice(2).join('|') || null, negate }]);
+      }
+      case 'reference': {
+        if (!['eq', 'ne', 're'].includes(op)) {
+          throw badRequest(`_filter: ${op} can't be used on the reference parameter ${path}`);
+        }
+        const v = sp.referenceValue(l, null, value);
+        v.negate = negate;
+        return node([v]);
+      }
+      case 'uri': {
+        const mode = { eq: 'eq', ne: 'eq', co: 'contains', sw: 'below', ss: 'above', sb: 'below' }[op];
+        if (!mode) {
+          throw badRequest(`_filter: ${op} can't be used on the uri parameter ${path}`);
+        }
+        return node([{ mode, value, negate }]);
+      }
+    }
+    throw badRequest(`_filter: ${path} (${l.spType}) can't be used in _filter`);
+  }
+}
+
+/**
+ * Parse _filter into a search tree node.
+ * @param {import('./parser').SearchParser} sp
+ * @param {string[]} types
+ * @param {string} text
+ */
+function parseFilter(sp, types, text) {
+  return new FilterParser(sp, types, text).parse();
+}
+
+module.exports = { parseFilter, tokenise };

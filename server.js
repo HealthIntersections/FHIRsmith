@@ -160,6 +160,7 @@ const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
 const TestingModule = require('./testing/testing.js');
 const IpsModule = require('./ips/ips.js');
+const RestModule = require('./rest/rest.js');
 
 const htmlServer = require('./library/html-server');
 const auth = require('./library/auth');
@@ -481,6 +482,22 @@ async function initializeModules() {
     }
   }
 
+  // Initialize the rest module: database-backed FHIR endpoints, mounted at their own paths
+  // like the tx module's. After tx, so an endpoint's terminology server can be the tx module's
+  // own endpoint, in process. On a worker its endpoints leave migrations and jobs to the master
+  if (config.modules?.rest?.enabled) {
+    try {
+      serverLog.info('Initializing module: rest...');
+      modules.rest = new RestModule(stats.forModule('rest'));
+      await modules.rest.initialize(config.modules.rest, app, {
+        hostName: config.hostName, master: !role || role.role === 'master', maxBody
+      });
+    } catch (error) {
+      serverLog.error('Failed to initialize rest module:', error);
+      throw error;
+    }
+  }
+
   if (config.modules?.folder?.enabled) {
     try {
       serverLog.info('Initializing module: folder...');
@@ -750,6 +767,13 @@ async function buildRootPageContent() {
     content += '<li class="list-group-item">';
     content += '<a href="/ips" class="text-decoration-none">IPS</a>: ';
     content += 'Collections of International Patient Summary documents, each with its own FHIR endpoint';
+    content += '</li>';
+  }
+
+  if (config.modules?.rest?.enabled) {
+    content += '<li class="list-group-item">';
+    content += '<strong>FHIR REST</strong>: database-backed FHIR servers: ';
+    content += (config.modules.rest.endpoints || []).map(e => `<a href="${escape(String(e.path))}" class="text-decoration-none">${escape(String(e.path))}</a>`).join(', ');
     content += '</li>';
   }
 
