@@ -142,7 +142,8 @@ class SearchParser {
     const ignored = [];
     const warnings = [];
     this.keysUsed = new Set();
-    const control = { sort: [], include: [], revinclude: [], count: null, total: null, summary: null, elements: null };
+    this.fullTextUsed = false;
+    const control = { sort: [], include: [], revinclude: [], count: null, total: null, summary: null, elements: null, contained: 'false', containedType: 'container' };
     for (const [name, value] of p.params) {
       const base = name.split(':')[0].split('.')[0];
       if (CONTROL.has(base)) {
@@ -175,6 +176,9 @@ class SearchParser {
         }
       }
     }
+    if (this.fullTextUsed && this.ep.reindexAll) {
+      warnings.push('The full-text index is still being built: _text and _content may not find everything yet');
+    }
     for (const k of this.keysUsed) {
       const def = [...this.defs.byUrl.values()].find(d => d.key === k);
       if (def && this.defs.reindexing && this.defs.reindexing.has(def.url)) {
@@ -192,6 +196,18 @@ class SearchParser {
           throw badRequest(`_count must be a number, not '${value}'`);
         }
         control.count = Number(value);
+        break;
+      case '_contained':
+        if (!['true', 'false', 'both'].includes(value)) {
+          throw badRequest(`_contained is true, false or both, not '${value}'`);
+        }
+        control.contained = value;
+        break;
+      case '_containedType':
+        if (!['container', 'contained'].includes(value)) {
+          throw badRequest(`_containedType is container or contained, not '${value}'`);
+        }
+        control.containedType = value;
         break;
       case '_total':
         if (!['none', 'estimate', 'accurate'].includes(value)) {
@@ -290,6 +306,11 @@ class SearchParser {
         return require('./filter').parseFilter(this, types, value);
       case '_text':
       case '_content':
+        if (modifier) {
+          throw new Unsupported(`${code}:${modifier} is not supported`);
+        }
+        this.fullTextUsed = true;
+        return { kind: 'fulltext', column: code === '_text' ? 'Narrative' : 'Content', tree: require('../indexing/fulltext').parseQuery(value) };
       case '_query':
         throw new Unsupported(`${code} is not supported yet`);
       default:

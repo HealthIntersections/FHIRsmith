@@ -53,8 +53,8 @@ async function emptyMysql(cfg) {
   const conn = await mysql.createConnection({ host: cfg.host, port: cfg.port, user: cfg.user, password: process.env[cfg.passwordEnv], database: cfg.database });
   try {
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of TABLES) {
-      await conn.query(`DROP TABLE IF EXISTS ${t.name}`);
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained']) {
+      await conn.query(`DROP TABLE IF EXISTS ${t}`);
     }
   } finally {
     await conn.end();
@@ -121,9 +121,9 @@ function body(resource) {
 async function snapshot(ep) {
   return ep.db.read(async (q) => {
     const out = {};
-    for (const t of TABLES) {
-      const r = await q.get(`SELECT COUNT(*) AS N FROM ${t.name}`);
-      out[t.name] = Number(r.N);
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained']) {
+      const r = await q.get(`SELECT COUNT(*) AS N FROM ${t}`);
+      out[t] = Number(r.N);
     }
     return out;
   });
@@ -174,10 +174,28 @@ async function invariants(ep) {
       if (Number(r.N)) {
         problems.push(`${t} has ${r.N} rows for deleted resources`);
       }
-      const o = await q.get(`SELECT COUNT(*) AS N FROM ${t} x LEFT JOIN Ids i ON i.ResourceKey = x.ResourceKey WHERE i.ResourceKey IS NULL`);
+      const o = await q.get(`SELECT COUNT(*) AS N FROM ${t} x LEFT JOIN Ids i ON i.ResourceKey = x.ResourceKey WHERE i.ResourceKey IS NULL AND x.ResourceKey > 0`);
       if (Number(o.N)) {
         problems.push(`${t} has ${o.N} rows for resources that don't exist`);
       }
+      // contained resources are indexed under -ContainedKey
+      const c = await q.get(`SELECT COUNT(*) AS N FROM ${t} x LEFT JOIN Contained c ON c.ContainedKey = -x.ResourceKey WHERE x.ResourceKey < 0 AND c.ContainedKey IS NULL`);
+      if (Number(c.N)) {
+        problems.push(`${t} has ${c.N} rows for contained resources that aren't in Contained`);
+      }
+    }
+    const cDeleted = await q.get('SELECT COUNT(*) AS N FROM Contained c JOIN Ids i ON i.ResourceKey = c.ResourceKey WHERE i.Deleted = 1');
+    if (Number(cDeleted.N)) {
+      problems.push(`Contained has ${cDeleted.N} rows for deleted resources`);
+    }
+    const cOrphans = await q.get('SELECT COUNT(*) AS N FROM Contained c LEFT JOIN Ids i ON i.ResourceKey = c.ResourceKey WHERE i.ResourceKey IS NULL');
+    if (Number(cOrphans.N)) {
+      problems.push(`Contained has ${cOrphans.N} rows for resources that don't exist`);
+    }
+    const cDangling = await q.get(`SELECT COUNT(*) AS N FROM IndexReferences r LEFT JOIN Contained c ON c.ContainedKey = -r.TargetKey
+      WHERE r.TargetKey < 0 AND c.ContainedKey IS NULL`);
+    if (Number(cDangling.N)) {
+      problems.push(`${cDangling.N} references to contained resources that aren't in Contained`);
     }
     const unkeyed = await q.all(`SELECT r.TargetType, r.TargetId FROM IndexReferences r JOIN Ids i ON i.Id = r.TargetId
       JOIN Types t ON t.TypeKey = i.TypeKey AND t.Name = r.TargetType WHERE r.TargetKey IS NULL AND i.MostRecent IS NOT NULL`);
@@ -188,6 +206,15 @@ async function invariants(ep) {
       JOIN Types t ON t.TypeKey = i.TypeKey WHERE i.Id <> r.TargetId OR t.Name <> r.TargetType`);
     for (const u of wrong) {
       problems.push(`a reference to ${u.TargetType}/${u.TargetId} is keyed to another resource`);
+    }
+    const ftKey = q.dialect.name === 'sqlite' ? 'rowid' : 'ResourceKey';
+    const ftDeleted = await q.get(`SELECT COUNT(*) AS N FROM TextIndex f JOIN Ids i ON i.ResourceKey = f.${ftKey} WHERE i.Deleted = 1`);
+    if (Number(ftDeleted.N)) {
+      problems.push(`TextIndex has ${ftDeleted.N} rows for deleted resources`);
+    }
+    const ftOrphans = await q.get(`SELECT COUNT(*) AS N FROM TextIndex f LEFT JOIN Ids i ON i.ResourceKey = f.${ftKey} WHERE i.ResourceKey IS NULL`);
+    if (Number(ftOrphans.N)) {
+      problems.push(`TextIndex has ${ftOrphans.N} rows for resources that don't exist`);
     }
     const sq = await q.get('SELECT COUNT(*) AS N FROM SubscriptionQueue');
     if (Number(sq.N) !== versions.length) {

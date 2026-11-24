@@ -20,7 +20,7 @@
  * @module rest/database/schema
  */
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 3;
 
 // columns every index table has
 const INDEX_COMMON = [
@@ -168,6 +168,18 @@ const TABLES = [
   }
 ];
 
+/**
+ * Contained resources that their container refers to: each is indexed with its own type's
+ * search parameters, under the key -ContainedKey (negative, so it can never be a resource's key:
+ * chains reach it through IndexReferences.TargetKey, and nothing that looks in Ids finds it).
+ * Made at schema version 3, so not in TABLES.
+ */
+const CONTAINED_TABLE = {
+  name: 'Contained',
+  columns: [['ContainedKey', 'key'], ['ResourceKey', 'bigint', { notNull: true }], ['TypeKey', 'bigint'], ['LocalId', 'str(64)', { notNull: true }]],
+  indexes: [{ name: 'SK_Contained_Resource', columns: ['ResourceKey'] }]
+};
+
 const INDEX_TABLES = ['IndexStrings', 'IndexTokens', 'IndexDates', 'IndexNumbers', 'IndexQuantities', 'IndexReferences', 'IndexUris'];
 
 function columnType(type, dialect) {
@@ -223,8 +235,32 @@ const MIGRATIONS = {
         await q.exec(sql);
       }
     }
+  },
+  // full-text search (_text, _content): the TextIndex table, which each engine makes its own way
+  // (indexing/fulltext.js). Resources already there are reindexed in the background to fill it
+  2: async (q) => {
+    for (const sql of require('../indexing/fulltext').ddl(q.dialect.name)) {
+      await q.exec(sql);
+    }
+    await flagReindexAll(q);
+  },
+  // contained resources: indexed with their own search parameters, so chains reach into them
+  3: async (q) => {
+    for (const sql of tableDDL(CONTAINED_TABLE, q.dialect.name)) {
+      await q.exec(sql);
+    }
+    await flagReindexAll(q);
   }
 };
+
+/** Everything already there gets reindexed in the background (Endpoint.reindexBatch) */
+async function flagReindexAll(q) {
+  const any = await q.get('SELECT ResourceKey FROM Ids WHERE MostRecent IS NOT NULL LIMIT 1');
+  const flagged = await q.get("SELECT Value FROM Config WHERE Name = 'reindexAll'");
+  if (any && !flagged) {
+    await q.run("INSERT INTO Config (Name, Value) VALUES ('reindexAll', '1')");
+  }
+}
 
 async function tableExists(q, name) {
   if (q.dialect.name === 'sqlite') {
@@ -296,4 +332,4 @@ async function waitForSchema(db, timeoutMs = 120000) {
   }
 }
 
-module.exports = { SCHEMA_VERSION, TABLES, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };
+module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };

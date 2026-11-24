@@ -18,7 +18,9 @@ const { OPERATIONS } = require('../operations/operations');
 const COMMON = [
   { name: '_id', type: 'token' }, { name: '_lastUpdated', type: 'date' }, { name: '_tag', type: 'token' },
   { name: '_security', type: 'token' }, { name: '_profile', type: 'uri' }, { name: '_has', type: 'string' },
-  { name: '_filter', type: 'string' }, { name: '_list', type: 'string' }
+  { name: '_filter', type: 'string' }, { name: '_list', type: 'string' },
+  { name: '_text', type: 'string', documentation: 'Words in the narrative: words match as prefixes, "phrases" as they are; AND, OR, NOT (or -), brackets' },
+  { name: '_content', type: 'string', documentation: 'Words anywhere in the resource: as for _text' }
 ];
 
 function capabilities(ep, freq) {

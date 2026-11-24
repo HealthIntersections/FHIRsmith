@@ -13,13 +13,15 @@ const HTML = { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/
 describe('rest web pages', () => {
   let t;
   let pid;
+  let oid;
   beforeAll(async () => {
     t = await makeApp('sqlite', { settings: { name: 'Web Test', description: 'Pages over the API' } });
     pid = (await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Patient',
       identifier: [{ system: 'urn:mrn', value: '42' }], name: [{ family: 'Smith', given: ['Jo'] }],
       text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p>Jo <b>Smith</b></p></div>' } }))).body.id;
-    await request(t.app).post('/r4/Observation').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Observation', status: 'final',
-      code: { coding: [{ system: 'http://loinc.org', code: '1-8', display: 'Thing' }] }, subject: { reference: `Patient/${pid}` } }));
+    oid = (await request(t.app).post('/r4/Observation').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Observation', status: 'final',
+      code: { coding: [{ system: 'http://loinc.org', code: '1-8', display: 'Thing' }] }, subject: { reference: `Patient/${pid}` },
+      contained: [{ resourceType: 'Practitioner', id: 'gp', name: [{ family: 'Who' }] }], performer: [{ reference: '#gp' }] }))).body.id;
   });
   afterAll(async () => {
     await t.close();
@@ -63,6 +65,10 @@ describe('rest web pages', () => {
     expect(inc).toContain('included');
     const h = await page('/r4/_history');
     expect(h).toContain('(created)');
+    // a contained resource links to its container
+    const c = await page('/r4/Practitioner?_contained=true&_containedType=contained');
+    expect(c).toContain(`<a href="/r4/Observation/${oid}">Practitioner #gp</a> <small>in Observation/${oid}</small>`);
+    expect(await page('/r4/Practitioner')).toContain('name="_contained"');
   });
 
   test('a resource: what identifies it, its narrative, its JSON', async () => {

@@ -657,7 +657,19 @@ class OMOPServices extends BaseCSServices {
       return false;
     }
 
-    return set.rows.some(row => row.concept_id.toString() === concept.code);
+    // a filter prepared for checking codes (not iterating) is never run - its query asks about
+    // one concept_id - so it has no rows, and the code is asked about directly. (Checking the
+    // empty rows meant no code was ever in an OMOP domain filter.) Never run the whole filter
+    // just to check one code: it's every standard concept in the domain, turned into objects on
+    // the event loop
+    if (!set.executed) {
+      const row = await set.executeForLocate([set.value, concept.code]);
+      return !!row && String(row.concept_id) === concept.code;
+    }
+    if (!set.codes) {
+      set.codes = new Set(set.rows.map(row => String(row.concept_id)));
+    }
+    return set.codes.has(concept.code);
   }
 
   async filterFinish(filterContext) {

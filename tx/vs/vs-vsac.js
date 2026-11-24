@@ -491,6 +491,9 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
 
     this.isRefreshing = true;
     const runId = await this.database.startRun();
+    // what phase 2 has written (phases 1 and 1b only read): a run that fails before writing
+    // anything has nothing for the followers to catch up with
+    let tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount : 0 };
 
     try {
       // phase 1: list all value sets
@@ -555,7 +558,6 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       this.queue = [...new Set([...leftover, ...this.queue])];
       await this._savePendingQueue(this.queue);
 
-      let tracking = { totalFetched: 0, totalNew: 0, totalUpdated: 0, count: 0, newCount : 0 };
       // URLs that fail even after a requeue are permanently dropped this run; we
       // hold the watermark back when this is non-zero so they get re-scanned.
       let permanentFailures = 0;
@@ -621,8 +623,10 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       debugLog(error, 'Error during VSAC refresh:');
       this.stats.taskError('VSAC Sync', `Error (${error.message})`);
       await this.database.failRun(runId, error.message);
-      if (this.cluster) {
-        // what the run wrote before it failed is in the database
+      if (this.cluster && (tracking.totalNew > 0 || tracking.totalUpdated > 0)) {
+        // what the run wrote before it failed is in the database. A run that wrote nothing
+        // (VSAC refusing the first request, say) leaves the followers alone: catching up
+        // drops every process's recently used value sets for nothing
         await this.database.bumpGeneration();
       }
       throw error;
@@ -704,6 +708,51 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
   }
 
   /**
+   * The error for a failed request to VSAC, saying what VSAC said: the status alone doesn't
+   * (the status text is empty over HTTP/2), and a 401 with a key that works before and after
+   * can't be looked into without the body and the WWW-Authenticate header. Our own
+   * Authorization header is never included
+   * @param {Error} error - the axios error
+   * @param {string} url - the URL asked for (relative to the base URL)
+   * @returns {Error}
+   * @private
+   */
+  _httpError(error, url) {
+    let msg;
+    if (error.response) {
+      const res = error.response;
+      msg = `HTTP ${res.status}${res.statusText ? ' ' + res.statusText : ''} for ${url}`;
+      const challenge = res.headers && res.headers['www-authenticate'];
+      if (challenge) {
+        msg += ` (WWW-Authenticate: ${challenge})`;
+      }
+      let body = res.data;
+      if (body !== undefined && body !== null && body !== '') {
+        if (Buffer.isBuffer(body)) {
+          body = body.toString('utf8');
+        } else if (typeof body !== 'string') {
+          try {
+            body = JSON.stringify(body);
+          } catch (e) {
+            body = String(body);
+          }
+        }
+        body = body.replace(/\s+/g, ' ').trim();
+        msg += `: ${body.length > 300 ? body.substring(0, 300) + '...' : body}`;
+      }
+    } else if (error.request) {
+      msg = `Network error: No response received for ${url}${error.code ? ' (' + error.code + ')' : ''}`;
+    } else {
+      msg = `Request error for ${url}: ${error.message}`;
+    }
+    const result = new Error(msg);
+    if (error.response) {
+      result.status = error.response.status;
+    }
+    return result;
+  }
+
+  /**
    * Fetch a FHIR Bundle from the server
    * @param {string} url - Relative URL to fetch
    * @returns {Promise<Object>} FHIR Bundle
@@ -719,13 +768,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         throw new Error('VSAC Response is not a FHIR Bundle');
       }
     } catch (error) {
-      if (error.response) {
-        throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
-      } else if (error.request) {
-        throw new Error('Network error: No response received');
-      } else {
-        throw new Error(`Request error: ${error.message}`);
-      }
+      throw this._httpError(error, url);
     }
   }
 
@@ -745,13 +788,7 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
         throw new Error('VSAC Response is not a FHIR ValueSet');
       }
     } catch (error) {
-      if (error.response) {
-        throw new Error(`HTTP ${error.response.status}: ${error.response.statusText}`);
-      } else if (error.request) {
-        throw new Error('Network error: No response received');
-      } else {
-        throw new Error(`Request error: ${error.message}`);
-      }
+      throw this._httpError(error, "/ValueSet/"+id);
     }
   }
 

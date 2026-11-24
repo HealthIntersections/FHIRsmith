@@ -41,6 +41,18 @@ class SqlBuilder {
     this.ep = ep;
     this.q = q;
     this.n = 0;
+    // whether the keys searched include contained resources (-ContainedKey): then _id is the
+    // contained resource's local id, and _lastUpdated its container's
+    this.contained = false;
+  }
+
+  /** a's ResourceKey is key, or (for a contained resource) its container's */
+  selfOrContainer(a, key) {
+    if (!this.contained) {
+      return `${a}.ResourceKey = ${key}`;
+    }
+    const ca = this.alias('ca');
+    return `(${a}.ResourceKey = ${key} OR ${a}.ResourceKey = (SELECT ${ca}.ResourceKey FROM Contained ${ca} WHERE ${ca}.ContainedKey = -(${key})))`;
   }
 
   alias(p) {
@@ -80,14 +92,20 @@ class SqlBuilder {
         return NOTHING;
       case 'id': {
         const a = this.alias('z');
-        const sql = `EXISTS (SELECT 1 FROM Ids ${a} WHERE ${a}.ResourceKey = ${key} AND ${a}.Id IN (${inList(node.ids.length)}))`;
-        return { sql: node.negate ? 'NOT ' + sql : sql, args: node.ids };
+        let sql = `EXISTS (SELECT 1 FROM Ids ${a} WHERE ${a}.ResourceKey = ${key} AND ${a}.Id IN (${inList(node.ids.length)}))`;
+        let args = node.ids;
+        if (this.contained) {
+          const ca = this.alias('ca');
+          sql = `(${sql} OR EXISTS (SELECT 1 FROM Contained ${ca} WHERE ${ca}.ContainedKey = -(${key}) AND ${ca}.LocalId IN (${inList(node.ids.length)})))`;
+          args = [...node.ids, ...node.ids];
+        }
+        return { sql: node.negate ? 'NOT ' + sql : sql, args };
       }
       case 'lastUpdated': {
         const a = this.alias('z');
         const v = this.alias('zv');
         const parts = node.values.map(x => dateClause({ lo: `${v}.LastUpdated`, hi: `(${v}.LastUpdated + 1)` }, x.prefix, x.range));
-        return { sql: `EXISTS (SELECT 1 FROM Ids ${a} JOIN Versions ${v} ON ${v}.VersionKey = ${a}.MostRecent WHERE ${a}.ResourceKey = ${key} AND (${parts.map(p => p.sql).join(' OR ')}))`,
+        return { sql: `EXISTS (SELECT 1 FROM Ids ${a} JOIN Versions ${v} ON ${v}.VersionKey = ${a}.MostRecent WHERE ${this.selfOrContainer(a, key)} AND (${parts.map(p => p.sql).join(' OR ')}))`,
           args: parts.flatMap(p => p.args) };
       }
       case 'tag':
@@ -135,6 +153,8 @@ class SqlBuilder {
       }
       case 'param':
         return this.param(node, key);
+      case 'fulltext':
+        return require('../indexing/fulltext').condition(this.q.dialect.name, key, node.column, node.tree);
     }
     throw new Error(`Unknown search node ${node.kind}`);
   }
