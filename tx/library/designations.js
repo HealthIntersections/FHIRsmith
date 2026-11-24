@@ -482,6 +482,34 @@ class Designations {
   }
 
   /**
+   * The designations present() lists: those in the requested languages (matched by
+   * language alone), or every designation when none of them is
+   */
+  _presented(langList, displayOnly) {
+    const results = [];
+
+    // Collect matching designations
+    for (const cd of this.designations) {
+      if ((!displayOnly || this.isDisplay(cd)) &&
+        this._langsMatch(langList, cd.language, LangMatchType.LANG, null) &&
+        cd.value) {
+        results.push(cd);
+      }
+    }
+
+    // If no language-specific matches, get all
+    if (results.length === 0) {
+      for (const cd of this.designations) {
+        if ((!displayOnly || this.isDisplay(cd)) && cd.value) {
+          results.push(cd);
+        }
+      }
+    }
+
+    return results;
+  }
+
+  /**
    * Present all matching designations as a formatted string
    */
   present(langList, defLang, displayOnly) {
@@ -489,38 +517,21 @@ class Designations {
     validateOptionalParameter(defLang, 'defLang', Language);
     validateParameter(displayOnly, 'displayOnly', Boolean);
 
-    const results = [];
-    let count = 0;
+    return this._joinWithOr(this._presented(langList, displayOnly).map(cd =>
+      cd.language ? `'${cd.display}' (${cd.language.code})` : `'${cd.display}'`));
+  }
 
-    // Collect matching designations
-    for (const cd of this.designations) {
-      if ((!displayOnly || this.isDisplay(cd)) &&
-        this._langsMatch(langList, cd.language, LangMatchType.LANG, null) &&
-        cd.value) {
-        count++;
-        if (cd.language) {
-          results.push(`'${cd.display}' (${cd.language.code})`);
-        } else {
-          results.push(`'${cd.display}'`);
-        }
-      }
-    }
+  /**
+   * How many designations present() lists for the same arguments. This can be more than
+   * displayCount(), which counts only the best kind of language match: for 'en' it counts
+   * the 'en' designations and not an 'en-GB' one, where present() lists both.
+   */
+  presentCount(langList, defLang, displayOnly) {
+    validateOptionalParameter(langList, 'langList', Languages, true); // Allow null
+    validateOptionalParameter(defLang, 'defLang', Language);
+    validateParameter(displayOnly, 'displayOnly', Boolean);
 
-    // If no language-specific matches, get all
-    if (count === 0) {
-      for (const cd of this.designations) {
-        if ((!displayOnly || this.isDisplay(cd)) && cd.value) {
-          count++;
-          if (cd.language) {
-            results.push(`'${cd.display}' (${cd.language.code})`);
-          } else {
-            results.push(`'${cd.display}'`);
-          }
-        }
-      }
-    }
-
-    return this._joinWithOr(results);
+    return this._presented(langList, displayOnly).length;
   }
 
   /**

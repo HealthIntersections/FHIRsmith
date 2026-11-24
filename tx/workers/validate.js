@@ -1355,12 +1355,11 @@ class ValueSetChecker {
                 baseMsg = 'NO_VALID_DISPLAY_AT_ALL';
                 m = this.worker.i18n.translate('NO_VALID_DISPLAY_AT_ALL', this.params.HTTPLanguages,
                   [c.display, prov.system(), c.code, this.params.langSummary()]);
-              } else if (dc === 1) {
-                m = this.worker.i18n.translate(baseMsg + '_one', this.params.HTTPLanguages,
-                  ['', prov.system(), c.code, list.present(this.params.workingLanguages(), defLang.value, true), c.display, this.params.langSummary()]);
               } else {
-                m = this.worker.i18n.translate(baseMsg + '_other', this.params.HTTPLanguages,
-                  [dc.toString(), prov.system(), c.code, list.present(this.params.workingLanguages(), defLang.value, true), c.display, this.params.langSummary()]);
+                // the count in the message is the number of choices the message lists
+                const shown = list.presentCount(this.params.workingLanguages(), defLang.value, true);
+                m = this.worker.i18n.translate(baseMsg + (shown === 1 ? '_one' : '_other'), this.params.HTTPLanguages,
+                  [shown === 1 ? '' : shown.toString(), prov.system(), c.code, list.present(this.params.workingLanguages(), defLang.value, true), c.display, this.params.langSummary()]);
               }
               msg(m);
               op.addIssue(new Issue(severity, 'invalid', addToPath(path, 'display'), baseMsg, m, 'invalid-display'));
@@ -1672,12 +1671,11 @@ class ValueSetChecker {
             }
           }
         }
-      } else if (dc === 1) {
-        m = this.worker.i18n.translate(baseMsg + '_one', this.params.HTTPLanguages,
-          ['', c.system, c.code, list.present(this.params.workingLanguages(), defLang.value, dc > 0), c.display, this.params.langSummary()]);
       } else {
-        m = this.worker.i18n.translate(baseMsg + '_other', this.params.HTTPLanguages,
-          [dc.toString(), c.system, c.code, list.present(this.params.workingLanguages(), defLang.value, dc > 0), c.display, this.params.langSummary()]);
+        // the count in the message is the number of choices the message lists
+        const shown = list.presentCount(this.params.workingLanguages(), defLang.value, true);
+        m = this.worker.i18n.translate(baseMsg + (shown === 1 ? '_one' : '_other'), this.params.HTTPLanguages,
+          [shown === 1 ? '' : shown.toString(), c.system, c.code, list.present(this.params.workingLanguages(), defLang.value, true), c.display, this.params.langSummary()]);
       }
       msg(m);
       op.addIssue(new Issue(severity, 'invalid', addToPath(path, 'display'), mid, m, 'invalid-display'));
