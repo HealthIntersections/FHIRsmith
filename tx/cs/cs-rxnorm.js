@@ -707,8 +707,14 @@ class RxNormServices extends BaseCSServices {
       return false;
     }
 
+    // a filter that has already been run (an expansion, or a value set whose filter results are
+    // kept between requests) answers from its rows. One that hasn't is not run just to check one
+    // code: tty = SCD alone is 40,000 rows, all turned into objects on the event loop, and a
+    // client that sends its value sets as tx-resource has every filter run again on every request
+    // (tx.fhir.org, 2026-11-23). Asking the database about the one code costs a few ms, off the
+    // event loop
     if (!set.executed) {
-      await this.#executeFilter(set);
+      return (await this.filterLocate(filterContext, set, concept.code)) !== null;
     }
     if (!set.codes) {
       set.codes = new Set(set.results.map(row => row[this.getCodeField()]));

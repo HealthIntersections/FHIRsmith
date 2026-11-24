@@ -359,6 +359,27 @@ describe('OMOP Provider', () => {
       }
     });
 
+    test('a filter prepared for checking (not iterating) agrees with one that iterates', async () => {
+      // validation prepares filters with iterate = false: the filter is never run, so
+      // filterCheck has to ask about the code itself rather than look in rows it doesn't have
+      if (testData.domains.length > 0 && testData.sampleConcepts.length > 0) {
+        const conceptResult = await provider.locate(testData.sampleConcepts[0]);
+        const concept = conceptResult.context;
+
+        if (concept && concept.domain) {
+          const answers = [];
+          for (const iterate of [true, false]) {
+            const filterContext = await provider.getPrepContext(iterate);
+            await provider.filter(filterContext, iterate, 'domain', '=', concept.domain);
+            const filters = await provider.executeFilters(filterContext);
+            answers.push(await provider.filterCheck(filterContext, filters[0], concept));
+            await provider.filterFinish(filterContext);
+          }
+          expect(answers[1]).toBe(answers[0]);
+        }
+      }
+    });
+
     test('should have closed filters', async () => {
       if (testData.domains.length > 0) {
         const filterContext = await provider.getPrepContext(true);
