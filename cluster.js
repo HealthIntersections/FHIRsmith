@@ -26,11 +26,12 @@
  *    + Retry-After
  *  - lets cheap requests (by method and path: the fast lane) use fastLaneExtra more slots
  *    than maxOutstanding, ahead of the others, leaving them normalMinSlots
- *  - sends a tx request with a body over heavyLaneMinBytes (by Content-Length) and no cache-id
- *    to the heavy lane's process(es) (heavyLaneProcesses tx-workers, the last ones), and
- *    keeps other requests off such a process while it has one: parsing a large body (and
- *    the work on what it holds) holds a process's event loop for seconds, and this keeps that
- *    to one process
+ *  - sends a tx request with a body over heavyLaneMinBytes (by Content-Length), or in or for
+ *    XML (heavyLaneXml), and no cache-id to the heavy lane's process(es) (heavyLaneProcesses
+ *    tx-workers, the last ones), and keeps other requests off such a process while it has one:
+ *    parsing a large body (and the work on what it holds), or reading or writing a large
+ *    resource as XML, holds a process's event loop for seconds, and this keeps that to one
+ *    process
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - answers 504 for a process that hasn't begun its response in upstreamTimeoutSeconds, and
@@ -127,6 +128,10 @@ const NORMAL_MIN_SLOTS = 4;
 // (2026-11-24: parsing them, then indexing the expansions in them) are tens of MB
 const HEAVY_LANE_MIN_BYTES = 1024 * 1024;
 const HEAVY_LANE_PROCESSES = 1;
+// XML is read and written in JavaScript on the event loop, several times slower than JSON, and
+// the largest responses are XML (ICD-10-CM, 13.7 MB). It is also rare: 67 of 46,000 requests
+// on tx.fhir.org (2026-11-24), so the lane can take all of it
+const HEAVY_LANE_XML = true;
 const GB = (b) => (b / 2 ** 30).toFixed(1);
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
@@ -190,6 +195,12 @@ function loadSettings(argv, env, config, cpu = {}) {
     }
     return n;
   };
+  const flag = (value, name) => {
+    if (typeof value !== 'boolean') {
+      throw new Error(`server.cluster.${name} must be true or false, not '${value}'`);
+    }
+    return value;
+  };
   if (!(statusSeconds > 0)) {
     throw new Error(`server.cluster.statusSeconds must be a number of seconds above 0, not '${cluster.statusSeconds}'`);
   }
@@ -218,6 +229,7 @@ function loadSettings(argv, env, config, cpu = {}) {
     normalMinSlots: Number(cluster.normalMinSlots ?? NORMAL_MIN_SLOTS),
     heavyLaneMinBytes: count(cluster.heavyLaneMinBytes ?? HEAVY_LANE_MIN_BYTES, 'heavyLaneMinBytes'),
     heavyLaneProcesses: count(cluster.heavyLaneProcesses ?? HEAVY_LANE_PROCESSES, 'heavyLaneProcesses'),
+    heavyLaneXml: flag(cluster.heavyLaneXml ?? HEAVY_LANE_XML, 'heavyLaneXml'),
     statusMs: statusSeconds * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true, sharedCache }
   };
@@ -270,17 +282,48 @@ function isFastLane(req, txPaths, maxBytes) {
 }
 
 /**
- * Whether a tx request takes the heavy lane (cluster.md), by its declared size (the launcher
- * doesn't read bodies): a body with a Content-Length over minBytes (0: no lane). A chunked
- * body has none, and doesn't (nginx, buffering the request, sends a Content-Length).
- * @param {Object} req - method, url, headers
+ * Whether a request is in or for XML, as the server decides (acceptsXml in tx/tx.js): by
+ * _format (or format) in the query when there is one, else by Accept - XML unless it asks for
+ * HTML (a browser's Accept names XML too, after text/html). A body in XML (its Content-Type)
+ * is XML whatever the response is. _format=html/xml, the page's XML tab, is XML too: it renders
+ * the whole resource as XML. A _format in a form post's body is not seen (the launcher doesn't
+ * read bodies)
+ * @param {Object} req - url, headers
  */
-function isHeavyLane(req, txPaths, minBytes) {
-  if (!(minBytes > 0) || txRest(req.url, txPaths) === null) {
+function isXml(req) {
+  if (/xml/i.test(String(req.headers['content-type'] || ''))) {
+    return true;
+  }
+  const q = req.url.indexOf('?');
+  if (q >= 0) {
+    const params = new URLSearchParams(req.url.substring(q + 1));
+    const fmt = params.get('_format') || params.get('format');
+    if (fmt) {
+      return /xml/i.test(fmt);
+    }
+  }
+  const accept = String(req.headers.accept || '');
+  return !accept.includes('text/html') && /application\/(fhir\+xml|xml\+fhir|xml)/i.test(accept);
+}
+
+/**
+ * Whether a tx request takes the heavy lane (cluster.md): a body with a Content-Length over
+ * minBytes (0: not by size; the launcher doesn't read bodies, and a chunked body has none -
+ * nginx, buffering the request, sends one), or with xml, a request in or for XML (isXml).
+ * @param {Object} req - method, url, headers
+ * @param {string[]} txPaths
+ * @param {number} minBytes
+ * @param {boolean} [xml]
+ */
+function isHeavyLane(req, txPaths, minBytes, xml = false) {
+  if (txRest(req.url, txPaths) === null) {
     return false;
   }
   const len = req.headers['content-length'];
-  return /^\d+$/.test(len || '') && Number(len) > minBytes;
+  if (minBytes > 0 && /^\d+$/.test(len || '') && Number(len) > minBytes) {
+    return true;
+  }
+  return xml && isXml(req);
 }
 
 /**
@@ -454,6 +497,7 @@ function createLauncher(settings) {
   const normalMinSlots = Math.min(settings.normalMinSlots ?? NORMAL_MIN_SLOTS, maxOutstanding);
   const heavyLaneMinBytes = settings.heavyLaneMinBytes ?? HEAVY_LANE_MIN_BYTES; // 0: no heavy lane
   const heavyLaneProcesses = settings.heavyLaneProcesses ?? HEAVY_LANE_PROCESSES;
+  const heavyLaneXml = settings.heavyLaneXml ?? HEAVY_LANE_XML;
   // what each process does: every one has a role (library/role.js)
   const trimAllocator = (settings.memory && settings.memory.trimAllocator) ?? ROLE_TRIM_ALLOCATOR;
   const command = settings.command || ((proc) => [process.execPath, [
@@ -474,7 +518,7 @@ function createLauncher(settings) {
   // the heavy lane: the last heavyLaneProcesses tx-workers, if that leaves another process
   // serving tx (otherwise every request would be in the lane, and there's no lane)
   const laneWorkers = procs.filter(p => p.role === 'tx-worker').slice(-heavyLaneProcesses);
-  const heavyLane = heavyLaneMinBytes > 0 && heavyLaneProcesses > 0 && laneWorkers.length === heavyLaneProcesses &&
+  const heavyLane = (heavyLaneMinBytes > 0 || heavyLaneXml) && heavyLaneProcesses > 0 && laneWorkers.length === heavyLaneProcesses &&
     procs.filter(p => p.servesTx).length > heavyLaneProcesses;
   if (heavyLane) {
     for (const p of laneWorkers) {
@@ -839,7 +883,7 @@ function createLauncher(settings) {
     const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
     w.fast = fastLaneExtra > 0 && w.route.to !== 'master' && isFastLane(req, settings.txPaths, fastLaneMaxBytes);
     // a request with a cache-id goes to its owner, whatever its size
-    w.heavy = heavyLane && w.route.to === 'tx' && isHeavyLane(req, settings.txPaths, heavyLaneMinBytes);
+    w.heavy = heavyLane && w.route.to === 'tx' && isHeavyLane(req, settings.txPaths, heavyLaneMinBytes, heavyLaneXml);
     if (send(w)) {
       return;
     }
@@ -1136,10 +1180,11 @@ function createLauncher(settings) {
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, writeTimeoutSeconds ${writeTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, statusSeconds ${statusMs / 1000}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+    const laneRules = [heavyLaneMinBytes > 0 ? `with a body over ${heavyLaneMinBytes} bytes` : null, heavyLaneXml ? 'in or for XML' : null].filter(r => r);
     log(heavyLane
-      ? `heavy lane: tx requests with a body over ${heavyLaneMinBytes} bytes and no cache-id go to ${laneWorkers.map(p => p.code).join(', ')}, ` +
-        'which other requests avoid while it has one (heavyLaneMinBytes, heavyLaneProcesses)'
-      : `heavy lane: off (${heavyLaneMinBytes > 0 && heavyLaneProcesses > 0 ? `it needs more than ${heavyLaneProcesses} process(es) serving tx, ${heavyLaneProcesses} of them tx-workers` : 'heavyLaneMinBytes or heavyLaneProcesses is 0'})`);
+      ? `heavy lane: tx requests ${laneRules.join(' or ')}, without a cache-id, go to ${laneWorkers.map(p => p.code).join(', ')}, ` +
+        'which other requests avoid while it has one (heavyLaneMinBytes, heavyLaneXml, heavyLaneProcesses)'
+      : `heavy lane: off (${laneRules.length > 0 && heavyLaneProcesses > 0 ? `it needs more than ${heavyLaneProcesses} process(es) serving tx, ${heavyLaneProcesses} of them tx-workers` : 'heavyLaneMinBytes is 0 and heavyLaneXml false, or heavyLaneProcesses is 0'})`);
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
       memoryTimer.unref();
@@ -1319,4 +1364,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadSettings, classify, isFastLane, isHeavyLane, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv };
+module.exports = { loadSettings, classify, isFastLane, isHeavyLane, isXml, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv };
