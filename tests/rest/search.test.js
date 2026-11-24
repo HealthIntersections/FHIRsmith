@@ -260,6 +260,38 @@ describe.each(engines())('rest search (%s)', (engine) => {
     expect(found(r.body)).toEqual([ids.p3]);
   });
 
+  test('_filter: a filter in brackets on a path step applies to the same target', async () => {
+    const fam = 'Brack' + Date.now().toString(36);
+    const org = await post({ resourceType: 'Organization', name: 'Bracket Clinic' });
+    const smithOff = await post({ resourceType: 'Practitioner', name: [{ family: fam }], active: false });
+    const jonesOn = await post({ resourceType: 'Practitioner', name: [{ family: 'Other' + fam }], active: true });
+    const smithOn = await post({ resourceType: 'Practitioner', name: [{ family: fam }], active: true });
+    const obs = (performers, extra = {}) => post({ resourceType: 'Observation', status: 'final', code: { text: fam },
+      performer: performers.map(p => ({ reference: p })), ...extra });
+    // two performers who meet the conditions only between them
+    const between = await obs([`Practitioner/${smithOff}`, `Practitioner/${jonesOn}`]);
+    // one performer who meets both
+    const one = await obs([`Practitioner/${smithOn}`]);
+    const f = (x) => search('/r4/Observation?_filter=' + encodeURIComponent(x)).then(found);
+    expect(await f(`performer.family eq ${fam} and performer.active eq true`)).toEqual([between, one].sort());
+    expect(await f(`performer[family eq ${fam}].active eq true`)).toEqual([one]);
+    expect(await f(`performer[family eq ${fam} and active eq false].family eq ${fam}`)).toEqual([between]);
+    expect(await f(`performer[family eq ${fam}].active eq true or code eq nothing`)).toEqual([one]);
+    expect(await f(`not (performer[family eq ${fam}].active eq true) and performer.family eq ${fam}`)).toEqual([between]);
+    // nested: a bracket in a later step
+    const pid = await post({ resourceType: 'Patient', name: [{ family: fam }], managingOrganization: { reference: `Organization/${org}` } });
+    const sub = await obs([], { subject: { reference: `Patient/${pid}` } });
+    expect(await f(`subject[family eq ${fam}].organization[name sw bracket].name sw bracket`)).toEqual([sub]);
+    expect(await f(`subject[family eq nobody].organization.name sw bracket`)).toEqual([]);
+    // what isn't a path with a filter
+    await search('/r4/Observation?_filter=' + encodeURIComponent(`performer[family eq ${fam}] pr true`), 400);
+    await search('/r4/Observation?_filter=' + encodeURIComponent('status[x eq y].z eq 1'), 400);
+    await search('/r4/Observation?_filter=' + encodeURIComponent('performer[family eq x.active eq true'), 400);
+    await search('/r4/Observation?_filter=' + encodeURIComponent('performer[].active eq true'), 400);
+    await search('/r4/Observation?_filter=' + encodeURIComponent('performer[nonsense eq 1].active eq true'), 400);
+    await search('/r4/Observation?_filter=' + encodeURIComponent('subject[organization[name eq a].organization[name eq b].name eq c].family eq d'), 400);
+  });
+
   test('_filter values are literal: backslashes, commas and dollars in them are just characters', async () => {
     // the value has two backslashes in a row, a comma and a dollar: a\\b,c$d
     const value = 'a' + '\\'.repeat(2) + 'b,c$d';

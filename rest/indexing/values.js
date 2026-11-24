@@ -276,6 +276,12 @@ function referenceValues(type, d, out, ctx) {
     return;
   }
   if (typeof d === 'object') {
+    if (typeof d.reference === 'string' && d.reference.startsWith('#')) {
+      // a contained resource (or, '#' alone, the container): the indexer gives it its key
+      out.push({ table: 'IndexReferences', local: false, contained: d.reference.substring(1), targetType: null, targetId: null,
+        TargetVersion: null, Url: null, UrlVersion: null, identSystem: null, IdentValue: null });
+      return;
+    }
     const p = typeof d.reference === 'string' ? parseReference(d.reference, ctx.baseUrls) : null;
     const ident = d.identifier && d.identifier.value ? d.identifier : null;
     if (p || ident) {

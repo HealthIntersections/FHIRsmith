@@ -85,39 +85,64 @@ class Searcher {
   }
 
   /**
-   * Parse and build the condition for a search.
-   * @returns {Promise<{where: string, args: Array, parsed: Object, types: string[]}>}
+   * Parse and build the query for a search: SELECT ... FROM ${from} WHERE ${where}, with
+   * fromArgs then args. What is searched is "i": Ids, or with _contained=true or both, the
+   * contained resources (Contained, as Ids-like rows keyed -ContainedKey, with their container's
+   * MostRecent and Deleted) in place of or as well as them. i.ContainerKey is the resource
+   * itself, or a contained resource's container: compartments, and access, go by that.
+   * @returns {Promise<{from: string, fromArgs: Array, where: string, args: Array, containerKey: string, parsed: Object, types: string[]}>}
    */
   async prepare(q, types, params, options) {
     const ep = this.ep;
     const parsed = new SearchParser(ep).parse({ types, params, strict: options.strict });
-    const items = [...parsed.criteria.items];
-    if (options.compartment) {
-      items.push({ kind: 'compartment', type: options.compartment.type, id: options.compartment.id });
+    const mode = options.noContained ? 'false' : parsed.control.contained;
+    const all = [...ep.typeKeys.keys()].filter(t => ep.typeSupported(t));
+    const typeKeys = types.length < all.length ? types.map(t => ep.typeKeys.get(t)) : null;
+    const typeIn = (col) => typeKeys === null ? '' : typeKeys.length === 0 ? ' WHERE 1 = 0' : ` WHERE ${col} IN (${typeKeys.map(() => '?').join(', ')})`;
+    let from = 'Ids i';
+    const fromArgs = [];
+    let containerKey = 'i.ResourceKey';
+    if (mode !== 'false') {
+      const branches = [];
+      if (mode === 'both') {
+        branches.push('SELECT ResourceKey AS ResourceKey, TypeKey AS TypeKey, Id AS Id, MostRecent AS MostRecent, Deleted AS Deleted, ResourceKey AS ContainerKey FROM Ids' + typeIn('TypeKey'));
+        fromArgs.push(...(typeKeys || []));
+      }
+      branches.push('SELECT -c.ContainedKey AS ResourceKey, c.TypeKey AS TypeKey, c.LocalId AS Id, ci.MostRecent AS MostRecent, ci.Deleted AS Deleted, ' +
+        'c.ResourceKey AS ContainerKey FROM Contained c JOIN Ids ci ON ci.ResourceKey = c.ResourceKey' + typeIn('c.TypeKey'));
+      fromArgs.push(...(typeKeys || []));
+      from = `(${branches.join(' UNION ALL ')}) i`;
+      containerKey = 'i.ContainerKey';
     }
     const b = new SqlBuilder(ep, q);
+    b.contained = mode !== 'false';
+    const items = [...parsed.criteria.items];
     const crit = await b.build({ kind: 'and', items }, 'i.ResourceKey');
     const where = ['i.Deleted = 0', 'i.MostRecent IS NOT NULL'];
     const args = [];
-    const all = [...ep.typeKeys.keys()].filter(t => ep.typeSupported(t));
-    if (types.length < all.length) {
-      if (types.length === 0) {
+    if (typeKeys !== null) {
+      if (typeKeys.length === 0) {
         where.push('1 = 0');
       } else {
-        where.push(`i.TypeKey IN (${types.map(() => '?').join(', ')})`);
-        args.push(...types.map(t => ep.typeKeys.get(t)));
+        where.push(`i.TypeKey IN (${typeKeys.map(() => '?').join(', ')})`);
+        args.push(...typeKeys);
       }
     }
     if (crit.sql !== '1 = 1') {
       where.push(crit.sql);
       args.push(...crit.args);
     }
-    const comp = ep.compartmentFilter(options.access, 'i.ResourceKey');
+    if (options.compartment) {
+      const c = await b.build({ kind: 'compartment', type: options.compartment.type, id: options.compartment.id }, containerKey);
+      where.push(c.sql);
+      args.push(...c.args);
+    }
+    const comp = ep.compartmentFilter(options.access, containerKey);
     if (comp) {
       where.push(comp.sql);
       args.push(...comp.args);
     }
-    return { where: where.join(' AND '), args, parsed, types };
+    return { from, fromArgs, where: where.join(' AND '), args, containerKey, mode, parsed, types };
   }
 
   orderBy(sort) {
@@ -144,7 +169,7 @@ class Searcher {
    * @returns {Promise<number[]>}
    */
   async matchKeys(q, type, params, options = {}) {
-    const p = await this.prepare(q, [type], params, { access: options.access, strict: options.strict });
+    const p = await this.prepare(q, [type], params, { access: options.access, strict: options.strict, noContained: true });
     if (p.parsed.used.length === 0 && p.parsed.criteria.items.length === 0) {
       throw badRequest('The search criteria have no parameters this server knows');
     }
@@ -166,18 +191,25 @@ class Searcher {
       const p = await this.prepare(q, types, freq.params, { access: ctx.access, strict: strict(freq), compartment: freq.compartment });
       const control = p.parsed.control;
       const count = control.count === null ? ep.settings.defaultCount : Math.min(control.count, ep.settings.maxCount);
+      // a contained resource that matches brings back its container, once, unless
+      // _containedType=contained asks for the contained resource itself
+      const containers = p.mode !== 'false' && control.containedType === 'container';
+      const countSql = `SELECT COUNT(${containers ? 'DISTINCT i.ContainerKey' : '*'}) AS N FROM ${p.from} WHERE ${p.where}`;
+      const allArgs = [...p.fromArgs, ...p.args];
       if (control.summary === 'count' || count === 0) {
-        const row = await q.get(`SELECT COUNT(*) AS N FROM Ids i WHERE ${p.where}`, p.args);
+        const row = await q.get(countSql, allArgs);
         return { p, count, keys: [], total: Number(row.N), countOnly: true };
       }
-      const rows = await q.all(`SELECT i.ResourceKey FROM Ids i WHERE ${p.where} ${this.orderBy(control.sort)} LIMIT ${max + 1}`, p.args);
-      let keys = rows.map(r => Number(r.ResourceKey));
+      const rows = await q.all(`SELECT i.ResourceKey, ${p.containerKey} AS ContainerKey FROM ${p.from} WHERE ${p.where} ${this.orderBy(control.sort)} LIMIT ${max + 1}`, allArgs);
+      const truncated = rows.length > max;
+      let keys = rows.slice(0, max).map(r => Number(containers ? r.ContainerKey : r.ResourceKey));
+      if (containers) {
+        keys = [...new Set(keys)];
+      }
       let total = null;
-      const truncated = keys.length > max;
       if (truncated) {
-        keys = keys.slice(0, max);
         if (control.total === 'accurate') {
-          const row = await q.get(`SELECT COUNT(*) AS N FROM Ids i WHERE ${p.where}`, p.args);
+          const row = await q.get(countSql, allArgs);
           total = Number(row.N);
         }
       } else if (control.total !== 'none') {
@@ -269,7 +301,7 @@ class Searcher {
   async buildPage(freq, ctx, pg) {
     const ep = this.ep;
     const { found, included } = await ep.inRead(ctx, async (q) => {
-      const f = await ep.store.byKeys(q, pg.keys);
+      const f = await this.byKeys(q, pg.keys);
       const inc = await this.includes(q, f, pg.control, ctx.access);
       return { found: f, included: inc };
     });
@@ -292,7 +324,7 @@ class Searcher {
     }
     const shapeControl = { summary: pg.control.summary, elements: pg.control.elements };
     bundle.entry = found.map(r => ({
-      fullUrl: `${freq.base}/${r.type}/${r.id}`, resource: ep.shapeResource(r.resource, freq, shapeControl), search: { mode: 'match' }
+      fullUrl: r.container ? `${freq.base}/${r.container.type}/${r.container.id}#${r.id}` : `${freq.base}/${r.type}/${r.id}`, resource: ep.shapeResource(r.resource, freq, shapeControl), search: { mode: 'match' }
     }));
     for (const r of included) {
       bundle.entry.push({ fullUrl: `${freq.base}/${r.type}/${r.id}`, resource: ep.shapeResource(r.resource, freq, shapeControl), search: { mode: 'include' } });
@@ -300,7 +332,36 @@ class Searcher {
     if (pg.warnings.length) {
       bundle.entry.push(this.outcomeEntry(pg.warnings));
     }
-    return { status: 200, resource: bundle, searchKeys: found.map(r => r.resourceKey) };
+    return { status: 200, resource: bundle, searchKeys: found.map(r => r.container ? r.container.resourceKey : r.resourceKey) };
+  }
+
+  /**
+   * The resources for a page's keys, in order: contained resources (_containedType=contained)
+   * are keyed -ContainedKey, and come out of their container's current version, with
+   * container set (and id their local id).
+   */
+  async byKeys(q, keys) {
+    const ep = this.ep;
+    const neg = keys.filter(k => k < 0).map(k => -k);
+    if (!neg.length) {
+      return ep.store.byKeys(q, keys);
+    }
+    const rows = [];
+    for (let i = 0; i < neg.length; i += 500) {
+      const c = neg.slice(i, i + 500);
+      rows.push(...await q.all(`SELECT ContainedKey, ResourceKey, LocalId FROM Contained WHERE ContainedKey IN (${c.map(() => '?').join(', ')})`, c));
+    }
+    const containerKeys = [...new Set(rows.map(r => Number(r.ResourceKey)))];
+    const loaded = await ep.store.byKeys(q, [...new Set([...keys.filter(k => k > 0), ...containerKeys])]);
+    const byKey = new Map(loaded.map(r => [r.resourceKey, r]));
+    for (const r of rows) {
+      const container = byKey.get(Number(r.ResourceKey));
+      const res = container && Array.isArray(container.resource.contained) ? container.resource.contained.find(c => c && c.id === r.LocalId) : null;
+      if (res) {
+        byKey.set(-Number(r.ContainedKey), { resourceKey: -Number(r.ContainedKey), type: res.resourceType, id: r.LocalId, resource: res, container });
+      }
+    }
+    return keys.map(k => byKey.get(k)).filter(x => x);
   }
 
   /**
@@ -326,7 +387,8 @@ class Searcher {
         }
         for (let i = 0; i < src.length; i += 500) {
           const c = src.slice(i, i + 500);
-          const conds = [`r.ResourceKey IN (${c.map(() => '?').join(', ')})`, 'r.TargetKey IS NOT NULL'];
+          // (a contained target, TargetKey < 0, is in the resource already)
+          const conds = [`r.ResourceKey IN (${c.map(() => '?').join(', ')})`, 'r.TargetKey > 0'];
           const args = [...c];
           if (inc.key) {
             conds.push('r.ParamKey = ?');

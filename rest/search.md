@@ -45,11 +45,115 @@ Several values separated by commas are OR'd; a parameter repeated is AND'd.
 | `_profile` | `:below`, `:not`, `:missing` |
 | `_list` | the id of a List on the endpoint |
 | `_type` | on a search of the whole endpoint |
+| `_text`, `_content` | full-text: see below |
 | `_has` | `_has:Type:reference:parameter=value`, nested up to 3 levels |
 | chains | `subject.name=x`, `subject:Patient.name=x`, up to 3 links |
 | `_filter` | operators `eq` `ne` `co` `sw` `ew` `gt` `lt` `ge` `le` `ap` `sa` `eb` `pr` `po` `ss` `sb` `in` `ni` `re`; `and`, `or`, `not`, brackets; chains through reference parameters. `sw` on a uri is `:below`; `ss` and `sb` on a token are `:below` and `:above` |
 
 Compartment searches (`Patient/123/Observation`, `Patient/123/*`) are supported too.
+
+### Filters on a path step in `_filter`
+
+A chain step can carry a filter in brackets: conditions the same target must meet, before the
+path carries on.
+
+```
+performer[family eq Smith].active eq true
+```
+
+is an Observation with a performer who is both called Smith and active. Without the brackets,
+
+```
+performer.family eq Smith and performer.active eq true
+```
+
+each half is matched on its own, so an Observation whose performers are an inactive Smith and
+an active Jones matches too. The two only differ when the reference can repeat (`performer`,
+`participant`, `general-practitioner`...).
+
+The filter in brackets is a whole `_filter` expression (`and`, `or`, `not`, its own chains and
+brackets), about the reference's target types. Brackets go only on reference parameters, and
+always with a parameter after them (`performer[...].active eq true`, not `performer[...] pr
+true`). Chains, brackets included, are limited to 3 links.
+
+## Full-text search: `_text` and `_content`
+
+`_text` searches the narrative (the text of `text.div`, without the markup); `_content` searches
+the whole resource: every string and number in it, the narrative's text included, but not the
+names of the elements, the `meta`, or base64 `data`.
+
+The value is words and phrases:
+
+| | |
+|---|---|
+| `chest pain` | both words (terms next to each other are AND'd) |
+| `chest AND pain` | the same |
+| `pain OR ache` | either |
+| `chest -child`, `chest NOT child` | chest, but not child |
+| `"blood pressure"` | the phrase, as it is |
+| `(pain OR ache) chest` | brackets group |
+
+- A word matches as a prefix (`chalm` finds Chalmers); a phrase matches as it is. Accents and
+  case are folded, as for string parameters (`muller` finds Müller).
+- A word the index splits into several (`anna@example.org`) is matched as a phrase.
+- Each part of the search needs a word that isn't negated (`-child` on its own can't be
+  searched). At most 32 words and phrases, and 1,000 characters.
+- `_text` and `_content` work on a chain (`Observation?subject._text=pressure`) and with
+  `_type`. They can't be used in `_filter` yet, and take no modifiers.
+
+The text is indexed with the resource, in its write transaction. A database made before
+full-text search (schema version 1) gets the index when the server starts, and the master fills
+it in the background; until it has, searches using `_text` or `_content` say so in the result's
+OperationOutcome.
+
+What differs between the engines:
+
+- **MySQL ignores short words and stopwords.** Words shorter than `innodb_ft_min_token_size`
+  (3 by default) aren't indexed, so they find nothing, and nor do words on MySQL's stopword
+  list ("about", "the", ...). SQLite indexes every word.
+- **Inside a transaction, MySQL doesn't see the transaction's own writes**: a `_text` search in
+  a transaction's GET entry finds what was there before the transaction (MySQL updates a
+  FULLTEXT index at commit). SQLite sees them.
+
+## Contained resources
+
+A contained resource that the resource refers to (`#id`) is indexed with its own type's
+search parameters, so a chain reaches into it: `Patient?general-practitioner.name=smith`
+finds a patient whose GP is contained, as well as one whose GP is a Practitioner of its own.
+A contained resource's references are indexed too: `#id` finds a sibling, `#` the container,
+and references to other resources are kept, so a chain can go on through them
+(`Observation?subject:Patient.organization.name=acme`).
+
+By default, searching a type (`Practitioner?name=smith`) doesn't find contained resources,
+nor does `_has`, nor does `_include` bring them in: they come back in the resource that
+contains them. `_contained` changes what a search finds:
+
+| `_contained` | finds |
+| --- | --- |
+| `false` (the default) | resources of their own |
+| `true` | contained resources only |
+| `both` | either |
+
+and `_containedType` what comes back for a contained resource that matches:
+
+| `_containedType` | returns |
+| --- | --- |
+| `container` (the default) | the resource that contains it, once however many of its contained resources match, with mode `match`; `total` counts containers |
+| `contained` | the contained resource itself, with the fullUrl `[base]/[container type]/[container id]#[local id]`; `total` counts contained resources |
+
+For a contained resource, `_id` is its local id, and `_lastUpdated` its container's;
+`_tag`, `_profile`, `_security`, `_list`, `_text` and `_content` don't find it. A compartment
+search (`Patient/123/Observation?_contained=true`), and a user limited to compartments, go by
+the container. Sorting and paging work as for anything else; `_include` and `_revinclude`
+work from contained matches (`Practitioner?_contained=true&_containedType=contained&_revinclude=Patient:general-practitioner`
+brings in the patients that contain them).
+
+A contained resource that nothing refers to isn't indexed, so no search finds it, nor is one
+past the first 100 in a resource.
+
+A reference to a contained resource that isn't there (`#nobody`) makes the resource invalid:
+422. (Resources that were stored before this was checked are indexed regardless, with the
+reference going nowhere.)
 
 ## Results
 
@@ -73,5 +177,5 @@ user who ran the search.
 - `:above` and `:below` on references (canonical version matching)
 - `:not` on anything but tokens and `_id`, `_tag`, `_security`, `_profile`
 - `:code-text` as it is defined (matching the code's display): it is treated as `:text`
-- `_text`, `_content`, `_query`, `_contained`, `_containedType`
-- filters on path elements in `_filter` (`name[...]`)
+- `_query`
+- `_text` and `_content` in `_filter`, relevance ranking, and `:text-advanced`

@@ -187,6 +187,9 @@ class Endpoint {
   }
 
   async apply(loaded) {
+    // everything is being reindexed (a schema migration added something every resource needs:
+    // the full-text index at version 2, the Contained table at 3)
+    this.reindexAll = !!(await this.db.read(q => q.get('SELECT Value FROM Config WHERE Name = ?', ['reindexAll'])));
     this.generation = loaded.generation;
     this.settings = loaded.endpoint;
     this.types = loaded.types;
@@ -596,7 +599,7 @@ class Endpoint {
    * @returns {Promise<number>} how many resources were reindexed
    */
   async reindexBatch() {
-    if (!this.definitions.reindexing || this.definitions.reindexing.size === 0) {
+    if ((!this.definitions.reindexing || this.definitions.reindexing.size === 0) && !this.reindexAll) {
       return 0;
     }
     const fromRow = await this.db.read(q => q.get('SELECT Value FROM Config WHERE Name = ?', ['reindexFrom']));
@@ -608,7 +611,7 @@ class Endpoint {
         const v = await q.get('SELECT v.Compressed, v.Content FROM Ids i JOIN Versions v ON v.VersionKey = i.MostRecent WHERE i.ResourceKey = ? AND i.Deleted = 0', [r.ResourceKey]);
         const resource = v ? decode(v) : null;
         if (resource) {
-          await this.indexer.index(q, { resourceKey: Number(r.ResourceKey), resource, deferChecks: true });
+          await this.indexer.index(q, { resourceKey: Number(r.ResourceKey), resource, deferChecks: true, lenient: true });
         }
       }
       if (rows.length) {
@@ -621,11 +624,13 @@ class Endpoint {
         // done: clear the flags, and tell every process
         await q.run('UPDATE SearchParams SET Reindex = 0 WHERE Reindex = 1');
         await q.run('DELETE FROM Config WHERE Name = ?', ['reindexFrom']);
+        await q.run('DELETE FROM Config WHERE Name = ?', ['reindexAll']);
         await settingsStore.bumpGeneration(q);
       }
     });
     if (!rows.length) {
       this.definitions.reindexing = new Set();
+      this.reindexAll = false;
       this.log.info(`Rest ${this.path}: reindexing finished`);
     }
     return rows.length;

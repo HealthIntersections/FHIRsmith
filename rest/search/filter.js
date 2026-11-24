@@ -12,11 +12,14 @@
  *   andExpr    = unary ("and" unary)*
  *   unary      = "not" "(" expr ")" | "(" expr ")" | comparison
  *   comparison = path op value
- *   path       = name ("." name)*            a chain through reference parameters
+ *   path       = name ("[" filter "]")? ("." path)?   a chain through reference parameters
  *   op         = eq ne co sw ew gt lt ge le ap sa eb pr po ss sb in ni re
  *   value      = "quoted string" | token
  *
- * Filters on path elements (name[filter]) are not supported yet.
+ * A chain (subject.name eq x) asks for a reference to a resource that matches; a filter in
+ * brackets on a step (performer[name sw Smith].active eq true) adds conditions the same
+ * target must meet: unlike performer.name sw Smith and performer.active eq true, which two
+ * different performers could meet between them.
  *
  * @module rest/search/filter
  */
@@ -65,9 +68,16 @@ function tokenise(text) {
       i++;
       out.push({ t: 'str', v: s });
     } else {
+      // a word; a [...] in it (a filter on a path step) is kept whole, spaces and all
       let s = '';
       while (i < text.length && !/[\s()]/.test(text[i])) {
-        s += text[i++];
+        if (text[i] === '[') {
+          const end = closingBracket(text, i);
+          s += text.substring(i, end + 1);
+          i = end + 1;
+        } else {
+          s += text[i++];
+        }
       }
       out.push({ t: 'word', v: s });
     }
@@ -75,8 +85,76 @@ function tokenise(text) {
   return out;
 }
 
+/**
+ * Where the ] that closes the [ at start is: brackets nest, and brackets inside quoted
+ * strings don't count.
+ */
+function closingBracket(text, start) {
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === '"') {
+      i++;
+      while (i < text.length && text[i] !== '"') {
+        if (text[i] === '\\') {
+          i++;
+        }
+        i++;
+      }
+    } else if (c === '[') {
+      depth++;
+    } else if (c === ']') {
+      depth--;
+      if (depth === 0) {
+        return i;
+      }
+    }
+  }
+  throw badRequest('_filter: a [ is not closed');
+}
+
+/**
+ * The first step of a path: its parameter, the filter in brackets on it (or null), and the
+ * rest of the path after the '.' (or null).
+ * @param {string} path
+ */
+function splitPath(path) {
+  let i = 0;
+  while (i < path.length && path[i] !== '[' && path[i] !== '.') {
+    i++;
+  }
+  const code = path.substring(0, i);
+  let filter = null;
+  if (path[i] === '[') {
+    const end = closingBracket(path, i);
+    filter = path.substring(i + 1, end).trim();
+    if (!filter) {
+      throw badRequest(`_filter: the [] on ${code} is empty`);
+    }
+    i = end + 1;
+  }
+  let rest = null;
+  if (i < path.length) {
+    if (path[i] !== '.' || i + 1 >= path.length) {
+      throw badRequest(`_filter: '${path}' is not a parameter path`);
+    }
+    rest = path.substring(i + 1);
+  }
+  if (!code) {
+    throw badRequest(`_filter: '${path}' is not a parameter path`);
+  }
+  return { code, filter, rest };
+}
+
 class FilterParser {
-  constructor(sp, types, text) {
+  /**
+   * @param {Object} sp - the SearchParser
+   * @param {string[]} types - the types the filter is about
+   * @param {string} text
+   * @param {number} [depth] - how many chain links in this filter is (a filter in brackets)
+   */
+  constructor(sp, types, text, depth = 0) {
+    this.depth = depth;
     this.sp = sp;
     this.types = types;
     if (text.length > MAX_LENGTH) {
@@ -159,30 +237,29 @@ class FilterParser {
     if (!path || path.t !== 'word' || !op || op.t !== 'word' || !value || (value.t !== 'word' && value.t !== 'str')) {
       throw badRequest('_filter: expected parameter operator value');
     }
-    if (path.v.includes('[')) {
-      throw badRequest('_filter: filters on path elements ([...]) are not supported yet');
-    }
     const o = op.v.toLowerCase();
     if (!OPS.has(o)) {
       throw badRequest(`_filter: unknown operator '${op.v}'`);
     }
-    return this.compare(this.types, path.v, o, value.v, 0);
+    return this.compare(this.types, path.v, o, value.v, this.depth);
   }
 
   compare(types, path, op, value, depth) {
     const sp = this.sp;
-    const dot = path.indexOf('.');
-    if (dot > 0) {
+    const step = splitPath(path);
+    if (step.filter !== null && step.rest === null) {
+      throw badRequest(`_filter: a filter in brackets on ${step.code} needs a parameter after it (${step.code}[...].parameter)`);
+    }
+    if (step.rest !== null) {
       if (depth >= 3) {
         throw badRequest('_filter: chains are limited to 3 links');
       }
-      const code = path.substring(0, dot);
+      const code = step.code;
       const l = sp.lookup(types, code);
       if (!l || l.spType !== 'reference') {
-        throw badRequest(`_filter: '${code}' is not a reference parameter`);
+        throw badRequest(`_filter: '${code}' is not a reference parameter${step.filter !== null ? ', so it can\'t have a filter in brackets' : ''}`);
       }
-      const rest = path.substring(dot + 1);
-      const nextCode = rest.split('.')[0];
+      const nextCode = splitPath(step.rest).code;
       let targets = [...new Set(l.defs.flatMap(d => d.target || []))].filter(t => sp.ep.typeKeys.has(t));
       if (!nextCode.startsWith('_')) {
         targets = targets.filter(t => sp.defs.param(t, nextCode));
@@ -190,7 +267,13 @@ class FilterParser {
       if (!targets.length) {
         throw badRequest(`_filter: none of the targets of ${code} has a parameter '${nextCode}'`);
       }
-      return { kind: 'chain', keys: l.keys, targetTypes: null, inner: this.compare(targets, rest, op, value, depth + 1) };
+      let inner = this.compare(targets, step.rest, op, value, depth + 1);
+      if (step.filter !== null) {
+        // the bracket's conditions and the rest of the path, on the same target
+        const filter = new FilterParser(sp, targets, step.filter, depth + 1).parse();
+        inner = { kind: 'and', items: [filter, inner] };
+      }
+      return { kind: 'chain', keys: l.keys, targetTypes: null, inner };
     }
     if (path === '_id') {
       if (op !== 'eq' && op !== 'ne') {
@@ -296,4 +379,4 @@ function parseFilter(sp, types, text) {
   return new FilterParser(sp, types, text).parse();
 }
 
-module.exports = { parseFilter, tokenise, asSearchValue };
+module.exports = { parseFilter, tokenise, asSearchValue, splitPath };

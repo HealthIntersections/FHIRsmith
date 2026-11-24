@@ -18,6 +18,10 @@ run it.
   `:iterate`), `_summary`, `_elements`, `_total`, and paging through stored results
 - `:below` and `:above` on tokens through a closure table, kept up to date with the endpoint's
   terminology server's `$closure`; `:in` and `:not-in` through its `$expand`
+- full-text search: `_text` (the narrative) and `_content` (the whole resource)
+- contained resources indexed with their own search parameters, so chains reach into them
+  and `_contained` / `_containedType` search them; a reference to a contained resource that
+  isn't there is a 422
 - `$meta`, `$meta-add`, `$meta-delete`, and `Patient/[id]/$everything`
 - AuditEvents for writes (and, if set, reads and failures), stored on the endpoint
 - a subscription queue (`SubscriptionQueue`), filled by every write; nothing delivers it yet
@@ -26,7 +30,7 @@ run it.
 What search supports, parameter by parameter, is in [search.md](search.md).
 
 Not yet: XML, subscription delivery, validation on write, SMART on FHIR, asynchronous
-operations, `$lastn`, `_text` and `_content`, FHIRPath Patch, admin pages.
+operations, `$lastn`, FHIRPath Patch, admin pages.
 
 ## Configuration
 

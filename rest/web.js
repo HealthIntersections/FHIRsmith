@@ -41,10 +41,13 @@ const HINTS = {
   quantity: 'value|system|code, e.g. gt5.4|http://unitsofmeasure.org|mmol/L',
   reference: 'Type/id, or a URL',
   uri: 'a URI (:below, :above)',
-  composite: 'values separated by $'
+  composite: 'values separated by $',
+  text: 'e.g. chest pain, "blood pressure" -child'
 };
 
 const COMMON = [
+  { code: '_text', type: 'text', description: 'Words in the narrative. Words match as prefixes, "phrases" as they are; AND, OR, NOT (or -), brackets' },
+  { code: '_content', type: 'text', description: 'Words anywhere in the resource, as for _text' },
   { code: '_id', type: 'token', description: 'The resource\'s id' },
   { code: '_lastUpdated', type: 'date', description: 'When the resource was last changed' },
   { code: '_tag', type: 'token', description: 'A tag in the resource\'s meta' },
@@ -53,7 +56,7 @@ const COMMON = [
 ];
 
 // the parameters that control a search rather than choose what it finds
-const CONTROL = new Set(['_format', '_pretty', '_count', '_sort', '_summary', '_elements', '_total', '_include', '_revinclude']);
+const CONTROL = new Set(['_format', '_pretty', '_count', '_sort', '_summary', '_elements', '_total', '_include', '_revinclude', '_contained', '_containedType']);
 
 let i18nPromise = null;
 
@@ -352,7 +355,7 @@ class RestWeb {
         `<td><small>${escape(p.description || '')}</small></td></tr>`;
     }
     html += '</tbody></table>';
-    const sortable = params.filter(p => p.type !== 'composite');
+    const sortable = params.filter(p => p.type !== 'composite' && p.type !== 'text');
     html += '<p style="margin-top: 10px">';
     html += '<label for="_sort">Sort by</label> <select id="_sort" name="_sort"><option value="">(none)</option>';
     for (const p of sortable) {
@@ -360,7 +363,11 @@ class RestWeb {
     }
     html += '</select> &nbsp; ';
     html += `<label for="_count">Page size</label> <input type="number" id="_count" name="_count" min="1" max="${ep.settings.maxCount}" value="${ep.settings.defaultCount}" style="width: 6em"/> &nbsp; `;
-    html += '<label for="_summary">Summary</label> <select id="_summary" name="_summary"><option value="">(full)</option><option>true</option><option>data</option><option>text</option><option>count</option></select>';
+    html += '<label for="_summary">Summary</label> <select id="_summary" name="_summary"><option value="">(full)</option><option>true</option><option>data</option><option>text</option><option>count</option></select> &nbsp; ';
+    html += '<label for="_contained">Contained resources</label> <select id="_contained" name="_contained"><option value="">(not searched)</option>' +
+      '<option value="true">only</option><option value="both">as well</option></select> ' +
+      '<select id="_containedType" name="_containedType" aria-label="Return"><option value="">return the container</option>' +
+      '<option value="contained">return the contained resource</option></select>';
     html += '</p>';
     html += '<p><button type="submit" class="btn btn-primary">Search</button> ' +
       '<small>Empty fields are left out. Repeat a parameter in the URL to AND values; separate values with commas to OR them.</small></p>';
@@ -423,12 +430,15 @@ class RestWeb {
             `<td>${escape(e.response && e.response.lastModified ? e.response.lastModified : '')}</td><td></td></tr>`;
           continue;
         }
-        const link = `${base}/${encodeURIComponent(r.resourceType)}/${encodeURIComponent(r.id)}`;
+        // a contained resource (_containedType=contained): its fullUrl is its container's, #id
+        const hash = typeof e.fullUrl === 'string' ? e.fullUrl.indexOf('#') : -1;
+        const container = hash > 0 ? e.fullUrl.substring(0, hash).split('/').slice(-2) : null;
+        const link = container ? `${base}/${container.map(encodeURIComponent).join('/')}` : `${base}/${encodeURIComponent(r.resourceType)}/${encodeURIComponent(r.id)}`;
         const vid = r.meta && r.meta.versionId;
         const vlink = vid ? `${link}/_history/${encodeURIComponent(vid)}` : link;
         const mode = e.search && e.search.mode === 'include' ? ' <span class="badge bg-secondary">included</span>' : '';
         const op = req2 ? ` <small>(${escape(req2.method === 'POST' ? 'created' : req2.method === 'PUT' ? 'updated' : req2.method)})</small>` : '';
-        html += `<tr><td><a href="${escape(bundle.type === 'history' ? vlink : link)}">${escape(r.resourceType)}/${escape(r.id)}</a>${mode}</td>` +
+        html += `<tr><td><a href="${escape(bundle.type === 'history' ? vlink : link)}">${container ? escape(r.resourceType) + ' #' + escape(r.id) + '</a> <small>in ' + escape(container.join('/')) + '</small>' : escape(r.resourceType) + '/' + escape(r.id) + '</a>'}${mode}</td>` +
           `<td>${escape(displayOf(r))}</td><td>${escape(vid || '')}${op}</td>` +
           `<td>${escape(r.meta && r.meta.lastUpdated ? r.meta.lastUpdated.replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '')}</td>` +
           `<td><a href="${escape(link)}?_format=json">JSON</a></td></tr>`;

@@ -110,10 +110,14 @@ function fhirpathOptions(model) {
           target = t ? { resourceType: t } : null;
         } else if (d && typeof d === 'object') {
           if (typeof d.reference === 'string' && d.reference.startsWith('#')) {
-            // a contained resource: the resource itself
+            // a contained resource: the resource itself; '#' alone is the container
             const root = rootOf(input);
             const id = d.reference.substring(1);
-            target = (root && Array.isArray(root.contained) && root.contained.find(c => c && c.id === id)) || null;
+            if (!id) {
+              target = (root && CONTAINERS.get(root)) || root;
+            } else {
+              target = (root && Array.isArray(root.contained) && root.contained.find(c => c && c.id === id)) || null;
+            }
           } else {
             const t = d.type || referenceType(d.reference);
             target = t ? { resourceType: t } : null;
@@ -188,6 +192,13 @@ function splitUnion(expression) {
   out.push(cur.trim());
   return out.filter(x => x);
 }
+
+/**
+ * A contained resource being indexed is evaluated as a copy that carries its container's
+ * contained list (so its own '#id' references find its siblings); this maps that copy to its
+ * container (so '#' alone finds the container).
+ */
+const CONTAINERS = new WeakMap();
 
 function rootOf(node) {
   let n = node;
@@ -488,4 +499,4 @@ class Definitions {
   }
 }
 
-module.exports = { forEvaluation, splitUnion, Definitions, deriveDefinitions, loadDerived, corePackage, majorMinor, referenceType, SPECIAL_PARAMS, modelFor };
+module.exports = { CONTAINERS, forEvaluation, splitUnion, Definitions, deriveDefinitions, loadDerived, corePackage, majorMinor, referenceType, SPECIAL_PARAMS, modelFor };

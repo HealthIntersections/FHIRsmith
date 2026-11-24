@@ -20,6 +20,11 @@ const { extractValues } = require('./values');
 const { INDEX_TABLES } = require('../database/schema');
 const { chunks } = require('../database/lookups');
 const { unprocessable } = require('../library/errors');
+const fulltext = require('./fulltext');
+const { CONTAINERS } = require('./definitions');
+
+// the most contained resources indexed for one container
+const MAX_CONTAINED = 100;
 
 // the most rows one search parameter can add for one resource
 const MAX_ROWS_PER_PARAM = 200;
@@ -37,7 +42,7 @@ const COLUMNS = {
 function rowKey(r) {
   const cols = COLUMNS[r.table];
   return r.table + '|' + r.Comp + '|' + r.GroupNo + '|' + cols.map(c => r[c] === undefined ? '' : r[c]).join('|') +
-    '|' + (r.system || '') + '|' + (r.targetType || '') + '|' + (r.targetId || '');
+    '|' + (r.system || '') + '|' + (r.targetType || '') + '|' + (r.targetId || '') + '|' + (r.contained === undefined ? '' : '#' + r.contained);
 }
 
 class Indexer {
@@ -158,6 +163,36 @@ class Indexer {
   async index(q, entry) {
     const { resourceKey, resource } = entry;
     await this.remove(q, resourceKey);
+    // the contained resources the resource refers to are indexed too, each under its own
+    // (negative) key: see resolveContained
+    const state = { containerKey: resourceKey, container: resource, keys: new Map(), queue: [] };
+    const top = await this.indexOne(q, resourceKey, resource, entry, state);
+    const unresolved = [...top.unresolved];
+    while (state.queue.length) {
+      const c = state.queue.shift();
+      const r = await this.indexOne(q, c.key, c.view, entry, state);
+      unresolved.push(...r.unresolved);
+    }
+
+    // the text, for _text and _content (the container's: the contained resources are in it)
+    await fulltext.write(q, resourceKey, resource);
+
+    // compartments
+    const comps = this.compartmentRows(resource, top.rows, resourceKey);
+    if (comps.length) {
+      for (const c of chunks(comps, 500)) {
+        await q.run('INSERT INTO Compartments (ResourceKey, CompType, CompId, CompKey) VALUES ' + c.map(() => '(?, ?, ?, ?)').join(', '),
+          c.flatMap(x => [resourceKey, x.type, x.id, x.key]));
+      }
+    }
+    return { unresolved: [...new Set(unresolved)] };
+  }
+
+  /**
+   * The index rows of one resource (the resource itself, or one it contains), written under key.
+   * @returns {Promise<{rows: Object[], unresolved: string[]}>}
+   */
+  async indexOne(q, resourceKey, resource, entry, state) {
     const { rows, problems } = this.extract(resource);
     for (const p of problems) {
       this.log('debug', `Indexing ${resource.resourceType}/${resource.id}: ${p}`);
@@ -200,8 +235,9 @@ class Indexer {
       }
     }
 
-    // local references
+    // local references, and references to contained resources
     const unresolved = await this.resolveReferences(q, rows, entry);
+    await this.resolveContained(q, rows, entry, state);
 
     // insert
     const byTable = new Map();
@@ -223,15 +259,61 @@ class Indexer {
       }
     }
 
-    // compartments
-    const comps = this.compartmentRows(resource, rows, resourceKey);
-    if (comps.length) {
-      for (const c of chunks(comps, 500)) {
-        await q.run('INSERT INTO Compartments (ResourceKey, CompType, CompId, CompKey) VALUES ' + c.map(() => '(?, ?, ?, ?)').join(', '),
-          c.flatMap(x => [resourceKey, x.type, x.id, x.key]));
+    return { rows, unresolved };
+  }
+
+  /**
+   * References to contained resources ('#id'): each contained resource referred to gets a row
+   * in Contained, and its key, -ContainedKey, is the reference's target. It is then indexed
+   * (state.queue) with its own type's search parameters, as a copy that carries the
+   * container's contained list, so its own '#id' references find its siblings, and '#' finds
+   * the container (CONTAINERS). '#' alone is the container itself.
+   *
+   * A reference to a contained resource that isn't there makes the resource invalid: 422,
+   * except when reindexing what is already stored (entry.lenient).
+   */
+  async resolveContained(q, rows, entry, state) {
+    const container = state.container;
+    for (const r of rows) {
+      if (r.table !== 'IndexReferences' || r.contained === undefined) {
+        continue;
       }
+      if (r.contained === '') {
+        r.TargetKey = state.containerKey;
+        r.TargetType = container.resourceType;
+        r.TargetId = container.id || null;
+        continue;
+      }
+      const c = Array.isArray(container.contained) ? container.contained.find(x => x && x.id === r.contained && x.resourceType) : null;
+      if (!c) {
+        if (!entry.lenient) {
+          throw unprocessable(`The resource refers to #${r.contained}, but it contains no resource with that id`);
+        }
+        r.TargetKey = null;
+        r.TargetType = null;
+        r.TargetId = null;
+        continue;
+      }
+      let key = state.keys.get(r.contained);
+      if (key === undefined) {
+        if (state.keys.size >= MAX_CONTAINED) {
+          this.log('debug', `Indexing ${container.resourceType}/${container.id}: more than ${MAX_CONTAINED} contained resources; the rest are not indexed`);
+          key = null;
+        } else {
+          const typeKey = this.typeKeys.get(c.resourceType);
+          const ins = await q.run('INSERT INTO Contained (ResourceKey, TypeKey, LocalId) VALUES (?, ?, ?)',
+            [state.containerKey, typeKey === undefined ? null : typeKey, String(r.contained).substring(0, 64)]);
+          key = -Number(ins.lastId);
+          const view = { ...c, contained: container.contained };
+          CONTAINERS.set(view, container);
+          state.queue.push({ key, view });
+        }
+        state.keys.set(r.contained, key);
+      }
+      r.TargetKey = key;
+      r.TargetType = c.resourceType;
+      r.TargetId = null;
     }
-    return { unresolved };
   }
 
   async resolveReferences(q, rows, entry) {
@@ -343,6 +425,18 @@ class Indexer {
       await q.run(`DELETE FROM ${t} WHERE ResourceKey = ?`, [resourceKey]);
     }
     await q.run('DELETE FROM Compartments WHERE ResourceKey = ?', [resourceKey]);
+    await fulltext.remove(q, resourceKey);
+    // and the contained resources it was indexed with
+    const contained = await q.all('SELECT ContainedKey FROM Contained WHERE ResourceKey = ?', [resourceKey]);
+    if (contained.length) {
+      const keys = contained.map(c => -Number(c.ContainedKey));
+      for (const c of chunks(keys, 500)) {
+        for (const t of INDEX_TABLES) {
+          await q.run(`DELETE FROM ${t} WHERE ResourceKey IN (${c.map(() => '?').join(', ')})`, c);
+        }
+      }
+      await q.run('DELETE FROM Contained WHERE ResourceKey = ?', [resourceKey]);
+    }
   }
 
   /**
