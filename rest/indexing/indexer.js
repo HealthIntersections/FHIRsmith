@@ -235,6 +235,16 @@ class Indexer {
       }
     }
 
+    // the places the concepts are in, for the closure tables (not a composite's components:
+    // :below and :above don't apply to them)
+    const typeKey = this.typeKeys.get(resource.resourceType);
+    if (typeKey !== undefined) {
+      const triples = rows.filter(r => r.table === 'IndexTokens' && r.ConceptKey && r.ParamKey && r.Comp === null).map(r => [typeKey, r.ParamKey, r.ConceptKey]);
+      if (triples.length) {
+        await this.lookups.recordParamConcepts(q, triples);
+      }
+    }
+
     // local references, and references to contained resources
     const unresolved = await this.resolveReferences(q, rows, entry);
     await this.resolveContained(q, rows, entry, state);

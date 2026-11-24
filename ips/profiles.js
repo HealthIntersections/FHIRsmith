@@ -833,6 +833,46 @@ function guideGroups(guides, ipsOrder) {
 }
 
 /**
+ * What the general IPS editor needs from a profile it is started with: per section (by
+ * system|code), what the profile's section rules ask of it - the checks (isKnown, hasData,
+ * sameSubject), whether it must have entries (an entry part), and the rules' descriptions - and
+ * the guided input, each guide with a key (its questions' linkIds) and its section's title.
+ */
+function editorGuidance(sd) {
+  const sections = {};
+  for (const c of constraintsOf(sd)) {
+    const shape = parseShape(c.expression);
+    if (!shape) {
+      continue;
+    }
+    const key = `${shape.section.system}|${shape.section.code}`;
+    const s = sections[key] || (sections[key] = { checks: [], needsEntries: false, rules: [] });
+    for (const ch of shape.section.checks) {
+      if (!s.checks.includes(ch)) {
+        s.checks.push(ch);
+      }
+    }
+    // an entry part's .exists() needs at least one entry
+    if (shape.entry) {
+      s.needsEntries = true;
+    }
+    s.rules.push(c.human);
+  }
+  const guides = guidesOf(sd).filter(g => g.section && g.questions.length).map(g => {
+    const named = g.section.system === LOINC ? IPS_SECTIONS.find(x => x.code === g.section.code) : null;
+    return {
+      key: g.questions.map(q => q.linkId).join('+'),
+      section: g.section,
+      sectionTitle: named ? named.title : (g.section.display || `${g.section.system}|${g.section.code}`),
+      questions: g.questions.map(q => ({ linkId: q.linkId, text: q.text, type: q.type, answers: q.answers, units: q.units })),
+      resource: g.resource,
+      code: g.code
+    };
+  });
+  return { id: sd.id, title: sd.title, sections, guides };
+}
+
+/**
  * The read-only description of a shaped part: which section, which code or which value
  * set, with bounds. titleOf(url) gives a value set's title, when it is known.
  */
@@ -916,7 +956,7 @@ function describeResource(r, titleOf) {
 
 module.exports = {
   SYSTEMS, IPS_SECTIONS, SECTION_CHECKS, RESOURCE_TYPES,
-  INPUT_GUIDE, UNIT_OPTION, QUESTION_TYPES, GUIDE_RESOURCES, guidesOf, checkGuides, guideGroups, definitionUri, definitionPath, BUNDLE, MAX_CONSTRAINTS, ID_RE, migrate,
+  INPUT_GUIDE, UNIT_OPTION, QUESTION_TYPES, GUIDE_RESOURCES, guidesOf, checkGuides, guideGroups, editorGuidance, definitionUri, definitionPath, BUNDLE, MAX_CONSTRAINTS, ID_RE, migrate,
   parseResourceShape, resourceShapeExpression, kindOf, describeResource,
   parseShape, shapeExpression, parseCard, cardText, expressionProblem, nameFromTitle, newId,
   checkInput, build, constraintsOf, fromUpload, describePart

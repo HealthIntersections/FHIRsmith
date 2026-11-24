@@ -3202,6 +3202,35 @@ describe('clinical profiles', () => {
     expect((await form(jo, `/ips/StructureDefinition/${up.body.id}/title`, { title: 'x' })).status).toBe(403);
   });
 
+  test('the general editor follows a clinical profile (?profile=): its guidance goes to the page', async () => {
+    const { send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'Tourism', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4').hasData()` }],
+      guides: [{ section: { system: L, code: '11450-4' }, questions: [{ text: 'Anticoagulants?', type: 'boolean' }] }] });
+    expect(made.status).toBe(201);
+    for (const url of [`/ips/compose/general?profile=${made.body.id}`, `/ips/compose/general?profile=${made.body.id.substring(8)}`]) {
+      const page = await request(app).get(url).set('Accept', 'text/html');
+      expect(page.status).toBe(200);
+      expect(page.text).toContain(`Following the clinical profile <a href="/ips/StructureDefinition/${made.body.id}"><b>Tourism</b></a>`);
+      const cfg = JSON.parse(/window\.IPS_EDITOR = (.*?);<\/script>/.exec(page.text)[1]);
+      expect(cfg.guidance).toMatchObject({ id: made.body.id, title: 'Tourism', url: `/ips/StructureDefinition/${made.body.id}`, sections: { [`${L}|11450-4`]: { checks: ['hasData'] } } });
+      expect(cfg.guidance.guides[0].questions[0].text).toBe('Anticoagulants?');
+    }
+    // in a project too; and the compose page lists it, after the two editors
+    mod.store.createProject('demo', 'Demo', null);
+    const choice = (await request(app).get('/ips/demo/compose').set('Accept', 'text/html')).text;
+    const at = ['href="/ips/demo/compose/general"', 'href="/ips/demo/compose/patient"', `href="/ips/demo/compose/general?profile=${made.body.id}"`].map(x => choice.indexOf(x));
+    expect(at.every(i => i > 0) && at[0] < at[1] && at[1] < at[2]).toBe(true);
+    expect(choice).toContain(`<a class="btn btn-default" href="/ips/demo/compose/general?profile=${made.body.id}">Tourism</a>`);
+    expect(choice).toContain(`following the clinical profile <a href="/ips/StructureDefinition/${made.body.id}">Tourism</a> (1 rule, 1 guided input)`);
+    expect((await request(app).get('/ips/compose').set('Accept', 'text/html')).text).toContain(`href="/ips/compose/general?profile=${made.body.id}"`);
+    expect((await request(app).get(`/ips/demo/compose/general?profile=${made.body.id}`).set('Accept', 'text/html')).text).toContain('Following the clinical profile');
+    // without one, nothing; an unknown one is 404
+    const plain = await request(app).get('/ips/compose/general').set('Accept', 'text/html');
+    expect(JSON.parse(/window\.IPS_EDITOR = (.*?);<\/script>/.exec(plain.text)[1]).guidance).toBeNull();
+    expect((await request(app).get('/ips/compose/general?profile=profile-000000000000').set('Accept', 'text/html')).status).toBe(404);
+    expect((await request(app).get('/ips/compose/general?profile=nonsense').set('Accept', 'text/html')).status).toBe(404);
+  });
+
   test('only the administrator changes them, or looks codes up', async () => {
     expect((await request(app).post('/ips/StructureDefinition').send({ title: 'x', constraints: [] })).status).toBe(403);
     const visitor = request.agent(app);

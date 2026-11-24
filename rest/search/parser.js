@@ -37,13 +37,17 @@ const MAX_HAS = 3;
 const CONTROL = new Set(['_sort', '_count', '_include', '_revinclude', '_summary', '_elements', '_total', '_format', '_pretty',
   '_contained', '_containedType', '_getpages', '_offset']);
 
+// the reference parameters that make a hierarchy (with a single target, their own type), for
+// :above and :below on references
+const HIERARCHY_CODES = new Set(['partof', 'part-of', 'parent']);
+
 const MODIFIERS = {
   string: ['exact', 'contains', 'missing', 'text'],
   token: ['text', 'not', 'missing', 'below', 'above', 'in', 'not-in', 'of-type', 'code-text'],
   date: ['missing'],
   number: ['missing'],
   quantity: ['missing'],
-  reference: ['missing', 'identifier', 'type'],
+  reference: ['missing', 'identifier', 'type', 'above', 'below'],
   uri: ['missing', 'below', 'above', 'contains'],
   composite: ['missing']
 };
@@ -125,7 +129,16 @@ class SearchParser {
     }
     const spType = defs[0].type;
     const same = defs.filter(d => d.type === spType);
-    return { keys: same.map(d => d.key), defs: same, spType };
+    // places: [typeKey, paramKey] for each type searched that has the parameter (the closure
+    // tables are by place: see terminology.js)
+    const places = [];
+    for (const t of types) {
+      const d = this.defs.param(t, code);
+      if (d && same.includes(d) && this.ep.typeKeys.has(t)) {
+        places.push([this.ep.typeKeys.get(t), d.key]);
+      }
+    }
+    return { keys: same.map(d => d.key), defs: same, spType, places };
   }
 
   /**
@@ -327,7 +340,7 @@ class SearchParser {
       }
       return { kind: 'missing', spType: l.spType, keys: l.keys, missing: value === 'true' };
     }
-    if (l.spType === 'reference' && modifier && modifier !== 'identifier' && modifier !== 'missing') {
+    if (l.spType === 'reference' && modifier && !['identifier', 'missing', 'above', 'below'].includes(modifier)) {
       // :[type]
       if (!this.ep.typeKeys.has(modifier)) {
         throw new Unsupported(`Unknown modifier or type '${modifier}' on ${code}`);
@@ -336,7 +349,7 @@ class SearchParser {
       throw new Unsupported(`The modifier :${modifier} is not supported on ${code} (a ${l.spType} parameter)`);
     }
     const values = splitOr(value).map(v => this.value(l, modifier, v, code));
-    return { kind: 'param', spType: l.spType, keys: l.keys, defs: l.defs, modifier, values, code };
+    return { kind: 'param', spType: l.spType, keys: l.keys, defs: l.defs, places: l.places, modifier, values, code };
   }
 
   idNode(value, modifier) {
@@ -458,22 +471,56 @@ class SearchParser {
       return parts.length === 1 ? { mode: 'identifier', system: undefined, value: parts[0] }
         : { mode: 'identifier', system: parts[0] || null, value: parts.slice(1).join('|') };
     }
-    const typed = modifier && modifier !== 'missing' ? modifier : null;
+    const hierarchy = modifier === 'above' || modifier === 'below' ? modifier : null;
+    const typed = modifier && modifier !== 'missing' && !hierarchy ? modifier : null;
     if (!text.includes('/') && !text.includes(':')) {
       // a bare id: of the :type, or any of the parameter's target types
-      return { mode: 'local', type: typed, id: text };
+      return hierarchy ? this.hierarchyValue(l, null, text, hierarchy) : { mode: 'local', type: typed, id: text };
     }
     const p = parseReference(text, [this.ep.baseUrl].filter(x => x));
     if (!p) {
       throw badRequest(`'${v}' is not a reference`);
     }
     if (p.local) {
+      if (hierarchy) {
+        if (p.version) {
+          throw badRequest(`:${hierarchy} on a reference doesn't take a version`);
+        }
+        return this.hierarchyValue(l, p.type, p.id, hierarchy);
+      }
       if (typed && p.type !== typed) {
         return { mode: 'nothing' };
       }
       return { mode: 'local', type: p.type, id: p.id, version: p.version };
     }
-    return { mode: 'url', url: p.url, urlVersion: p.urlVersion };
+    // a canonical (or other absolute URL): :below and :above are about its version
+    return { mode: 'url', url: p.url, urlVersion: p.urlVersion, hierarchy };
+  }
+
+  /**
+   * :below and :above on a reference to a resource: a hierarchy, through the target type's
+   * reference to itself (Location.partOf). Which parameters are hierarchies isn't marked in
+   * the definitions: they are the reference parameters called partof, part-of or parent
+   * whose only target is their own type (HIERARCHY_CODES).
+   */
+  hierarchyValue(l, type, id, mode) {
+    const targets = type ? [type] : [...new Set(l.defs.flatMap(d => d.target || []))].filter(t => this.ep.typeKeys.has(t));
+    const types = [];
+    const keys = [];
+    for (const t of targets) {
+      for (const [code, d] of this.defs.forType(t)) {
+        if (HIERARCHY_CODES.has(code) && d.type === 'reference' && d.key !== null && d.key !== undefined &&
+          Array.isArray(d.target) && d.target.length === 1 && d.target[0] === t) {
+          types.push(t);
+          keys.push(d.key);
+        }
+      }
+    }
+    if (!keys.length) {
+      throw badRequest(`:${mode} on ${l.defs[0].code} needs a hierarchy in ${targets.join(', ') || 'its targets'} ` +
+        `(a reference to the same type called ${[...HIERARCHY_CODES].join(', ')}), and there isn't one`);
+    }
+    return { mode: 'hierarchy', hierarchy: mode, types: [...new Set(types)], id, keys: [...new Set(keys)] };
   }
 
   compositeValue(l, v, code) {

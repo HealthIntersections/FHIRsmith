@@ -149,6 +149,8 @@ const SERVER = obj({
     fastLaneExtra: count(),
     normalMinSlots: count(),
     fastLaneMaxBytes: count(),
+    heavyLaneMinBytes: count(),
+    heavyLaneProcesses: count(),
     statusSeconds: positive(),
     sharedCache: bool(),
     sharedCacheMaxMB: num({ min: 0 }),

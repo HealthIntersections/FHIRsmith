@@ -331,3 +331,28 @@ describe('guided input', () => {
     expect(groups[0].guides.map(x => x.index)).toEqual([1, 2]);
   });
 });
+
+describe('the editor\'s guidance from a profile', () => {
+  test('per section: the checks, whether entries are needed, the rules; and the guides, keyed by their linkIds', () => {
+    const guides = profiles.checkGuides([
+      { section: { system: L, code: '11450-4' }, questions: [{ text: 'Anticoagulants?', type: 'boolean' }, { text: 'Note', type: 'display' }], resource: 'MedicationStatement' },
+      { section: { system: L, code: '81338-6' }, questions: [{ text: 'What matters most?', type: 'display' }] },
+      { section: { system: 'http://example.org/cs', code: 'x', display: 'Travel' }, questions: [{ text: 'Where to?', type: 'display' }] }
+    ]).guides;
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Tourism', guides, constraints: [
+      { key: 'cp-1', human: 'Problems', expression: `Bundle.section('${L}', '11450-4').where(isKnown() and hasData()).exists()` },
+      { key: 'cp-2', human: 'Hypertension', expression: `Bundle.section('${L}', '11450-4').entry('${S}', '38341003').exists()` },
+      { key: 'cp-3', human: 'Devices', expression: `Bundle.section('${L}', '46264-8').exists()` },
+      { key: 'cp-4', human: 'Other', expression: 'Bundle.entry.count() > 2' }] });
+    const g = profiles.editorGuidance(sd);
+    expect(g.id).toBe('profile-abcdef012345');
+    expect(g.title).toBe('Tourism');
+    expect(g.sections).toEqual({
+      [`${L}|11450-4`]: { checks: ['isKnown', 'hasData'], needsEntries: true, rules: ['Problems', 'Hypertension'] },
+      [`${L}|46264-8`]: { checks: [], needsEntries: false, rules: ['Devices'] }
+    });
+    expect(g.guides.map(x => x.sectionTitle)).toEqual(['Problem List', 'Patient Story', 'Travel']);
+    expect(g.guides[0]).toMatchObject({ key: guides[0].questions.map(q => q.linkId).join('+'), resource: 'MedicationStatement' });
+    expect(g.guides[0].questions.map(q => q.type)).toEqual(['boolean', 'display']);
+  });
+});

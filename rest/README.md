@@ -30,7 +30,7 @@ run it.
 What search supports, parameter by parameter, is in [search.md](search.md).
 
 Not yet: XML, subscription delivery, validation on write, SMART on FHIR, asynchronous
-operations, `$lastn`, FHIRPath Patch, admin pages.
+operations, `$lastn`, FHIRPath Patch, admin pages (other than value sets for searching).
 
 ## Configuration
 
@@ -79,6 +79,7 @@ when it changes).
 | `createOnUpdate` | true | PUT to a new id creates. |
 | `checkReferences` | true | A write whose references to this endpoint don't resolve gets 422. |
 | `txServer` | | The terminology server for `:in`, `:not-in` and the closure: a path on this server (the tx module's endpoint, in process) or a URL. |
+| `maxValueSetExpansion` | 10000 | The most codes a value set can have to be searched (`:in`, `:not-in`) by expanding it. Bigger ones, and ones that aren't closed, can be registered for searching (see Web pages). |
 | `audit` | `writes` | AuditEvents: `off`, `writes`, or `all` (reads and failures too). |
 | `defaultCount`, `maxCount` | 50, 500 | Page sizes. |
 | `searchMaxResults` | 20000 | The most results a search keeps for paging. |
@@ -141,8 +142,14 @@ over the same API, with the same access checks:
 - a resource: what identifies it (id, version, identifiers, name, status, subject...), its
   narrative (unless it carries active content), and its JSON
 
-`?_format=json` gets the JSON in a browser. The pages only read: every change goes through the
+`?_format=json` gets the JSON in a browser. These pages only read: every change goes through the
 API.
+
+For the manage role there is one administration page, linked from the endpoint's page and the
+user's account page: `[base]/_admin/valuesets`, the value sets registered for searching. A
+value set too big to expand, or not closed, can't be searched with `:in` (the search says so,
+and points here); registered, with a version chosen from those the terminology server has, it is
+searched by membership instead, worked out in the background (search.md says how).
 
 ## Access
 

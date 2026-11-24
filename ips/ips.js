@@ -2789,8 +2789,11 @@ class IpsModule {
   /** The list of document creators, for a project or for none. */
   sendComposeChoice(req, res) {
     const p = req.project || null;
+    // and the general editor following each clinical profile
+    const followed = this.store.profiles().map(x => this.store.profile(x.id)).filter(Boolean)
+      .map(sd => ({ id: sd.id, title: sd.title, rules: profiles.constraintsOf(sd).length, guides: profiles.guidesOf(sd).length }));
     this.sendHtml(res, p ? `${p.name}: Compose a Document` : 'Compose a Document',
-      render.renderComposeChoice(p, this.ctx(req, res), { editors: EDITORS }), Date.now(), req);
+      render.renderComposeChoice(p, this.ctx(req, res), { editors: EDITORS, profiles: followed }), Date.now(), req);
   }
 
   /** The general IPS editor: empty, or holding a document of the project's (?from=). */
@@ -2806,10 +2809,20 @@ class IpsModule {
       model = composer.modelOf(row.bundle);
       from = row.id;
     }
+    // a clinical profile to follow (?profile=profile-{id}): its section rules narrow the choices, its guided input is shown
+    let guidance = null;
+    if (typeof req.query.profile === 'string' && req.query.profile) {
+      const m = /^(?:profile-)?([a-f0-9]{12})$/.exec(req.query.profile);
+      const sd = m ? this.store.profile(m[1]) : null;
+      if (!sd) {
+        return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(`There is no clinical profile '${req.query.profile}'`), 404);
+      }
+      guidance = { ...profiles.editorGuidance(sd), url: `${req.baseUrl}/StructureDefinition/${sd.id}` };
+    }
     const title = from ? `Edit Document ${from}` : 'General IPS Editor';
     this.sendHtml(res, p ? `${p.name}: ${title}` : title,
       render.renderCompose(p, this.ctx(req, res), {
-        schema: editorSchema.forBrowser(), model, from,
+        schema: editorSchema.forBrowser(), model, from, guidance,
         aiEnabled: p ? this.store.projectAi(p).enabled === true : false, canLookup: !!(this.tx && this.valueSets),
         actions: this.actionsConfig(req, 'general', res),
         testPatients: assets.testPatients(req.baseUrl)

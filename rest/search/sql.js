@@ -17,7 +17,7 @@
 
 const { dateClause, escapeLikeBang } = require('../../library/fhir-search-values');
 const { canonicalQuantity, UCUM } = require('../indexing/values');
-const { badRequest, notSupported } = require('../library/errors');
+const { badRequest, notSupported, FhirError } = require('../library/errors');
 const { TAG, PROFILE } = require('../store');
 
 const TABLES = {
@@ -32,6 +32,9 @@ function inList(n) {
   return new Array(n).fill('?').join(', ');
 }
 
+// how far :above and :below on a reference follow the hierarchy (a cycle stops here too)
+const HIERARCHY_DEPTH = 30;
+
 class SqlBuilder {
   /**
    * @param {Object} ep - the Endpoint
@@ -44,6 +47,8 @@ class SqlBuilder {
     // whether the keys searched include contained resources (-ContainedKey): then _id is the
     // contained resource's local id, and _lastUpdated its container's
     this.contained = false;
+    // what the search should be told (a registered value set still being worked out)
+    this.warnings = [];
   }
 
   /** a's ResourceKey is key, or (for a contained resource) its container's */
@@ -243,7 +248,7 @@ class SqlBuilder {
       case 'string':
         return this.stringValue(v, x);
       case 'token':
-        return this.tokenValue(v, x);
+        return this.tokenValue(v, x, node);
       case 'date':
         return dateClause({ lo: `${x}.Lo`, hi: `${x}.Hi` }, v.prefix, v.range);
       case 'number':
@@ -276,7 +281,7 @@ class SqlBuilder {
     return this.ep.lookups.spaceKey(this.q, uri);
   }
 
-  async tokenValue(v, x) {
+  async tokenValue(v, x, node) {
     switch (v.mode) {
       case 'text':
         return { sql: `${x}.TextNorm LIKE ? ESCAPE '!'`, args: [escapeLikeBang(v.norm) + '%'] };
@@ -289,7 +294,7 @@ class SqlBuilder {
       }
       case 'below':
       case 'above':
-        return this.subsumption(v, x);
+        return this.subsumption(v, x, node);
       case 'in':
         return this.inValueSet(v, x);
     }
@@ -310,28 +315,105 @@ class SqlBuilder {
     return { sql: `((${x}.SpaceKey = ? OR ${x}.Implicit = 1) AND ${x}.Code = ?)`, args: [sk, v.code] };
   }
 
-  async subsumption(v, x) {
+  /**
+   * :below and :above: the code, and what the closure tables relate it to. A code that isn't
+   * in the closure table of a place searched is added to it now (Terminology.relateSearched),
+   * and what the server says about it is used directly: the closure table in the database
+   * only has it once that is written, after the search.
+   */
+  async subsumption(v, x, node) {
     const sk = await this.space(v.system);
-    if (sk === null) {
-      return NOTHING;
+    const row = sk === null ? null : await this.q.get('SELECT ConceptKey FROM Concepts WHERE SpaceKey = ? AND Code = ?', [sk, v.code]);
+    const ck = row ? Number(row.ConceptKey) : null;
+    const parts = [];
+    const args = [];
+    if (ck !== null) {
+      const ce = this.alias('ce');
+      parts.push(`${x}.ConceptKey = ?`);
+      parts.push(v.mode === 'below'
+        ? `${x}.ConceptKey IN (SELECT ${ce}.SubsumedKey FROM ClosureEntries ${ce} WHERE ${ce}.SubsumesKey = ?)`
+        : `${x}.ConceptKey IN (SELECT ${ce}.SubsumesKey FROM ClosureEntries ${ce} WHERE ${ce}.SubsumedKey = ?)`);
+      args.push(ck, ck);
     }
-    const row = await this.q.get('SELECT ConceptKey FROM Concepts WHERE SpaceKey = ? AND Code = ?', [sk, v.code]);
-    if (!row) {
-      return NOTHING;
+    if (this.ep.terminology && node && node.places && node.places.length) {
+      const pairs = await this.ep.terminology.relateSearched(this.ep, this.q, node.places, v.system, v.code, ck);
+      const related = pairs.map(([up, down]) => v.mode === 'below'
+        ? (up.system === v.system && up.code === v.code ? down : null)
+        : (down.system === v.system && down.code === v.code ? up : null)).filter(c => c);
+      if (related.length) {
+        const spaces = await this.ep.lookups.spaceKeys(this.q, related.map(c => c.system), false);
+        const keys = await this.ep.lookups.conceptKeys(this.q, related.filter(c => spaces.get(c.system)).map(c => [spaces.get(c.system), c.code]), false);
+        const list = [...new Set(keys.values())];
+        if (list.length) {
+          parts.push(`${x}.ConceptKey IN (${inList(list.length)})`);
+          args.push(...list);
+        }
+      }
     }
-    const ck = Number(row.ConceptKey);
-    const ce = this.alias('ce');
-    if (v.mode === 'below') {
-      return { sql: `(${x}.ConceptKey = ? OR ${x}.ConceptKey IN (SELECT ${ce}.SubsumedKey FROM ClosureEntries ${ce} WHERE ${ce}.SubsumesKey = ?))`, args: [ck, ck] };
-    }
-    return { sql: `(${x}.ConceptKey = ? OR ${x}.ConceptKey IN (SELECT ${ce}.SubsumesKey FROM ClosureEntries ${ce} WHERE ${ce}.SubsumedKey = ?))`, args: [ck, ck] };
+    return parts.length ? { sql: '(' + parts.join(' OR ') + ')', args } : NOTHING;
   }
 
+  /**
+   * :in and :not-in. A value set an administrator has registered for searching (whatever the
+   * version asked for) is searched by membership (ValueSetMembers, worked out in the
+   * background: terminology.js); any other is expanded, if it isn't too big or unclosed.
+   */
   async inValueSet(v, x) {
+    const url = String(v.valueSet).split('|')[0];
+    const reg = await this.q.get('SELECT ValueSetKey, Status FROM ValueSets WHERE Url = ?', [url]);
+    if (reg) {
+      return this.inRegistered(v, x, url, reg);
+    }
     if (!this.ep.terminology) {
       throw notSupported(':in and :not-in need a terminology server (the endpoint\'s txServer setting)');
     }
-    const codes = await this.ep.terminology.expand(v.valueSet);
+    const codes = await this.ep.terminology.expand(v.valueSet, this.expandOptions());
+    return this.inCodes(codes, x);
+  }
+
+  expandOptions() {
+    return { limit: this.ep.settings.maxValueSetExpansion || 10000, adminPath: this.ep.path + '/_admin/valuesets' };
+  }
+
+  async inRegistered(v, x, url, reg) {
+    if (!Number(reg.Status)) {
+      const w = `The value set ${url} is still being prepared for searching: results may be incomplete`;
+      if (!this.warnings.includes(w)) {
+        this.warnings.push(w);
+      }
+    }
+    const m = this.alias('vm');
+    const parts = [`${x}.ConceptKey IN (SELECT ${m}.ConceptKey FROM ValueSetMembers ${m} WHERE ${m}.ValueSetKey = ? AND ${m}.Member = 1)`];
+    const args = [Number(reg.ValueSetKey)];
+    // code elements (no system in the resource, so no concept) only by expanding it, when it can be
+    if (this.ep.terminology) {
+      try {
+        const codes = await this.ep.terminology.expand(v.valueSet, this.expandOptions());
+        const implicit = this.implicitCodes(codes, x);
+        parts.push(...implicit.parts);
+        args.push(...implicit.args);
+      } catch (e) {
+        if (!(e instanceof FhirError)) {
+          throw e;
+        }
+      }
+    }
+    return { sql: '(' + parts.join(' OR ') + ')', args };
+  }
+
+  implicitCodes(codes, x) {
+    const parts = [];
+    const args = [];
+    const all = [...new Set(codes.map(c => c.code))];
+    for (let i = 0; i < all.length; i += 1000) {
+      const c = all.slice(i, i + 1000);
+      parts.push(`(${x}.Implicit = 1 AND ${x}.Code IN (${inList(c.length)}))`);
+      args.push(...c);
+    }
+    return { parts, args };
+  }
+
+  async inCodes(codes, x) {
     const bySystem = new Map();
     for (const c of codes) {
       if (!bySystem.has(c.system)) {
@@ -352,6 +434,11 @@ class SqlBuilder {
         args.push(sk, ...c);
       }
     }
+    // a code element has no system in the resource (its system is implied by its binding):
+    // it matches on the code, as for a plain token search
+    const implicit = this.implicitCodes(codes, x);
+    parts.push(...implicit.parts);
+    args.push(...implicit.args);
     return parts.length ? { sql: '(' + parts.join(' OR ') + ')', args } : NOTHING;
   }
 
@@ -432,12 +519,45 @@ class SqlBuilder {
         return { sql: '(' + conds.join(' AND ') + ')', args };
       }
       case 'url':
+        if (v.urlVersion && v.hierarchy === 'below') {
+          // the version, or any below it: 1.2 is 1.2, 1.2.0, 1.2.3...
+          return { sql: `(${x}.Url = ? AND (${x}.UrlVersion = ? OR ${x}.UrlVersion LIKE ? ESCAPE '!'))`,
+            args: [v.url, v.urlVersion, escapeLikeBang(v.urlVersion) + '.%'] };
+        }
+        if (v.urlVersion && v.hierarchy === 'above') {
+          // the version, or any above it: 1.2.3 is 1.2.3, 1.2, 1 (and no version at all)
+          return { sql: `(${x}.Url = ? AND (${x}.UrlVersion IS NULL OR ${x}.UrlVersion = ? OR ? LIKE ${this.q.dialect.concat(`${x}.UrlVersion`, '\'.%\'')}))`,
+            args: [v.url, v.urlVersion, v.urlVersion] };
+        }
         if (v.urlVersion) {
           return { sql: `(${x}.Url = ? AND ${x}.UrlVersion = ?)`, args: [v.url, v.urlVersion] };
         }
+        // no version: any version (with or without :below)
         return { sql: `${x}.Url = ?`, args: [v.url] };
+      case 'hierarchy':
+        return this.hierarchy(v, x);
     }
     throw badRequest('Unknown reference value');
+  }
+
+  /**
+   * :below and :above on a reference: the resource named, and everything below (or above) it
+   * in its hierarchy, by a recursive query over the hierarchy's references (IndexReferences:
+   * Location.partOf), to HIERARCHY_DEPTH levels (which also ends a cycle).
+   */
+  hierarchy(v, x) {
+    const h = this.alias('h');
+    const r = this.alias('hr');
+    const i = this.alias('hi');
+    const typeKeys = v.types.map(t => this.ep.typeKeys.get(t));
+    const step = v.hierarchy === 'below'
+      // what is part of something already in the set
+      ? `SELECT ${r}.ResourceKey, ${h}.D + 1 FROM IndexReferences ${r} JOIN ${h} ON ${r}.TargetKey = ${h}.K WHERE ${r}.ParamKey IN (${inList(v.keys.length)}) AND ${h}.D < ${HIERARCHY_DEPTH}`
+      // what something already in the set is part of
+      : `SELECT ${r}.TargetKey, ${h}.D + 1 FROM IndexReferences ${r} JOIN ${h} ON ${r}.ResourceKey = ${h}.K WHERE ${r}.ParamKey IN (${inList(v.keys.length)}) AND ${r}.TargetKey IS NOT NULL AND ${h}.D < ${HIERARCHY_DEPTH}`;
+    const cte = `WITH RECURSIVE ${h} (K, D) AS (SELECT ${i}.ResourceKey, 0 FROM Ids ${i} WHERE ${i}.TypeKey IN (${inList(typeKeys.length)}) AND ${i}.Id = ? AND ${i}.Deleted = 0 ` +
+      `UNION ${step}) SELECT K FROM ${h}`;
+    return { sql: `${x}.TargetKey IN (${cte})`, args: [...typeKeys, v.id, ...v.keys] };
   }
 
   uriValue(v, x) {

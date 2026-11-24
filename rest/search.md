@@ -25,8 +25,8 @@ On date, number and quantity parameters, and on `_lastUpdated`: `eq` `ne` `gt` `
 | Type | Supported | Values |
 |---|---|---|
 | string | (none): starts with; `:exact`; `:contains`; `:missing` | Accents and case are folded, except for `:exact`. `:text` is accepted, and behaves as the default |
-| token | (none); `:not`; `:text`; `:code-text`; `:of-type`; `:below`; `:above`; `:in`; `:not-in`; `:missing` | `code`, `system\|code`, `\|code` (no system), `system\|`. `:text` and `:code-text` are both "starts with" on the display or text. `:of-type` is `system\|code\|value`. `:below` and `:above` use the closure table (kept up to date through the terminology server's `$closure`). `:in` and `:not-in` need the endpoint's `txServer`, and a value set of at most 10,000 codes |
-| reference | (none); `:[type]` (e.g. `subject:Patient`); `:identifier`; `:missing` | A bare id, `Type/id`, `Type/id/_history/n`, an absolute URL (a local reference when it is this server's address), a canonical `url\|version` |
+| token | (none); `:not`; `:text`; `:code-text`; `:of-type`; `:below`; `:above`; `:in`; `:not-in`; `:missing` | `code`, `system\|code`, `\|code` (no system), `system\|`. `:text` and `:code-text` are both "starts with" on the display or text. `:of-type` is `system\|code\|value`. `:below` and `:above` use the closure tables (see below). `:in` and `:not-in` need the endpoint's `txServer`, and a value set of at most 10,000 codes: see below |
+| reference | (none); `:[type]` (e.g. `subject:Patient`); `:identifier`; `:below`; `:above`; `:missing` | A bare id, `Type/id`, `Type/id/_history/n`, an absolute URL (a local reference when it is this server's address), a canonical `url\|version` (without a version, any version). `:below` and `:above`: see below |
 | date | prefixes; `:missing` | |
 | number | prefixes; `:missing` | The value's precision is its range: `1.5` is [1.45, 1.55) |
 | quantity | prefixes; `:missing` | `value`, `value\|system\|code`, `value\|\|code`. With a UCUM code, values are compared in canonical units, so `72\|http://unitsofmeasure.org\|kg` finds `72000 g` |
@@ -34,6 +34,85 @@ On date, number and quantity parameters, and on `_lastUpdated`: `eq` `ne` `gt` `
 | composite | `:missing` | The components' values joined with `$`, matched within one repetition of the element (one component of an Observation, not two) |
 
 Several values separated by commas are OR'd; a parameter repeated is AND'd.
+
+### `:below` and `:above` on references
+
+On a reference to a resource, they follow a hierarchy: `Patient?organization:below=123` finds
+patients managed by Organization 123 or by any organization that is part of it, at any depth;
+`Observation?encounter:above=45` finds observations in Encounter 45 or in any encounter it is
+part of. The value is an id or `Type/id` (no version).
+
+The hierarchy is the target type's reference to itself, which the definitions don't mark: the
+server takes the reference parameters called `partof`, `part-of` or `parent` whose only target
+is their own type (Location, Organization, Encounter, Task, CarePlan, ResearchStudy,
+Specimen, Device...). A target type with no such parameter is an error (400). It is followed
+over the index, as it is now (the current versions), up to 30 levels, which also ends a
+cycle. A parameter with several target types (`performer`) follows the hierarchy of each
+target type that has one.
+
+On a canonical reference, they are about the version. Without a version, the canonical matches
+any version, with or without `:below`. `url|1.2` matches version 1.2 exactly; with `:below`,
+also the versions below it (1.2.0, 1.2.3...); with `:above`, also those above it (1, and a
+reference with no version).
+
+### `:in` and `:not-in` on tokens
+
+These need the endpoint's `txServer`. There are two ways a value set is searched.
+
+**By expanding it**, for value sets that aren't registered (below). The server expands it
+(`$expand`, nested contents flattened, abstract codes left out), and a token matches if its
+system and code are in the expansion. A code element, which has no system in the resource,
+matches on its code alone, as for a plain token search. An expansion is kept for 5 minutes (200
+value sets at most), so a changed value set takes up to 5 minutes to show.
+
+A value set with more codes than `maxValueSetExpansion` (10,000 by default), or one whose
+expansion isn't closed (the server marks it `valueset-unclosed`: a grammar-based code system,
+say), can't be searched this way: the search fails (400, too-costly), saying why, and that an
+administrator can register the value set for searching. One the server can't expand at all is
+also 400.
+
+**By membership**, for value sets an administrator has registered (`[base]/_admin/valuesets`,
+the manage role), whatever their size. The administrator chooses the version, from those the
+terminology server has (or whatever version it has). In the background, the master asks the
+server about each code in the endpoint's resources (`$batch-validate-code`), and records
+whether it is in the value set; a search then matches the codes recorded as in it. A search
+ignores the version it asks for (`url|version`): the registered version is used.
+
+- Codes in code systems the value set doesn't draw on (from its `compose`, following the value
+  sets it includes) are recorded as not in it without asking. When the compose can't be had
+  (an implicit value set, say), every code is asked about.
+- Until every code has been checked, a search using the value set says, in its
+  OperationOutcome, that results may be incomplete; that's while it's first worked out, and
+  after *Work out again* (after a new release of a code system, say). A code indexed later is
+  checked at the next round, a few seconds on.
+- Code elements (no system in the resource) aren't covered by membership: they match by
+  expanding the value set, if it can be expanded.
+
+`:not-in` is the negation, either way: it finds resources with no value in the value set,
+including those with no value at all. `in` and `ni` in `_filter` are the same.
+
+### `:below` and `:above` on tokens
+
+These need the endpoint's `txServer`, and its `$closure` (in FHIRsmith's tx module, turned on
+with `modules.tx.closure.enabled`). The endpoint keeps a closure table on the terminology server
+for each place a code can be: each resource type's token search parameter (`Observation.code`
+and `Condition.code` are two places, though one SearchParameter defines both). The table
+holds the codes found in that place, and the server says how they relate; a job on the master
+sends it new codes every few seconds, so a code indexed just now isn't related to anything
+yet. The composite parameters' components have no tables of their own.
+
+The code searched for is added to the table of each place searched, if it isn't there:
+`Condition?code:below=X` works when no Condition has X. The server's answer is used for that
+search, and kept (written after the search) for the next; that costs a `$closure` call the
+first time a code is searched for in a place. A place with no codes has no table, and nothing
+for X to relate to.
+
+What the server refuses isn't sent again: a code it doesn't know (or in a code system it
+doesn't know), and anything sent to a table that is full (the tx module holds 10,000 codes in
+a table by default: `modules.tx.closure.maxConceptsPerTable`), which is logged as a warning.
+A refused code is still found by relationships learned in other places' tables (they are
+facts about the codes, whichever table they came from), but not otherwise. If the server
+loses a table, the endpoint starts it again.
 
 ## Common parameters
 
@@ -177,7 +256,6 @@ user who ran the search.
 ## Not supported yet
 
 - `:text-advanced`, and `:text` on references
-- `:above` and `:below` on references (canonical version matching)
 - `:not` on anything but tokens and `_id`, `_tag`, `_security`, `_profile`
 - `:code-text` as it is defined (matching the code's display): it is treated as `:text`
 - `_query`

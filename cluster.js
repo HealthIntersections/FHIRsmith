@@ -26,6 +26,11 @@
  *    + Retry-After
  *  - lets cheap requests (by method and path: the fast lane) use fastLaneExtra more slots
  *    than maxOutstanding, ahead of the others, leaving them normalMinSlots
+ *  - sends a tx request with a body over heavyLaneMinBytes (by Content-Length) and no cache-id
+ *    to the heavy lane's process(es) (heavyLaneProcesses tx-workers, the last ones), and
+ *    keeps other requests off such a process while it has one: parsing a large body (and
+ *    the work on what it holds) holds a process's event loop for seconds, and this keeps that
+ *    to one process
  *  - sends no new requests to a process that answered 503 for cooldownSeconds, while
  *    another can take them
  *  - answers 504 for a process that hasn't begun its response in upstreamTimeoutSeconds, and
@@ -116,6 +121,12 @@ const FAST_LANE_MAX_BYTES = 1024;
 // while other requests wait, the fast lane leaves them this many of a process's slots, so
 // heavy work goes on during a flood of cheap requests
 const NORMAL_MIN_SLOTS = 4;
+// a tx request with a body over HEAVY_LANE_MIN_BYTES (Content-Length) and no cache-id goes to
+// the heavy lane: the last HEAVY_LANE_PROCESSES tx-workers. A validator's request with its
+// value sets inline is 10-100 KB; the bodies that held tx.fhir.org's event loop for 2-5 s
+// (2026-11-24: parsing them, then indexing the expansions in them) are tens of MB
+const HEAVY_LANE_MIN_BYTES = 1024 * 1024;
+const HEAVY_LANE_PROCESSES = 1;
 const GB = (b) => (b / 2 ** 30).toFixed(1);
 const HOP_BY_HOP = ['connection', 'keep-alive', 'proxy-connection', 'transfer-encoding', 'upgrade', 'te', 'trailer', 'expect'];
 
@@ -172,6 +183,13 @@ function loadSettings(argv, env, config, cpu = {}) {
   // with the shared cache any process can answer any cache-id (cluster.md, "Options")
   const sharedCache = cluster.sharedCache === true;
   const statusSeconds = Number(cluster.statusSeconds ?? STATUS_INTERVAL_MS / 1000);
+  const count = (value, name) => {
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0) {
+      throw new Error(`server.cluster.${name} must be a whole number, 0 or more, not '${value}'`);
+    }
+    return n;
+  };
   if (!(statusSeconds > 0)) {
     throw new Error(`server.cluster.statusSeconds must be a number of seconds above 0, not '${cluster.statusSeconds}'`);
   }
@@ -198,6 +216,8 @@ function loadSettings(argv, env, config, cpu = {}) {
     fastLaneExtra: Number(cluster.fastLaneExtra ?? FAST_LANE_EXTRA),
     fastLaneMaxBytes: Number(cluster.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES),
     normalMinSlots: Number(cluster.normalMinSlots ?? NORMAL_MIN_SLOTS),
+    heavyLaneMinBytes: count(cluster.heavyLaneMinBytes ?? HEAVY_LANE_MIN_BYTES, 'heavyLaneMinBytes'),
+    heavyLaneProcesses: count(cluster.heavyLaneProcesses ?? HEAVY_LANE_PROCESSES, 'heavyLaneProcesses'),
     statusMs: statusSeconds * 1000,
     routing: { cacheAffinity: !sharedCache || cluster.cacheAffinity === true, sharedClosure: cluster.sharedClosure === true, sharedCache }
   };
@@ -247,6 +267,39 @@ function isFastLane(req, txPaths, maxBytes) {
   }
   const len = req.headers['content-length'];
   return req.method === 'POST' && maxBytes > 0 && FAST_OPS.test(r) && /^\d+$/.test(len || '') && Number(len) <= maxBytes;
+}
+
+/**
+ * Whether a tx request takes the heavy lane (cluster.md), by its declared size (the launcher
+ * doesn't read bodies): a body with a Content-Length over minBytes (0: no lane). A chunked
+ * body has none, and doesn't (nginx, buffering the request, sends a Content-Length).
+ * @param {Object} req - method, url, headers
+ */
+function isHeavyLane(req, txPaths, minBytes) {
+  if (!(minBytes > 0) || txRest(req.url, txPaths) === null) {
+    return false;
+  }
+  const len = req.headers['content-length'];
+  return /^\d+$/.test(len || '') && Number(len) > minBytes;
+}
+
+/**
+ * The processes a request may go to, with the heavy lane (isHeavyLane): a heavy one, to the
+ * lane's processes that are ready (else, while none is, to any); any other, to the processes
+ * that aren't busy with a heavy one, while one that serves tx is ready (else to any). A request
+ * for the master, or for a cache-id's owner, isn't affected.
+ * @param {Object} route - from classify
+ * @param {boolean} heavy - whether the request takes the heavy lane
+ * @param {Object[]} procs - {servesTx, ready, heavy, heavyOutstanding}
+ */
+function laneProcs(route, heavy, procs) {
+  if (route.to !== 'tx') {
+    return procs;
+  }
+  const list = heavy
+    ? procs.filter(p => p.heavy)
+    : procs.filter(p => !(p.heavy && p.heavyOutstanding > 0));
+  return list.some(p => p.servesTx && p.ready) ? list : procs;
 }
 
 /**
@@ -399,6 +452,8 @@ function createLauncher(settings) {
   const fastLaneExtra = settings.fastLaneExtra ?? FAST_LANE_EXTRA; // 0: no fast lane
   const fastLaneMaxBytes = settings.fastLaneMaxBytes ?? FAST_LANE_MAX_BYTES;
   const normalMinSlots = Math.min(settings.normalMinSlots ?? NORMAL_MIN_SLOTS, maxOutstanding);
+  const heavyLaneMinBytes = settings.heavyLaneMinBytes ?? HEAVY_LANE_MIN_BYTES; // 0: no heavy lane
+  const heavyLaneProcesses = settings.heavyLaneProcesses ?? HEAVY_LANE_PROCESSES;
   // what each process does: every one has a role (library/role.js)
   const trimAllocator = (settings.memory && settings.memory.trimAllocator) ?? ROLE_TRIM_ALLOCATOR;
   const command = settings.command || ((proc) => [process.execPath, [
@@ -406,7 +461,7 @@ function createLauncher(settings) {
     `--role=${proc.role}`, `--instance-code=${proc.code}`, `--port=${proc.port}`]]);
   const procs = settings.procs.map(p => ({
     // outstanding: the tx requests it has (those that wait for a slot); active: every request
-    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, active: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, readyAt: 0, everReady: false, exitedAt: 0, restartTimer: null,
+    ...p, child: null, ready: false, outstanding: 0, fastOutstanding: 0, heavy: false, heavyOutstanding: 0, active: 0, coolUntil: 0, timeouts: 0, failures: 0, startedAt: 0, readyAt: 0, everReady: false, exitedAt: 0, restartTimer: null,
     // for checkMemory: when each request in flight was sent, since when it has been over with
     // none at work, whether it is being restarted, its memory when it was ready
     sentAt: new Set(), overSince: 0, recycling: false, readyMemory: null,
@@ -416,6 +471,16 @@ function createLauncher(settings) {
     downSince: 0,
     agent: new http.Agent({ keepAlive: true, maxSockets: 256, timeout: settings.upstreamIdleMs || UPSTREAM_IDLE_MS })
   }));
+  // the heavy lane: the last heavyLaneProcesses tx-workers, if that leaves another process
+  // serving tx (otherwise every request would be in the lane, and there's no lane)
+  const laneWorkers = procs.filter(p => p.role === 'tx-worker').slice(-heavyLaneProcesses);
+  const heavyLane = heavyLaneMinBytes > 0 && heavyLaneProcesses > 0 && laneWorkers.length === heavyLaneProcesses &&
+    procs.filter(p => p.servesTx).length > heavyLaneProcesses;
+  if (heavyLane) {
+    for (const p of laneWorkers) {
+      p.heavy = true;
+    }
+  }
   const metrics = new ClusterMetrics(procs, {
     // the memory graph's Total and threshold lines: the cgroup when the guard measures it
     rejectAt: memory.rejectAt, group: Boolean(memory.guard && memory.guard.group),
@@ -690,7 +755,7 @@ function createLauncher(settings) {
     if (lostToRestart(w)) {
       return true;
     }
-    const target = pickTarget(w.route, procs, p => !full(p, w.fast));
+    const target = pickTarget(w.route, heavyLane ? laneProcs(w.route, w.heavy, procs) : procs, p => !full(p, w.fast));
     if (!target) {
       countEvent(KINDS.notReady);
       fail(w.res, 503, 'No server process is ready to take this request; try again shortly');
@@ -700,7 +765,7 @@ function createLauncher(settings) {
       return false;
     }
     // only the tx requests, which wait for a slot, take one
-    forward(w.req, w.res, target, w.fast, w.route.to !== 'master' && w.req.method !== 'OPTIONS');
+    forward(w.req, w.res, target, w.fast, w.route.to !== 'master' && w.req.method !== 'OPTIONS', w.heavy);
     return true;
   }
 
@@ -773,6 +838,8 @@ function createLauncher(settings) {
     proxied++;
     const w = { req, res, route: classify(req.url, req.headers, settings.txPaths, settings.routing) };
     w.fast = fastLaneExtra > 0 && w.route.to !== 'master' && isFastLane(req, settings.txPaths, fastLaneMaxBytes);
+    // a request with a cache-id goes to its owner, whatever its size
+    w.heavy = heavyLane && w.route.to === 'tx' && isHeavyLane(req, settings.txPaths, heavyLaneMinBytes);
     if (send(w)) {
       return;
     }
@@ -800,13 +867,16 @@ function createLauncher(settings) {
     }, ms);
   }
 
-  function forward(req, res, target, fast = false, counted = true) {
+  function forward(req, res, target, fast = false, counted = true, heavy = false) {
     inFlight++;
     target.active++;
     if (counted) {
       target.outstanding++;
       target.fastOutstanding += fast ? 1 : 0;
     }
+    // a heavy-lane request: until it's done, the other requests go elsewhere (laneProcs)
+    heavy = heavy && target.heavy;
+    target.heavyOutstanding += heavy ? 1 : 0;
     const sent = { at: Date.now() };
     target.sentAt.add(sent);
     let released = false;
@@ -825,6 +895,7 @@ function createLauncher(settings) {
           target.outstanding--;
           target.fastOutstanding -= fast ? 1 : 0;
         }
+        target.heavyOutstanding -= heavy ? 1 : 0;
         target.sentAt.delete(sent);
         sendWaiting();
       }
@@ -1065,6 +1136,10 @@ function createLauncher(settings) {
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, writeTimeoutSeconds ${writeTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, statusSeconds ${statusMs / 1000}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
+    log(heavyLane
+      ? `heavy lane: tx requests with a body over ${heavyLaneMinBytes} bytes and no cache-id go to ${laneWorkers.map(p => p.code).join(', ')}, ` +
+        'which other requests avoid while it has one (heavyLaneMinBytes, heavyLaneProcesses)'
+      : `heavy lane: off (${heavyLaneMinBytes > 0 && heavyLaneProcesses > 0 ? `it needs more than ${heavyLaneProcesses} process(es) serving tx, ${heavyLaneProcesses} of them tx-workers` : 'heavyLaneMinBytes or heavyLaneProcesses is 0'})`);
     if (recycleMs > 0) {
       memoryTimer = setInterval(checkMemory, settings.recycleCheckMs || RECYCLE_CHECK_MS);
       memoryTimer.unref();
@@ -1244,4 +1319,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler, childExecArgv };
+module.exports = { loadSettings, classify, isFastLane, isHeavyLane, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv };

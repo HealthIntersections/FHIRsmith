@@ -118,6 +118,7 @@ class Searcher {
     b.contained = mode !== 'false';
     const items = [...parsed.criteria.items];
     const crit = await b.build({ kind: 'and', items }, 'i.ResourceKey');
+    parsed.warnings.push(...b.warnings);
     const where = ['i.Deleted = 0', 'i.MostRecent IS NOT NULL'];
     const args = [];
     if (typeKeys !== null) {

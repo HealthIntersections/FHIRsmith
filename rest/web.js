@@ -284,6 +284,9 @@ class RestWeb {
     if (s.txServer) {
       html += row('Terminology server', escape(s.txServer));
     }
+    if (require('./access').decide(freq.principal, ep, 'manage').allowed) {
+      html += row('Administration', `<a href="${escape(base)}/_admin/valuesets">Value sets for searching</a>`);
+    }
     html += '</table>';
 
     html += '<h3>Resource types</h3>';

@@ -207,16 +207,11 @@ class Endpoint {
     this.terminology = null;
     if (this.settings.txServer) {
       try {
-        this.terminology = new Terminology(this.settings.txServer, { app: this.options.app, log: this.log, closureName: await this.closureName() });
+        this.terminology = new Terminology(this.settings.txServer, { app: this.options.app, log: this.log });
       } catch (e) {
         this.log.error(`Rest ${this.path}: txServer: ${e.message}`);
       }
     }
-  }
-
-  async closureName() {
-    const row = await this.db.read(q => q.get('SELECT Name FROM Closures ORDER BY ClosureKey LIMIT 1'));
-    return row ? row.Name : 'fhirsmith-rest-' + crypto.randomBytes(8).toString('hex');
   }
 
   /** Reload when the settings' generation has changed (at most once a second) */
@@ -586,6 +581,11 @@ class Endpoint {
         await this.terminology.updateClosure(this);
       }
     });
+    every(5000, 'value set membership', async () => {
+      if (this.terminology) {
+        await this.terminology.updateValueSets(this);
+      }
+    });
     every(2000, 'reindexing', async () => {
       // the master notices new definitions (a custom SearchParameter) here, not only on requests
       await this.refresh();
@@ -643,6 +643,10 @@ class Endpoint {
     this.timers = [];
     if (this.auditTimer) {
       clearInterval(this.auditTimer);
+    }
+    if (this.terminology) {
+      // what searches learned from the closure, still being written
+      await this.terminology.settled();
     }
     try {
       await this.flushAudits();

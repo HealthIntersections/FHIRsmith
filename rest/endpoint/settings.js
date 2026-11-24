@@ -29,6 +29,9 @@ const ENDPOINT_DEFAULTS = {
   checkReferences: true,
   // the terminology server for $closure and :in/:not-in: a path on this server, or a URL
   txServer: null,
+  // the most codes a value set can have to be searched by expanding it (:in, :not-in); bigger
+  // ones (and ones that aren't closed) can be registered for searching by an administrator
+  maxValueSetExpansion: 10000,
   // 'off', 'writes' or 'all'
   audit: 'writes',
   defaultCount: 50,

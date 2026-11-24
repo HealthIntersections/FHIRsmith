@@ -672,6 +672,22 @@ keeps the model in localStorage until it is submitted. The older way to submit
 builds the document, checks it as a submission is checked, and stores it, or hands it back
 as a file.
 
+The editor can follow a [clinical profile](#clinical-profiles): `?profile=profile-{id}` (or the
+bare id), with a project or without; an unknown profile is 404. The compose page (`/ips/{code}/compose`) lists the general editor, the patient editor, and then each clinical
+profile, which opens the general editor following it. A banner names the profile.
+Its section rules narrow each section's choices: a section it has a rule for can't be left out
+(and opens), `hasData()` rules out narrative, an entry rule rules out narrative and empty, and
+`isKnown()` leaves nil known as the only reason to be empty. A choice that isn't allowed is
+greyed out rather than taken away, since a loaded document may already have made it. The
+profile's guided input is shown at the head of each section, under the entries / narrative /
+empty choice: a list, a guide to a line - first dismiss, then its questions in order, each with
+its input at the end of its text (yes/no, a choice of its answers, a date, a value and unit -
+one of its units, when it names any), then Apply when there is something to answer (applying
+is still to come). A dismissed guide is greyed out and cut to one line, with "show" to bring it
+back. Guides for a section the editor doesn't have (the Patient Story, another code) are shown
+above the sections, under their section's title. The answers and what is dismissed are kept in
+the model (`model.guidance`), so the draft keeps them; the composer ignores them.
+
 ### The patient IPS editor
 
 `/ips/{code}/compose/patient` (or `/ips/compose/patient`) is the form that was the Patient

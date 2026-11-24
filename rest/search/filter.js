@@ -312,7 +312,7 @@ class FilterParser {
     if (op === 'pr') {
       return { kind: 'missing', spType: l.spType, keys: l.keys, missing: value === 'false' };
     }
-    const node = (values, modifier = null) => ({ kind: 'param', spType: l.spType, keys: l.keys, defs: l.defs, modifier, values, code: path });
+    const node = (values, modifier = null) => ({ kind: 'param', spType: l.spType, keys: l.keys, defs: l.defs, places: l.places, modifier, values, code: path });
     const negate = op === 'ne';
     switch (l.spType) {
       case 'string': {

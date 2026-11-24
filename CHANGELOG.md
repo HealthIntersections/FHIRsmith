@@ -5,6 +5,20 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.8] - 2026-mm-dd
+
+### Added
+
+- Cluster: a heavy lane. A tx request with a body over `server.cluster.heavyLaneMinBytes` (1 MB, by its Content-Length) and no cache-id goes to one tx-worker (the last; `heavyLaneProcesses`, 1), which the other requests keep off while it has one: parsing a large body, and much of what is done with it, holds a process's event loop for seconds, and this keeps that to one process. On tx.fhir.org, bodies of tens of MB held every process's event loop for 2-5 s, once or twice a minute. 0 turns it off; it is logged at start ([cluster.md](cluster.md))
+
+### Fixed
+
+- tx: a value set sent with an expansion (`tx-resource`) no longer has every code in the expansion indexed when it is read, which on tx.fhir.org held the event loop for 3 s and more for value sets with large expansions, on every request that sent one. The index is built when something uses it, and validation doesn't (it looks in the expansion itself)
+
+### Tx Conformance Statement
+
+FHIRsmith v1.0.8 passed all 5602 HL7 terminology service tests (modes tx.fhir.org+omop+general+snomed+mimetypes+icd-11+icf+closure+loinc, tests v1.11.1-snapshot, runner v7.0.6)
+
 ## [1.0.7] - 2026-11-24
 
 ### Security
@@ -16,6 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- IPS: the general IPS editor can follow a clinical profile (`?profile=profile-{id}`): the profile's section rules grey out the choices they don't allow (leaving a section out; narrative, with `hasData()` or an entry rule; empty, with an entry rule; any empty reason but nil known, with `isKnown()`), and its guided input is shown at the head of each section - each guide's questions in order with their inputs, dismissable (then greyed out, on one line), with Apply (not done yet) when there is something to answer. Guides for sections the editor doesn't have are shown above the sections. The compose page lists the clinical profiles after the two editors, each opening the general editor following it
 - Cluster: `server.cluster.workerModules` (`["tx"]`): the modules the tx-workers run besides tx. `"rest"` is the only other one a worker can run; with it, the launcher sends the rest module's endpoints to any process, and the workers wait for the master's schema migrations and leave the rest module's background jobs to it
 - Keys: a key store for the whole server (`keystore`, off unless enabled; [library/keystore/README.md](library/keystore/README.md)). `/keys` lists public keys for anyone, and as a JWKS (`/keys/jwks.json`). A logged in user can upload public keys (PEM, a certificate, a JWK or JWKS, an OpenSSH line, DER), claiming a key id or not, and have the server make key pairs for them (EC P-256, EC P-384, RSA, Ed25519; one of each type), whose private keys the server keeps and signs with when a module asks; the administrator makes the system's own key pairs. Private keys are never uploaded (an upload with one is refused) and never given out. Owners revoke their keys, administrators revoke, delete and change key ids. A key is shown only as uploaded or created by its owner's display name. Limits: 10 uploads, then one a day; one key pair a day of each type. Private keys are in a database of their own (`keystore-private.db`, 0600). The daily report has a paragraph on them. Modules sign with `keystore.sign`/`signJws` and check with `verify`/`verifyJws`; there is no endpoint that signs what it is given
 - Keys: an account can't be called System, and a key's owner is shown with its kind (System, or User: name; `ownerKind` in the JWKS); `/keys/api` takes API tokens only; key pairs are made off the event loop; the private key database has no WAL

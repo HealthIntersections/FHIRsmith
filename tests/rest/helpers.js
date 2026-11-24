@@ -53,7 +53,7 @@ async function emptyMysql(cfg) {
   const conn = await mysql.createConnection({ host: cfg.host, port: cfg.port, user: cfg.user, password: process.env[cfg.passwordEnv], database: cfg.database });
   try {
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained']) {
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers']) {
       await conn.query(`DROP TABLE IF EXISTS ${t}`);
     }
   } finally {
@@ -125,7 +125,7 @@ function body(resource) {
 async function snapshot(ep) {
   return ep.db.read(async (q) => {
     const out = {};
-    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained']) {
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers']) {
       const r = await q.get(`SELECT COUNT(*) AS N FROM ${t}`);
       out[t] = Number(r.N);
     }

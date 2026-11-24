@@ -20,7 +20,7 @@
  * @module rest/database/schema
  */
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 5;
 
 // columns every index table has
 const INDEX_COMMON = [
@@ -174,6 +174,32 @@ const TABLES = [
  * chains reach it through IndexReferences.TargetKey, and nothing that looks in Ids finds it).
  * Made at schema version 3, so not in TABLES.
  */
+// version 4: the codes in each place a code can be (a resource type's token search parameter),
+// each place with its own closure table on the terminology server. InClosure: 0 not sent yet,
+// 1 sent, 2 refused by the server (an unknown code, or the table full). (Concepts.InClosure,
+// from version 1, is no longer used.)
+const PARAM_CONCEPTS_TABLE = { name: 'ParamConcepts',
+  columns: [['TypeKey', 'bigint', { notNull: true }], ['ParamKey', 'bigint', { notNull: true }], ['ConceptKey', 'bigint', { notNull: true }],
+    ['InClosure', 'int', { notNull: true }]],
+  primaryKey: ['TypeKey', 'ParamKey', 'ConceptKey'],
+  indexes: [{ name: 'SK_ParamConcepts_Closure', columns: ['InClosure', 'TypeKey', 'ParamKey'] }] };
+
+// version 5: value sets registered for searching (:in, :not-in) by membership, worked out by
+// asking the terminology server about each concept (terminology.js), for value sets too big to
+// expand, or not closed. Systems: the code systems the value set draws on (JSON), for
+// concepts in other systems to be left out without asking; '*' when that can't be known, null
+// before it's been looked for. Status: 0 being worked out, 1 ready
+const VALUESET_TABLES = [
+  { name: 'ValueSets',
+    columns: [['ValueSetKey', 'key'], ['Url', 'str(255)', { notNull: true }], ['Version', 'str(64)'], ['Systems', 'text'],
+      ['Status', 'int', { notNull: true }], ['Registered', 'bigint', { notNull: true }], ['RegisteredBy', 'str(128)']],
+    indexes: [{ name: 'SK_ValueSets_Url', columns: ['Url'], unique: true }] },
+  { name: 'ValueSetMembers',
+    columns: [['ValueSetKey', 'bigint', { notNull: true }], ['ConceptKey', 'bigint', { notNull: true }], ['Member', 'int', { notNull: true }]],
+    primaryKey: ['ValueSetKey', 'ConceptKey'],
+    indexes: [{ name: 'SK_ValueSetMembers_Member', columns: ['ValueSetKey', 'Member', 'ConceptKey'] }] }
+];
+
 const CONTAINED_TABLE = {
   name: 'Contained',
   columns: [['ContainedKey', 'key'], ['ResourceKey', 'bigint', { notNull: true }], ['TypeKey', 'bigint'], ['LocalId', 'str(64)', { notNull: true }]],
@@ -250,6 +276,38 @@ const MIGRATIONS = {
       await q.exec(sql);
     }
     await flagReindexAll(q);
+  },
+  // a closure table for each place a code can be (indexing/indexer.js, terminology.js), in
+  // place of one for everything: what there was is dropped, and rebuilt in the background
+  4: async (q) => {
+    for (const sql of tableDDL(PARAM_CONCEPTS_TABLE, q.dialect.name)) {
+      await q.exec(sql);
+    }
+    if (q.dialect.name === 'sqlite') {
+      await q.exec('ALTER TABLE Closures ADD COLUMN TypeKey INTEGER');
+      await q.exec('ALTER TABLE Closures ADD COLUMN ParamKey INTEGER');
+    } else {
+      await q.exec('ALTER TABLE Closures ADD COLUMN TypeKey BIGINT, ADD COLUMN ParamKey BIGINT');
+    }
+    await q.exec('CREATE UNIQUE INDEX SK_Closures_Param ON Closures (TypeKey, ParamKey)');
+    await q.exec('DELETE FROM ClosureEntries');
+    await q.exec('DELETE FROM Closures');
+    await q.exec(`INSERT INTO ParamConcepts (TypeKey, ParamKey, ConceptKey, InClosure)
+      SELECT DISTINCT x.TypeKey, x.ParamKey, x.ConceptKey, 0 FROM (
+        SELECT i.TypeKey AS TypeKey, t.ParamKey AS ParamKey, t.ConceptKey AS ConceptKey FROM IndexTokens t JOIN Ids i ON i.ResourceKey = t.ResourceKey
+          WHERE t.ConceptKey IS NOT NULL AND t.Comp IS NULL
+        UNION ALL
+        SELECT c.TypeKey, t.ParamKey, t.ConceptKey FROM IndexTokens t JOIN Contained c ON c.ContainedKey = -t.ResourceKey
+          WHERE t.ConceptKey IS NOT NULL AND t.Comp IS NULL AND t.ResourceKey < 0) x
+      WHERE x.TypeKey IS NOT NULL`);
+  },
+  // value sets registered for searching by membership
+  5: async (q) => {
+    for (const table of VALUESET_TABLES) {
+      for (const sql of tableDDL(table, q.dialect.name)) {
+        await q.exec(sql);
+      }
+    }
   }
 };
 
@@ -332,4 +390,4 @@ async function waitForSchema(db, timeoutMs = 120000) {
   }
 }
 
-module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };
+module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, PARAM_CONCEPTS_TABLE, VALUESET_TABLES, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };

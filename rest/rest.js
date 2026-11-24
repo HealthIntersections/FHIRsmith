@@ -30,6 +30,7 @@
  */
 
 const rateLimit = require('express-rate-limit');
+const { RestAdmin, VALUESETS } = require('./admin');
 const auth = require('../library/auth');
 const folders = require('../library/folder-setup');
 const { PackageManager } = require('../library/package-manager');
@@ -107,7 +108,11 @@ class RestModule {
       await ep.open();
       const router = require('express').Router();
       router.use(rateLimit(auth.credentialLimits()));
+      // the administration pages (the manage role), then the FHIR API
+      router.use(new RestAdmin(ep).router());
       router.use(ep.router());
+      auth.addAdminPage(MODULE, { label: `Value sets for searching (${ep.path})`, path: `${ep.path}${VALUESETS}`,
+        description: 'value sets too big to expand, searched by membership' });
       app.use(ep.path, router);
       this.endpoints.push(ep);
     }

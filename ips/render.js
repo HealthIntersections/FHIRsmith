@@ -202,6 +202,16 @@ const STYLE = `
   .ips-ed-section-body { padding: 8px 12px; }
   .ips-ed-section-body[hidden] { display: none; }
   .ips-ed-modes { margin-bottom: 8px; font-size: 90%; } .ips-ed-mode { margin-right: 16px; font-weight: normal; }
+  .ips-ed-mode-off { color: #aaa; }
+  .ips-ed-profile { background-color: #f4f0fb; border: 1px solid #ddd3ee; border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; }
+  .ips-ed-guides { margin: 0 0 10px 0; padding-left: 20px; font-size: 92%; }
+  .ips-ed-guide { margin-bottom: 4px; line-height: 2.1; }
+  .ips-ed-guide .ips-ed-g-input { display: inline-block; width: auto; min-width: 4em; max-width: 14em; height: 26px; padding: 1px 4px; margin: 0 4px 0 2px; vertical-align: middle; font-size: 95%; }
+  .ips-ed-guide .ips-ed-g-qty { width: 6em; min-width: 0; }
+  .ips-ed-guide-dismiss { margin-right: 6px; font-size: 85%; }
+  .ips-ed-guide-apply { margin-left: 4px; }
+  .ips-ed-guide-dismissed { color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ips-ed-other-guides { margin-bottom: 10px; }
   .ips-ed-row { border: 1px solid #e3e6ea; border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; background: #fff; }
   .ips-ed-row-head { display: flex; justify-content: space-between; align-items: center; }
   .ips-ed-remove { padding: 0; font-size: 85%; }
@@ -1767,6 +1777,13 @@ function renderComposeChoice(project, ctx, options) {
   for (const e of options.editors) {
     h += `<tr><td style="white-space: nowrap"><a class="btn btn-primary" href="${base}/${e.key}">${escape(e.name)}</a></td><td>${escape(e.description)}</td></tr>`;
   }
+  // the general editor, following a clinical profile: its rules narrow the choices, its guided input is shown in the sections
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  for (const pf of options.profiles || []) {
+    h += `<tr><td style="white-space: nowrap"><a class="btn btn-default" href="${base}/general?profile=${encodeURIComponent(pf.id)}">${escape(pf.title)}</a></td>` +
+      `<td>The general IPS editor, following the clinical profile <a href="${escape(ctx.base)}/StructureDefinition/${encodeURIComponent(pf.id)}">${escape(pf.title)}</a> ` +
+      `(${plural(pf.rules, 'rule')}, ${plural(pf.guides, 'guided input')}): the choices its rules don't allow are greyed out, and its guided input is shown at the head of each section.</td></tr>`;
+  }
   h += '</table>';
   if (project) {
     h += `<p class="ips-small">Or <a href="${projectUrl(ctx, project)}/submit">submit a document</a> you already have.</p>`;
@@ -1783,11 +1800,13 @@ function renderCompose(project, ctx, options) {
   h += '<p>Build an International Patient Summary here: the patient, the document\'s author, and the sections. ' +
     (options.from ? 'The form holds what it can of the original document; submitting makes a new document in the project. ' : '') +
     (options.canLookup ? 'Coded fields look codes up on the terminology server as you type (in the value sets this server holds the element to); ' : 'This server has no terminology server to look codes up on (modules.ips.txServer), so coded fields take text only; ') +
-    'anything can also be entered as plain text. ' + composeNotes(project, options) + '</p>';
+    'anything can also be entered as plain text. ' + composeNotes(project, options) + '</p>' +
+    (options.guidance ? `<div class="ips-ed-profile">Following the clinical profile <a href="${escape(options.guidance.url)}"><b>${escape(options.guidance.title)}</b></a>: ` +
+      'the choices its rules don\'t allow are greyed out, and its guided input is shown at the head of each section.</div>' : '');
   h += '<noscript><div class="alert alert-warning">The editor needs scripts' + (project ? `; without them, use the <a href="${projectUrl(ctx, project)}/submit">submission form</a>` : '') + '.</div></noscript>';
   h += '<div id="ips-editor"></div>';
   const cfg = {
-    project: project ? project.code : '', schema: options.schema, model: options.model, testPatients: options.testPatients || [],
+    project: project ? project.code : '', schema: options.schema, model: options.model, testPatients: options.testPatients || [], guidance: options.guidance || null,
     urls: { build: `${ctx.base}/compose/build`, model: `${ctx.base}/compose/model`, lookup: options.canLookup ? `${ctx.base}/compose/lookup` : null, back: project ? `${ctx.base}/${encodeURIComponent(project.code)}` : base },
     actions: options.actions
   };

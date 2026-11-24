@@ -74,10 +74,31 @@ class ValueSet extends CanonicalResource {
   }
 
   /**
-   * Map of system(#version)|code to expansion contains item for fast lookup
+   * Map of system(#version)|code to expansion contains item, built on first use (codeMap)
+   * @type {Map<string, Object>|null}
+   * @private
+   */
+  _codeMap = null;
+
+  /**
+   * Map of system(#version)|code to expansion contains item for fast lookup. Built the first
+   * time it's asked for, not when the ValueSet is made: a value set a client sends with a large
+   * expansion (tx-resource) is made on every request, and building the map over the whole
+   * expansion held tx.fhir.org's event loop for 3 s and more (2026-11-24), when nothing the
+   * server does with such a value set uses it - validation looks in the expansion itself
+   * (findContains)
    * @type {Map<string, Object>}
    */
-  codeMap = new Map();
+  get codeMap() {
+    if (this._codeMap === null) {
+      const map = new Map();
+      if (this.jsonObj.expansion && this.jsonObj.expansion.contains) {
+        this._buildExpansionMap(this.jsonObj.expansion.contains, map);
+      }
+      this._codeMap = map;
+    }
+    return this._codeMap;
+  }
 
   /**
    * Number of entries in expansion.contains, nested ones included. Counted by the
@@ -174,36 +195,31 @@ class ValueSet extends CanonicalResource {
   }
 
   /**
-   * Builds internal maps for fast expansion lookup
+   * Resets the internal maps after the expansion changes: the code map is built again the next
+   * time it's used (codeMap)
    * @private
    */
   buildMaps() {
     this.id = this.jsonObj.id;
-    this.codeMap.clear();
-
-    if (!this.jsonObj.expansion || !this.jsonObj.expansion.contains) {
-      return;
-    }
-
-    // Build map of system(#version)|code -> expansion contains item
-    this._buildExpansionMap(this.jsonObj.expansion.contains);
+    this._codeMap = null;
   }
 
   /**
    * Recursively builds expansion map from contains items
    * @param {Object[]} contains - Array of expansion contains items
+   * @param {Map<string, Object>} map - the map to fill
    * @private
    */
-  _buildExpansionMap(contains) {
+  _buildExpansionMap(contains, map) {
     contains.forEach(item => {
       if (item.system && item.code) {
         const key = this._buildCodeKey(item.system, item.version, item.code);
-        this.codeMap.set(key, item);
+        map.set(key, item);
       }
 
       // Handle nested contains (hierarchical expansions)
       if (item.contains && Array.isArray(item.contains)) {
-        this._buildExpansionMap(item.contains);
+        this._buildExpansionMap(item.contains, map);
       }
     });
   }

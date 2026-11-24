@@ -48,6 +48,36 @@ class Lookups {
     this.spaces = new KeyCache();
     this.concepts = new KeyCache();
     this.tags = new KeyCache();
+    this.paramConcepts = new KeyCache();
+  }
+
+  /**
+   * Record which concepts are in which place (resource type and search parameter), for the
+   * closure tables: [typeKey, paramKey, conceptKey] triples, inserted if they aren't there.
+   * @param {Object} q - in a write transaction
+   * @param {Array<number[]>} triples
+   */
+  async recordParamConcepts(q, triples) {
+    const todo = [];
+    const seen = new Set();
+    for (const t of triples) {
+      const k = t.join('|');
+      if (!seen.has(k) && this.paramConcepts.get(k) === undefined) {
+        seen.add(k);
+        todo.push(t);
+      }
+    }
+    for (const c of chunks(todo, 100)) {
+      const where = c.map(() => '(TypeKey = ? AND ParamKey = ? AND ConceptKey = ?)').join(' OR ');
+      const existing = await q.all(`SELECT TypeKey, ParamKey, ConceptKey FROM ParamConcepts WHERE ${where}`, c.flat());
+      const have = new Set(existing.map(r => [r.TypeKey, r.ParamKey, r.ConceptKey].map(Number).join('|')));
+      // only rows already there are cached: one inserted here is gone if the transaction rolls back
+      have.forEach(k => this.paramConcepts.set(k, true));
+      const toAdd = c.filter(t => !have.has(t.join('|')));
+      if (toAdd.length) {
+        await q.run(q.dialect.insertIgnore('ParamConcepts', ['TypeKey', 'ParamKey', 'ConceptKey', 'InClosure']) + toAdd.map(() => '(?, ?, ?, 0)').join(', '), toAdd.flat());
+      }
+    }
   }
 
   /**
