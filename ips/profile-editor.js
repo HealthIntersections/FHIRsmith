@@ -12,20 +12,19 @@
  * (Bundle.section(...)[.entry(...) or .entryIn(valueSet...)].exists(), a row of the first
  * table), rules about resources (Bundle.resources(...) or Bundle.resourcesIn(valueSet...), and
  * the rest: a row of the second - type, system, code or value set, the rest), and
- * other rules (FHIRPath). A row's expression is made from it. Saving posts the title and the
- * constraints (key, description, expression); the server checks them, and keeps the keys.
- * With cfg.mode 'rows' it is the profile's own page instead: the rows are the page's tables,
- * and one at a time is added or edited, in a dialog, and saved by itself.
+ * other rules (FHIRPath). A row's expression is made from it. The rows are the page's tables:
+ * one at a time is added or edited, in a dialog, and saved by itself (the server checks it, and
+ * keeps the keys). So is guided input (cfg.profile.guides): a guide at a time - its section, its
+ * questions, and the resource and code - in the same dialog, saved to cfg.urls.guide.
  */
 (function () {
   'use strict';
   var cfg = window.IPS_PROFILE;
-  var root = document.getElementById('ips-profile-editor');
   var LOINC = cfg.sectionSystem;
   var dirty = false;
   var saving = false;
-  // what to draw again when a row's fields change shape: the whole editor, or the row being edited
-  var redraw = function () { draw(); };
+  // what to draw again when a row's fields change shape: the dialog (rowsMode sets it)
+  var redraw = function () {};
 
   function el(tag, attrs, children) {
     var e = document.createElement(tag);
@@ -37,12 +36,10 @@
   }
   function changed() { dirty = true; }
 
-  // ---- the two shapes (as ips/profiles.js has them) ----
+  // ---- writing the rules (the shapes are ips/profiles.js's: the page gives each rule's) ----
 
   var STR = "'((?:[^'\\\\]|\\\\.)*)'";
-  var ARGS = '\\s*' + STR + '\\s*,\\s*' + STR + "\\s*(?:,\\s*(\\d{1,6})\\s*,\\s*(?:(\\d{1,6})|'\\*')\\s*)?";
-  var CARD = "(?:,\\s*(\\d{1,6})\\s*,\\s*(?:(\\d{1,6})|'\\*')\\s*)?";
-  var SHAPE_RE = new RegExp('^\\s*Bundle\\s*\\.\\s*section\\s*\\(' + ARGS + '\\)\\s*(?:\\.\\s*(?:entry\\s*\\(' + ARGS + '\\)|entryIn\\s*\\(\\s*' + STR + '\\s*' + CARD + '\\))\\s*)?\\.\\s*exists\\s*\\(\\s*\\)\\s*$');
+  var SECTION_CHECKS = ['isKnown', 'hasData', 'sameSubject'];
   var CANONICAL_RE = /^[a-z][a-z0-9+.-]*:[^\s|]{1,250}(\|[^\s|]{1,64})?$/i;
   // the system chosen for an entry or resources when they are matched by value set, not code
   var VS = '#vs';
@@ -53,21 +50,6 @@
     });
   }
   function quote(s) { return "'" + String(s).replace(/\\/g, '\\\\').replace(/'/g, "\\'") + "'"; }
-  function card(min, max, hasCard) { return { min: hasCard ? parseInt(min, 10) : null, max: hasCard ? (max === undefined ? '*' : parseInt(max, 10)) : null }; }
-  function part(system, code, min, max, hasCard) {
-    var c = card(min, max, hasCard);
-    return { system: unquote(system), code: unquote(code), min: c.min, max: c.max };
-  }
-  function parseShape(expression) {
-    var m = SHAPE_RE.exec(expression || '');
-    if (!m) { return null; }
-    var entry = null;
-    if (m[5] !== undefined) { entry = part(m[5], m[6], m[7], m[8], m[7] !== undefined); } else if (m[9] !== undefined) {
-      var c = card(m[10], m[11], m[10] !== undefined);
-      entry = { valueSet: unquote(m[9]), min: c.min, max: c.max };
-    }
-    return { section: part(m[1], m[2], m[3], m[4], m[3] !== undefined), entry: entry };
-  }
   function cardText(p) { return p.min === null || p.min === undefined ? '' : p.min + '..' + p.max; }
   function parseCard(text) {
     if (!text || !text.trim()) { return { min: null, max: null }; }
@@ -79,16 +61,6 @@
   }
   function cardArgs(c) { return c.min !== null ? ', ' + c.min + ', ' + (c.max === '*' ? "'*'" : c.max) : ''; }
   function args(system, code, c) { return quote(system) + ', ' + quote(code) + cardArgs(c); }
-  var TYPE = "\\s*(?:,\\s*'([A-Z][A-Za-z]{1,63})'\\s*)?";
-  var REST = '\\s*(\\.\\s*\\S[\\s\\S]*?)\\s*$';
-  var RSHAPE_RE = new RegExp('^\\s*Bundle\\s*\\.\\s*resources\\s*\\(\\s*' + STR + '\\s*,\\s*' + STR + TYPE + '\\)' + REST);
-  var RSHAPE_IN_RE = new RegExp('^\\s*Bundle\\s*\\.\\s*resourcesIn\\s*\\(\\s*' + STR + TYPE + '\\)' + REST);
-  function parseResourceShape(expression) {
-    var m = RSHAPE_RE.exec(expression || '');
-    if (m) { return { type: m[3] || null, system: unquote(m[1]), code: unquote(m[2]), rest: m[4] }; }
-    m = RSHAPE_IN_RE.exec(expression || '');
-    return m ? { type: m[2] || null, valueSet: unquote(m[1]), rest: m[3] } : null;
-  }
 
   // ---- the rows: mode 'section' (the first table), 'resource' (the second) or 'text' ----
 
@@ -96,7 +68,7 @@
     var shape = c.shape || null;
     var rshape = c.rshape || null;
     var r = { key: c.key || null, human: c.human || '', expression: c.expression || '', mode: shape ? 'section' : (rshape ? 'resource' : 'text') };
-    tableFields(r, shape || { section: { system: LOINC, code: '', min: null, max: null }, entry: null });
+    tableFields(r, shape || { section: { system: LOINC, code: '', checks: [] }, entry: null });
     resourceFields(r, rshape || { type: null, system: cfg.systems[0].url, code: '', rest: '.exists()' });
     return r;
   }
@@ -135,7 +107,8 @@
     var e = shape.entry;
     r.secSystem = shape.section.system;
     r.secCode = shape.section.code;
-    r.secCard = cardText(shape.section);
+    r.secChecks = {};
+    SECTION_CHECKS.forEach(function (c) { r.secChecks[c] = (shape.section.checks || []).indexOf(c) >= 0; });
     r.secDisplay = '';
     r.entSystem = !e ? '' : (e.valueSet !== undefined ? VS : e.system);
     r.entCode = e && e.valueSet === undefined ? e.code : '';
@@ -147,12 +120,10 @@
   /** The row's expression, from its table, or null with what is wrong. */
   function tableExpression(r) {
     var problems = [];
-    var sc = parseCard(r.secCard);
     var ec = parseCard(r.entCard);
     var byVs = r.entSystem === VS;
     if (!r.secSystem.trim()) { problems.push('secSystem'); }
     if (!r.secCode.trim()) { problems.push('secCode'); }
-    if (!sc) { problems.push('secCard'); }
     if (r.entSystem.trim() || r.entCode.trim() || r.entCard.trim()) {
       if (byVs) {
         if (!CANONICAL_RE.test(r.entVs.trim())) { problems.push('entVs'); }
@@ -163,12 +134,14 @@
       if (!ec) { problems.push('entCard'); }
     }
     if (problems.length) { return { expression: null, problems: problems }; }
-    var x = 'Bundle.section(' + args(r.secSystem.trim(), r.secCode.trim(), sc) + ')';
-    if (byVs) { x += '.entryIn(' + quote(r.entVs.trim()) + cardArgs(ec) + ')'; } else if (r.entSystem.trim()) { x += '.entry(' + args(r.entSystem.trim(), r.entCode.trim(), ec) + ')'; }
-    return { expression: x + '.exists()', problems: [] };
+    // one check on its own is the rule; more than one, or any with entries, go in a where()
+    var checks = SECTION_CHECKS.filter(function (c) { return r.secChecks[c]; });
+    var x = 'Bundle.section(' + quote(r.secSystem.trim()) + ', ' + quote(r.secCode.trim()) + ')';
+    var entry = byVs ? '.entryIn(' + quote(r.entVs.trim()) + cardArgs(ec) + ')' : (r.entSystem.trim() ? '.entry(' + args(r.entSystem.trim(), r.entCode.trim(), ec) + ')' : '');
+    if (!entry && checks.length === 1) { return { expression: x + '.' + checks[0] + '()', problems: [] }; }
+    if (checks.length) { x += '.where(' + checks.map(function (c) { return c + '()'; }).join(' and ') + ')'; }
+    return { expression: x + entry + '.exists()', problems: [] };
   }
-
-  var state = { title: cfg.profile.title || '', rows: (cfg.profile.constraints || []).map(rowFrom) };
 
   // ---- a code, looked up in a system ----
 
@@ -308,6 +281,20 @@
     return wrap;
   }
 
+  // what the section must be: asked/known (isKnown()), with supporting entries (hasData()),
+  // about the document's patient (sameSubject()) - checkboxes in a row
+  var CHECK_LABELS = { isKnown: 'must be asked/known', hasData: 'must have supporting entries', sameSubject: 'about the same Patient' };
+  function sectionChecks(r, onChange) {
+    var row = el('div', { class: 'ips-pf-checks' });
+    SECTION_CHECKS.forEach(function (c) {
+      var box = el('input', { type: 'checkbox' });
+      box.checked = !!r.secChecks[c];
+      box.addEventListener('change', function () { r.secChecks[c] = box.checked; changed(); onChange(); });
+      row.appendChild(el('label', { class: 'ips-pf-check', title: c + '()' }, [box, ' ' + CHECK_LABELS[c]]));
+    });
+    return row;
+  }
+
   function cardInput(r, field, onChange) {
     var input = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'any', title: 'blank for any number, or min..max (1..1, 1..*)' });
     input.value = r[field];
@@ -319,7 +306,9 @@
   function sectionCell(r, onChange) {
     var cell = el('div');
     var select = el('select', { class: 'form-control ips-ed-input' });
-    cfg.sections.forEach(function (s) { select.appendChild(el('option', { value: s.code, text: 'Section: ' + s.title })); });
+    // by title, then another code last
+    cfg.sections.slice().sort(function (a, b) { return a.title.localeCompare(b.title); })
+      .forEach(function (s) { select.appendChild(el('option', { value: s.code, text: 'Section: ' + s.title })); });
     select.appendChild(el('option', { value: '', text: 'Another code...' }));
     var isIps = r.secSystem === LOINC && cfg.sections.some(function (s) { return s.code === r.secCode; });
     if (!r.secCode) { r.secSystem = LOINC; r.secCode = cfg.sections[0].code; isIps = true; }
@@ -428,157 +417,6 @@
     return cell;
   }
 
-  function drawRow(r, n) {
-    var box = el('div', { class: 'ips-pf-row' });
-    var human = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'What is expected (shown to people)' });
-    human.value = r.human;
-    human.addEventListener('input', function () { r.human = human.value; changed(); });
-    var toggle = el('a', { href: '#', class: 'ips-small', text: r.mode === 'text' ? 'Edit as table' : 'Edit as FHIRPath' });
-    toggle.addEventListener('click', function (e) {
-      e.preventDefault();
-      if (r.mode !== 'text') {
-        var t = rowExpression(r);
-        if (t.expression) { r.expression = t.expression; }
-        r.mode = 'text';
-      } else {
-        var shape = parseShape(r.expression);
-        var rshape = shape ? null : parseResourceShape(r.expression);
-        if (!shape && !rshape) {
-          window.alert('This rule is not one the tables can show: Bundle.section(...).exists(), Bundle.section(...).entry(...).exists() or .entryIn(...).exists(), or Bundle.resources(...) or Bundle.resourcesIn(...) and the rest of the rule');
-          return;
-        }
-        if (shape) { tableFields(r, shape); r.mode = 'section'; } else { resourceFields(r, rshape); r.mode = 'resource'; }
-      }
-      changed();
-      draw();
-    });
-    var remove = el('button', { type: 'button', class: 'btn btn-default ips-btn', style: 'font-size: 85%; padding: 1px 8px', text: 'Remove' });
-    remove.addEventListener('click', function () { state.rows.splice(state.rows.indexOf(r), 1); changed(); draw(); });
-    box.appendChild(el('div', { class: 'ips-pf-head' }, [el('b', { text: String(n) + '.' }), human, toggle, remove]));
-    if (r.mode === 'text') {
-      var text = el('textarea', { class: 'form-control ips-ed-input', rows: 2, placeholder: 'A FHIRPath expression on the document (the Bundle), true when it meets the expectation', style: 'font-family: monospace; width: 100%' });
-      text.value = r.expression;
-      text.addEventListener('input', function () { r.expression = text.value; changed(); });
-      box.appendChild(text);
-      return box;
-    }
-    var exprLine = el('div', { class: 'ips-pf-expr' });
-    var fields = {};
-    var update = function () {
-      var t = rowExpression(r);
-      exprLine.textContent = t.expression || '(incomplete)';
-      Object.keys(fields).forEach(function (k) { fields[k].classList.toggle('ips-pf-bad', t.problems.indexOf(k) >= 0); });
-    };
-    var grid;
-    if (r.mode === 'section') {
-      var sec = sectionCell(r, update);
-      var ent = entryCell(r, update);
-      fields.secCard = cardInput(r, 'secCard', update);
-      fields.entCard = cardInput(r, 'entCard', update);
-      if (ent.code) { fields.entCode = ent.code.input; }
-      if (ent.vs) { fields.entVs = ent.vs.input; }
-      grid = el('table', { class: 'ips-pf-grid' }, [
-        el('tr', {}, [el('th', { text: 'Section' }), el('th', { text: 'Cardinality' }), el('th', { text: 'Entries' }), el('th', { text: 'Cardinality' })]),
-        el('tr', {}, [el('td', {}, [sec]), el('td', { class: 'ips-pf-card' }, [fields.secCard]), el('td', {}, [ent]), el('td', { class: 'ips-pf-card' }, [fields.entCard])])
-      ]);
-    } else {
-      var type = typeCell(r, update);
-      var system = systemCell(r, update);
-      var byVs = r.resSystem === VS;
-      var code = byVs ? vsInput(r, 'resVs', 'resVsTitle', update) : codeInput(r, 'resCode', 'resDisplay', function () { return r.resSystem; }, update);
-      var rest = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: '.exists()', style: 'font-family: monospace; width: 100%', title: 'The rest of the rule: FHIRPath on the resources found, starting with a dot' });
-      rest.value = r.resRest;
-      rest.addEventListener('input', function () { r.resRest = rest.value; changed(); update(); });
-      fields.resType = type.other;
-      fields.resSystem = system.url;
-      fields[byVs ? 'resVs' : 'resCode'] = code.input;
-      fields.resRest = rest;
-      grid = el('table', { class: 'ips-pf-grid' }, [
-        el('tr', {}, [el('th', { text: 'Type' }), el('th', { text: 'System' }), el('th', { text: byVs ? 'Value set' : 'Code' }), el('th', { text: 'Rule' })]),
-        el('tr', {}, [el('td', { style: 'width: 16%' }, [type]), el('td', { style: 'width: 18%' }, [system]), el('td', { style: byVs ? 'width: 34%' : 'width: 22%' }, [code]), el('td', {}, [rest])])
-      ]);
-    }
-    box.appendChild(grid);
-    box.appendChild(exprLine);
-    update();
-    return box;
-  }
-
-  var ADD_LABELS = { section: 'Add a required section/entry', resource: 'Add a rule about resources', text: 'Add another rule' };
-  var MODE_OF_PART = { section: 'section', resource: 'resource', other: 'text' };
-  var messages = el('div');
-
-  /** The rows as the page shows them: the parts in order. */
-  function ordered() {
-    var out = [];
-    cfg.parts.forEach(function (p) { state.rows.forEach(function (r) { if (r.mode === MODE_OF_PART[p[0]]) { out.push(r); } }); });
-    return out;
-  }
-
-  function draw() {
-    root.innerHTML = '';
-    var title = el('input', { type: 'text', class: 'form-control', placeholder: 'The profile\'s title, e.g. Cardiology referral', style: 'font-size: 110%; font-weight: bold' });
-    title.value = state.title;
-    title.addEventListener('input', function () { state.title = title.value; changed(); });
-    root.appendChild(el('div', { class: 'ips-banner' }, [el('label', { class: 'ips-small', text: 'Title' }), title]));
-    var n = 0;
-    cfg.parts.forEach(function (p) {
-      var mode = MODE_OF_PART[p[0]];
-      root.appendChild(el('h4', { text: p[1] }));
-      var these = state.rows.filter(function (r) { return r.mode === mode; });
-      if (!these.length) { root.appendChild(el('p', { class: 'ips-small', text: 'None.' })); }
-      these.forEach(function (r) { root.appendChild(drawRow(r, ++n)); });
-      root.appendChild(el('div', { class: 'ips-actions-line' }, [el('button', { type: 'button', class: 'btn btn-default', text: ADD_LABELS[mode], onclick: function () {
-        var r = rowFrom({});
-        r.mode = mode;
-        state.rows.push(r);
-        changed();
-        draw();
-      } })]));
-    });
-    root.appendChild(messages);
-    root.appendChild(el('div', { class: 'ips-actions-line' }, [
-      el('button', { type: 'button', class: 'btn btn-primary', text: 'Save', onclick: save }), ' ',
-      el('a', { class: 'btn btn-default', href: cfg.urls.back, text: 'Cancel' })
-    ]));
-  }
-
-  function show(problems, kind) {
-    messages.innerHTML = '';
-    if (!problems.length) { return; }
-    var box = el('div', { class: 'alert alert-' + (kind || 'danger') });
-    if (problems.length === 1) { box.textContent = problems[0]; } else {
-      box.appendChild(el('ul', { style: 'margin: 0' }, problems.map(function (p) { return el('li', { text: p }); })));
-    }
-    messages.appendChild(box);
-  }
-
-  function save() {
-    if (saving) { return; }
-    var problems = [];
-    // in the page's order, so the numbers in the server's messages are the page's
-    var constraints = ordered().map(function (r, i) {
-      var t = rowExpression(r);
-      if (!t.expression && r.mode !== 'text') { problems.push('Rule ' + (i + 1) + ' is incomplete (the fields in red)'); }
-      return { key: r.key, human: r.human, expression: t.expression || '' };
-    });
-    if (!state.title.trim()) { problems.unshift('The profile needs a title'); }
-    if (problems.length) { show(problems); return; }
-    saving = true;
-    show(['Saving...'], 'info');
-    fetch(cfg.urls.save, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ title: state.title, constraints: constraints, _csrf: cfg.csrf }) })
-      .then(function (res) {
-        return res.json().then(function (j) { return { ok: res.ok, j: j }; }, function () { return { ok: false, j: { problems: ['The server answered ' + res.status + (res.status === 403 ? ' (has your session expired? reload the page)' : '')] } }; });
-      })
-      .then(function (a) {
-        saving = false;
-        if (a.ok) { dirty = false; location.href = a.j.url; return; }
-        show(a.j.problems || ['The profile was not saved']);
-      })
-      .catch(function (e) { saving = false; show(['The profile was not saved: ' + e.message]); });
-  }
-
   // ---- the profile's page: a rule at a time, added or edited in a dialog ----
 
   // what must be true of the resources a rule is about: the rest of the rule, by kind
@@ -651,6 +489,117 @@
     return { expression: t.rest ? e.expression : null, problems: t.problems.concat(e.problems.filter(function (p) { return p !== 'resRest'; })) };
   }
 
+  // ---- guided input: a guide (its section, questions, resource and code) as the dialog edits it ----
+
+  var UCUM = 'http://unitsofmeasure.org';
+  var TYPE_LABELS = { display: 'Text to show', boolean: 'Yes / no', quantity: 'Quantity', date: 'Date', choice: 'Choice' };
+
+  function copyCoding(c) { return c ? { system: c.system || '', code: c.code || '', display: c.display || '' } : { system: '', code: '', display: '' }; }
+  function guideRow(g, index) {
+    g = g || {};
+    var r = { mode: 'guide', index: index, key: index === null ? null : 'guide' };
+    var s = g.section || {};
+    r.secSystem = s.system || LOINC;
+    r.secCode = s.code || '';
+    r.secDisplay = s.display || '';
+    r.secChecks = {};
+    r.questions = (g.questions || []).map(function (q) {
+      return { linkId: q.linkId || null, text: q.text || '', type: q.type || 'boolean', definition: q.definition || '',
+        answers: (q.answers || []).map(copyCoding), units: (q.units || []).map(copyCoding) };
+    });
+    if (!r.questions.length) { r.questions.push({ linkId: null, text: '', type: 'boolean', definition: '', answers: [], units: [] }); }
+    r.resource = g.resource || '';
+    r.code = copyCoding(g.code);
+    return r;
+  }
+  function codingOut(c) {
+    var out = { system: (c.system || '').trim(), code: (c.code || '').trim() };
+    if (c.display) { out.display = c.display; }
+    return out;
+  }
+  /** What the server is sent for a guide. */
+  function guidePayload(r) {
+    var section = codingOut({ system: r.secSystem, code: r.secCode, display: r.secDisplay });
+    return {
+      section: section,
+      questions: r.questions.map(function (q) {
+        return { linkId: q.linkId, text: q.text, type: q.type, definition: q.definition.trim(),
+          answers: q.type === 'choice' ? q.answers.map(codingOut) : [], units: q.type === 'quantity' ? q.units.map(codingOut) : [] };
+      }),
+      resource: r.resource || null,
+      code: r.resource && r.code.code.trim() ? codingOut(r.code) : null
+    };
+  }
+  /** A Coding: a system (a named one, or another by URL) and a code, looked up in it. */
+  function codingPicker(c, onChange, defaultSystem) {
+    if (!c.system) { c.system = defaultSystem || cfg.systems[0].url; }
+    var cell = el('div', { class: 'ips-pf-coding' });
+    var select = el('select', { class: 'form-control ips-ed-input' });
+    cfg.systems.forEach(function (sy) { select.appendChild(el('option', { value: sy.url, text: sy.name })); });
+    select.appendChild(el('option', { value: '*', text: 'Another system...' }));
+    var named = cfg.systems.some(function (sy) { return sy.url === c.system; });
+    select.value = named ? c.system : '*';
+    var url = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'code system URL', 'aria-label': 'Code system URL' });
+    url.value = named ? '' : c.system;
+    url.hidden = named;
+    url.addEventListener('input', function () { c.system = url.value.trim(); changed(); onChange(); });
+    select.addEventListener('change', function () {
+      url.hidden = select.value !== '*';
+      c.system = select.value === '*' ? url.value.trim() : select.value;
+      changed();
+      onChange();
+    });
+    cell.appendChild(el('div', { class: 'ips-pf-pair' }, [select, url]));
+    cell.appendChild(codeInput(c, 'code', 'display', function () { return c.system; }, onChange));
+    return cell;
+  }
+  function smallButton(text, title, onclick) {
+    return el('button', { type: 'button', class: 'btn btn-default ips-btn', title: title, 'aria-label': title, text: text, onclick: onclick });
+  }
+  /** A list of Codings: each with a Remove button, and an Add button. */
+  function codingList(list, label, onChange, defaultSystem) {
+    var box = el('div');
+    list.forEach(function (c, i) {
+      box.appendChild(el('div', { class: 'ips-pf-list-row' }, [codingPicker(c, onChange, defaultSystem),
+        smallButton('×', 'Remove this ' + label, function () { list.splice(i, 1); changed(); redraw(); })]));
+    });
+    box.appendChild(smallButton('Add ' + (label === 'answer' ? 'an ' : 'a ') + label, 'Add ' + (label === 'answer' ? 'an ' : 'a ') + label, function () {
+      list.push({ system: '', code: '', display: '' });
+      changed();
+      redraw();
+    }));
+    return box;
+  }
+  /** A question: its text, type and definition, and its answers (a choice) or units (a quantity). */
+  function questionBox(r, q, i) {
+    var box = el('div', { class: 'ips-pf-question' });
+    var text = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'The question, as people will read it', 'aria-label': 'Question ' + (i + 1) });
+    text.value = q.text;
+    text.addEventListener('input', function () { q.text = text.value; changed(); });
+    var type = el('select', { class: 'form-control ips-ed-input', style: 'flex: none; width: 9em', 'aria-label': 'Question ' + (i + 1) + ' type' });
+    (cfg.questionTypes || []).forEach(function (t) { type.appendChild(el('option', { value: t, text: TYPE_LABELS[t] || t })); });
+    type.value = q.type;
+    type.addEventListener('change', function () { q.type = type.value; changed(); redraw(); });
+    var move = function (d) { return function () { var t = r.questions[i]; r.questions[i] = r.questions[i + d]; r.questions[i + d] = t; changed(); redraw(); }; };
+    var head = [text, type];
+    if (i > 0) { head.push(smallButton('↑', 'Move up', move(-1))); }
+    if (i < r.questions.length - 1) { head.push(smallButton('↓', 'Move down', move(1))); }
+    if (r.questions.length > 1) { head.push(smallButton('×', 'Delete this question', function () { r.questions.splice(i, 1); changed(); redraw(); })); }
+    box.appendChild(el('div', { class: 'ips-pf-qhead' }, head));
+    var def = el('input', { type: 'text', class: 'form-control ips-ed-input', placeholder: 'definition (optional): a path in a resource, e.g. Condition.onset[x]', 'aria-label': 'Question ' + (i + 1) + ' definition', style: 'margin-top: 4px; font-family: monospace' });
+    def.value = q.definition;
+    def.addEventListener('input', function () { q.definition = def.value; changed(); });
+    box.appendChild(def);
+    if (q.type === 'choice') {
+      box.appendChild(el('div', { class: 'ips-pf-hint', text: 'The answers to choose from:' }));
+      box.appendChild(codingList(q.answers, 'answer', function () {}));
+    } else if (q.type === 'quantity') {
+      box.appendChild(el('div', { class: 'ips-pf-hint', text: 'The units it can be given in (optional):' }));
+      box.appendChild(codingList(q.units, 'unit', function () {}, UCUM));
+    }
+    return box;
+  }
+
   function rowsMode() {
     var MODE = { section: 'section', resource: 'resource', other: 'text' };
     var TITLES = { section: 'a required section or entry', resource: 'a rule about resources', text: 'a rule' };
@@ -709,6 +658,7 @@
       var e = editing;
       var r = e.r;
       dialog.innerHTML = '';
+      if (r.mode === 'guide') { drawGuideDialog(e, r); return; }
       var fields = {};
       var exprLine = el('div', { class: 'ips-pf-expr' });
       var update = function () {
@@ -723,7 +673,7 @@
       body.appendChild(field('Expectation', [human], 'What is expected, as people will read it.'));
 
       if (r.mode === 'section') {
-        body.appendChild(field('Section', [sectionCell(r, update), howMany(r, 'secCard', update, fields)]));
+        body.appendChild(field('Section', [sectionCell(r, update), sectionChecks(r, update)]));
         var ent = entryCell(r, update);
         if (ent.code) { fields.entCode = ent.code.input; }
         if (ent.vs) { fields.entVs = ent.vs.input; }
@@ -795,6 +745,59 @@
       if (!e.focused) { e.focused = true; human.focus(); }
     }
 
+    /** the dialog for a guide: its section, its questions, and the resource and code */
+    function drawGuideDialog(e, r) {
+      var body = el('div', { class: 'ips-pf-dialog-body' });
+      body.appendChild(field('Section', [sectionCell(r, function () {})], 'The section the questions are about.'));
+      var qs = el('div');
+      r.questions.forEach(function (q, i) { qs.appendChild(questionBox(r, q, i)); });
+      qs.appendChild(smallButton('Add a question', 'Add a question', function () {
+        r.questions.push({ linkId: null, text: '', type: 'boolean', definition: '', answers: [], units: [] });
+        changed();
+        redraw();
+      }));
+      body.appendChild(field('Questions', [qs], 'In the order they are asked. The definition, if given, is the element of the resource the answer goes in.'));
+      var res = el('select', { class: 'form-control ips-ed-input', 'aria-label': 'Resource' }, [el('option', { value: '', text: '(none)' })]);
+      (cfg.guideResources || []).forEach(function (x) { res.appendChild(el('option', { value: x.code, text: x.label })); });
+      res.value = r.resource;
+      res.addEventListener('change', function () { r.resource = res.value; changed(); redraw(); });
+      body.appendChild(field('Resource', [res], 'The resource the answers make, if any.'));
+      if (r.resource) {
+        body.appendChild(field('Code', [codingPicker(r.code, function () {})], 'The resource\'s code (optional).'));
+      }
+      body.appendChild(e.msg);
+      var save = el('button', { type: 'button', class: 'btn btn-primary', text: 'Save', onclick: function () { saveGuide(); } });
+      var cancel = el('button', { type: 'button', class: 'btn btn-default', text: 'Cancel', onclick: function () { stop(false); } });
+      e.save = save;
+      dialog.appendChild(el('div', { class: 'ips-pf-dialog-head' }, [
+        el('h4', { id: 'ips-pf-dialog-title', text: (r.index === null ? 'Add' : 'Edit') + ' guided input' }),
+        el('button', { type: 'button', class: 'ips-pf-dialog-x', 'aria-label': 'Close', text: '\u00d7', onclick: function () { stop(false); } })
+      ]));
+      dialog.appendChild(body);
+      dialog.appendChild(el('div', { class: 'ips-pf-dialog-foot' }, [cancel, ' ', save]));
+    }
+
+    function saveGuide() {
+      var e = editing;
+      if (!e || saving) { return; }
+      saving = true;
+      e.save.disabled = true;
+      showIn(e.msg, ['Saving...'], 'info');
+      var url = cfg.urls.guide + (e.r.index === null ? '' : '/' + e.r.index);
+      fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ guide: guidePayload(e.r), _csrf: cfg.csrf }) })
+        .then(function (res) {
+          return res.json().then(function (j) { return { ok: res.ok, j: j }; }, function () { return { ok: false, j: { problems: ['The server answered ' + res.status + (res.status === 403 ? ' (has your session expired? reload the page)' : '')] } }; });
+        })
+        .then(function (a) {
+          saving = false;
+          if (a.ok) { stop(true); location.hash = 'guided-input'; location.reload(); return; }
+          e.save.disabled = false;
+          showIn(e.msg, a.j.problems || ['The guided input was not saved']);
+        })
+        .catch(function (x) { saving = false; e.save.disabled = false; showIn(e.msg, ['The guided input was not saved: ' + x.message]); });
+    }
+
     function start(r) {
       if (editing) { return; }
       if (r.mode === 'resource') { ruleFields(r); }
@@ -843,6 +846,16 @@
         if (c) { start(rowFrom(c)); }
       });
     });
+    Array.prototype.forEach.call(document.querySelectorAll('.ips-pf-edit-guide'), function (b) {
+      b.addEventListener('click', function () {
+        var n = parseInt(b.closest('td').getAttribute('data-guide'), 10);
+        var g = (cfg.profile.guides || [])[n];
+        if (g) { start(guideRow(g, n)); }
+      });
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.ips-pf-add-guide'), function (b) {
+      b.addEventListener('click', function () { start(guideRow(null, null)); });
+    });
     Array.prototype.forEach.call(document.querySelectorAll('.ips-pf-add'), function (b) {
       b.addEventListener('click', function () {
         var r = rowFrom({});
@@ -853,5 +866,5 @@
   }
 
   window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
-  if (cfg.mode === 'rows') { rowsMode(); } else { draw(); }
+  rowsMode();
 })();

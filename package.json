@@ -1,6 +1,6 @@
 {
   "name": "fhirsmith",
-  "version": "1.0.7-snapshot",
+  "version": "1.0.8",
   "txVersion": "1.11.1-snapshot",
   "description": "A Node.js server that provides a collection of tools to serve the FHIR ecosystem",
   "main": "server.js",
@@ -57,6 +57,7 @@
     "jose": "^5.10.0",
     "liquidjs": "^10.25.5",
     "lusca": "^1.7.0",
+    "mysql2": "^3.24.6",
     "natural": "^8.1.1",
     "node-cron": "^4.6.0",
     "nodemailer": "^10.2.0",

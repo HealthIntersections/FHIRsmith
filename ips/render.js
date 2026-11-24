@@ -24,7 +24,7 @@ const { checkNarrative } = require('../library/narrative-check');
 const { tokenConfigured } = require('../library/request-token');
 const { STATUSES } = require('./search');
 const profiles = require('./profiles');
-const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem } = require('./terminology');
+const { terminologyOf, systemName, describeVersion, linkForSystem, linkForCode, isExternalSystem, SECTION_ORDER } = require('./terminology');
 const { issueSummary, checkOf, translationOf } = require('./pipeline');
 const { jurisdiction } = require('./jurisdictions');
 const { summaryOf, STEP_TIMINGS_SAMPLE } = require('./store');
@@ -161,6 +161,7 @@ const STYLE = `
   .ips-pf-grid td.ips-pf-card { width: 7em; }
   .ips-pf-grid .ips-ed-input { width: 100%; box-sizing: border-box; }
   .ips-pf-pair { display: flex; gap: 4px; }
+  .ips-pf-checks { display: flex; flex-wrap: wrap; gap: 6px 20px; margin-top: 6px; } .ips-pf-check { font-weight: normal; margin: 0; white-space: nowrap; }
   .ips-pf-pair select { max-width: 13em; }
   .ips-pf-display { font-size: 85%; color: #555; margin-top: 2px; min-height: 1em; }
   .ips-pf-expr { font-family: monospace; font-size: 85%; color: #666; margin-top: 4px; word-break: break-all; }
@@ -171,7 +172,11 @@ const STYLE = `
   .ips-pf-rule td.ips-pf-actions { padding-top: 1px; padding-bottom: 1px; }
   .ips-pf-part-head { display: flex; align-items: baseline; gap: 12px; margin-top: 18px; }
   .ips-pf-part-head h4 { margin: 0 0 6px; }
-  .ips-pf-part-head .ips-pf-add { font-size: 80%; padding: 0 8px; line-height: 1.6; }
+  .ips-pf-part-head .ips-pf-add, .ips-pf-part-head .ips-pf-add-guide { font-size: 80%; padding: 0 8px; line-height: 1.6; }
+  .ips-pf-questions { margin: 0; padding-left: 18px; } .ips-pf-guides td { vertical-align: top; }
+  .ips-pf-rename { display: inline-block; } .ips-pf-rename summary { list-style: none; display: inline-block; } .ips-pf-rename summary::-webkit-details-marker { display: none; }
+  .ips-pf-question { border: 1px solid #dee2e6; border-radius: 4px; padding: 6px 8px; margin-bottom: 6px; } .ips-pf-qhead { display: flex; gap: 4px; align-items: center; }
+  .ips-pf-list-row { display: flex; gap: 4px; align-items: flex-start; margin-bottom: 4px; }
   .ips-pf-rule .ips-pf-actions .btn { font-size: 75%; padding: 0 5px; line-height: 1.5; border-radius: 3px; vertical-align: baseline; }
   .ips-pf-how { align-items: center; gap: 8px; margin-top: 6px; } .ips-pf-how input { width: 7em; flex: none; } .ips-pf-how .ips-pf-hint { margin: 0; }
   .ips-pf-dialog { width: min(760px, 95vw); max-height: 90vh; padding: 0; border: 1px solid #bbb; border-radius: 6px; box-shadow: 0 8px 30px rgba(0,0,0,0.3); }
@@ -197,6 +202,16 @@ const STYLE = `
   .ips-ed-section-body { padding: 8px 12px; }
   .ips-ed-section-body[hidden] { display: none; }
   .ips-ed-modes { margin-bottom: 8px; font-size: 90%; } .ips-ed-mode { margin-right: 16px; font-weight: normal; }
+  .ips-ed-mode-off { color: #aaa; }
+  .ips-ed-profile { background-color: #f4f0fb; border: 1px solid #ddd3ee; border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; }
+  .ips-ed-guides { margin: 0 0 10px 0; padding-left: 20px; font-size: 92%; }
+  .ips-ed-guide { margin-bottom: 4px; line-height: 2.1; }
+  .ips-ed-guide .ips-ed-g-input { display: inline-block; width: auto; min-width: 4em; max-width: 14em; height: 26px; padding: 1px 4px; margin: 0 4px 0 2px; vertical-align: middle; font-size: 95%; }
+  .ips-ed-guide .ips-ed-g-qty { width: 6em; min-width: 0; }
+  .ips-ed-guide-dismiss { margin-right: 6px; font-size: 85%; }
+  .ips-ed-guide-apply { margin-left: 4px; }
+  .ips-ed-guide-dismissed { color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ips-ed-other-guides { margin-bottom: 10px; }
   .ips-ed-row { border: 1px solid #e3e6ea; border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; background: #fff; }
   .ips-ed-row-head { display: flex; justify-content: space-between; align-items: center; }
   .ips-ed-remove { padding: 0; font-size: 85%; }
@@ -528,9 +543,9 @@ function projectDocs(project, ctx) {
     '<table class="table table-sm ips-table ips-api"><tr><th>Request</th><th></th></tr>' +
     `<tr><td><code>POST ${purl}/Bundle</code></td><td>submit a document${submitNote(project)}; the response is the stored document, with its id</td></tr>` +
     `<tr><td><code>GET ${purl}/Bundle/{id}</code></td><td>read a document - JSON for a FHIR client, this web page for a browser (<code>?_format=json</code> forces JSON, <code>?download=1</code> downloads it)</td></tr>` +
-    `<tr><td><code>GET ${purl}/Bundle/{id}/$document?...</code></td><td>the document as the source view gives it for download or sharing: parameters <code>source</code> (original | modified), ` +
+    `<tr><td><code>GET ${purl}/Bundle/{id}/$document?...</code></td><td>the document as the source view gives it for download or sharing: parameters <code>source</code> (original | modified), <code>format-type</code> (json | pdf | zip | shl | vhl), ` +
     '<code>user-sign</code> (as the owner of the API token in <code>Authorization: Bearer</code>), <code>system-sign</code>, <code>patient-notes</code>, <code>regenerate-narrative</code> (true | false); ' +
-    'by <code>Accept</code> (or <code>_format</code>) the JSON, <code>application/zip</code>, <code>application/pdf</code>, or the QR code (a PNG) of an SHL (<code>application/smart-health-link</code>) or VHL (<code>application/verified-health-link</code>) - ' +
+    'the JSON, a ZIP, a PDF, or the QR code (<code>image/png</code>) of an SHL or VHL: by <code>format-type</code>, else <code>Accept</code> (or <code>_format</code>) - <code>image/png</code> is a VHL\'s - ' +
     '<a href="https://github.com/HealthIntersections/FHIRsmith/blob/main/ips/OperationDefinition-ips-document.json">OperationDefinition</a></td></tr>' +
     `<tr><td><code>GET ${purl}/Bundle?...</code></td><td>search: Bundle's search parameters (<code>_id</code>, <code>identifier</code>, <code>_lastUpdated</code>, <code>composition</code>), chained to the Composition and Patient as ` +
     '<code>composition.date</code>, <code>composition.title</code>, <code>composition.patient.name</code>, <code>composition.patient.gender</code>, <code>composition.patient.birthdate</code>, <code>composition.patient.identifier</code>, ...; ' +
@@ -1762,6 +1777,13 @@ function renderComposeChoice(project, ctx, options) {
   for (const e of options.editors) {
     h += `<tr><td style="white-space: nowrap"><a class="btn btn-primary" href="${base}/${e.key}">${escape(e.name)}</a></td><td>${escape(e.description)}</td></tr>`;
   }
+  // the general editor, following a clinical profile: its rules narrow the choices, its guided input is shown in the sections
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+  for (const pf of options.profiles || []) {
+    h += `<tr><td style="white-space: nowrap"><a class="btn btn-default" href="${base}/general?profile=${encodeURIComponent(pf.id)}">${escape(pf.title)}</a></td>` +
+      `<td>The general IPS editor, following the clinical profile <a href="${escape(ctx.base)}/StructureDefinition/${encodeURIComponent(pf.id)}">${escape(pf.title)}</a> ` +
+      `(${plural(pf.rules, 'rule')}, ${plural(pf.guides, 'guided input')}): the choices its rules don't allow are greyed out, and its guided input is shown at the head of each section.</td></tr>`;
+  }
   h += '</table>';
   if (project) {
     h += `<p class="ips-small">Or <a href="${projectUrl(ctx, project)}/submit">submit a document</a> you already have.</p>`;
@@ -1778,11 +1800,13 @@ function renderCompose(project, ctx, options) {
   h += '<p>Build an International Patient Summary here: the patient, the document\'s author, and the sections. ' +
     (options.from ? 'The form holds what it can of the original document; submitting makes a new document in the project. ' : '') +
     (options.canLookup ? 'Coded fields look codes up on the terminology server as you type (in the value sets this server holds the element to); ' : 'This server has no terminology server to look codes up on (modules.ips.txServer), so coded fields take text only; ') +
-    'anything can also be entered as plain text. ' + composeNotes(project, options) + '</p>';
+    'anything can also be entered as plain text. ' + composeNotes(project, options) + '</p>' +
+    (options.guidance ? `<div class="ips-ed-profile">Following the clinical profile <a href="${escape(options.guidance.url)}"><b>${escape(options.guidance.title)}</b></a>: ` +
+      'the choices its rules don\'t allow are greyed out, and its guided input is shown at the head of each section.</div>' : '');
   h += '<noscript><div class="alert alert-warning">The editor needs scripts' + (project ? `; without them, use the <a href="${projectUrl(ctx, project)}/submit">submission form</a>` : '') + '.</div></noscript>';
   h += '<div id="ips-editor"></div>';
   const cfg = {
-    project: project ? project.code : '', schema: options.schema, model: options.model, testPatients: options.testPatients || [],
+    project: project ? project.code : '', schema: options.schema, model: options.model, testPatients: options.testPatients || [], guidance: options.guidance || null,
     urls: { build: `${ctx.base}/compose/build`, model: `${ctx.base}/compose/model`, lookup: options.canLookup ? `${ctx.base}/compose/lookup` : null, back: project ? `${ctx.base}/${encodeURIComponent(project.code)}` : base },
     actions: options.actions
   };
@@ -1998,7 +2022,8 @@ function renderProfiles(list, ctx) {
   h += '<div class="ips-banner"><b class="ips-project-name">Clinical profiles</b></div>';
   if (ctx.user?.isAdmin) {
     h += '<div class="ips-actions-line">' +
-      `<a class="btn btn-primary" href="${base}/StructureDefinition/new">New profile</a> ` +
+      '<input type="text" id="ips-pf-new-title" class="form-control ips-inline" style="width: 22em; display: inline-block" placeholder="The new profile\'s title" aria-label="The new profile\'s title"/> ' +
+      '<button type="button" class="btn btn-primary" id="ips-pf-new">New profile</button> ' +
       '<label class="btn btn-default" style="margin: 0">Upload a profile (JSON)<input type="file" id="ips-pf-upload" accept=".json,application/json,application/fhir+json" hidden/></label>' +
       '<span id="ips-pf-upload-msg" class="ips-small" style="margin-left: 8px"></span></div>';
   }
@@ -2021,6 +2046,17 @@ function renderProfiles(list, ctx) {
     h += `<script>(function () {
   var input = document.getElementById('ips-pf-upload');
   var msg = document.getElementById('ips-pf-upload-msg');
+  // a new profile: just its title, then its page, where its rules are added
+  var newTitle = document.getElementById('ips-pf-new-title');
+  document.getElementById('ips-pf-new').addEventListener('click', function () {
+    var title = newTitle.value.trim();
+    if (!title) { msg.textContent = 'Give the new profile a title'; newTitle.focus(); return; }
+    msg.textContent = 'Making ' + title + '...';
+    fetch(${JSON.stringify(ctx.base + '/StructureDefinition')}, { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ title: title, constraints: [], _csrf: ${JSON.stringify(ctx.csrf || '').replace(/</g, '\\u003c')} }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }, function () { return { ok: false, j: { problems: ['The server answered ' + r.status] } }; }); })
+      .then(function (a) { if (a.ok) { location.href = a.j.url; } else { msg.textContent = 'Not made: ' + (a.j.problems || []).join('; '); } });
+  });
   input.addEventListener('change', function () {
     var f = input.files && input.files[0];
     if (!f) { return; }
@@ -2060,13 +2096,17 @@ function profileSystemName(url) {
   return sys ? sys.name : (systemName(url) || url);
 }
 
+// what each of a section's checks (profiles.js SECTION_CHECKS) asks, as the editor puts it
+const SECTION_CHECK_WORDS = { isKnown: 'must be asked/known', hasData: 'must have supporting entries', sameSubject: 'about the same Patient' };
+
 /** The Section and Entry columns of a required section/entry row. */
 function sectionColumns(shape, titleOf) {
   const s = shape.section;
   const named = s.system === LOINC ? profiles.IPS_SECTIONS.find(x => x.code === s.code) : null;
   const section = (named
     ? `${escape(named.title)} <span class="ips-small">(${escape(`${profileSystemName(s.system)}|${s.code}`)})</span>`
-    : escape(`${profileSystemName(s.system)}|${s.code}`)) + escape(cardSuffix(s));
+    : escape(`${profileSystemName(s.system)}|${s.code}`)) +
+    ((s.checks || []).length ? ` <span class="ips-small">- ${escape(s.checks.map(c => SECTION_CHECK_WORDS[c]).join(', '))}</span>` : '');
   const e = shape.entry;
   let entry = '';
   if (e && e.valueSet !== undefined) {
@@ -2136,6 +2176,54 @@ function resourceColumns(rshape, ctx) {
   return [set, `<code>${escape(rest)}</code>`];
 }
 
+// how a guided input question's type is shown
+const QUESTION_TYPE_WORDS = { display: 'text to show', boolean: 'yes/no', quantity: 'quantity', date: 'date', choice: 'choice' };
+
+/** A Coding as the profile page shows one: system|code, with its display, if it has one. */
+function codingText(c) {
+  return isObject(c) ? escape(`${profileSystemName(c.system)}|${c.code}`) + (c.display ? ` <span class="ips-small">${escape(c.display)}</span>` : '') : '';
+}
+
+/**
+ * The profile's guided input, as a table grouped by section (the IPS sections in their order,
+ * then the others as they first appear): Section | Questions | Resource | Code. The administrator
+ * gets Edit, Delete and up and down (within a section) on each, and an Add button.
+ */
+function guidedInput(sd, ctx, admin) {
+  const guides = profiles.guidesOf(sd);
+  if (!guides.length && !admin) {
+    return '';
+  }
+  const url = `${escape(ctx.base)}/StructureDefinition/${escape(sd.id)}`;
+  let h = '<div class="ips-pf-part-head" id="guided-input"><h4>Guided input</h4>' +
+    (admin ? '<button type="button" class="btn btn-default ips-pf-add-guide">Add guided input</button>' : '') + '</div>';
+  if (!guides.length) {
+    return h + '<p class="ips-small">No guided input yet: questions for the people filling a document in, about a section.</p>';
+  }
+  h += `<table class="table table-sm ips-table ips-pf-guides"><tr><th>Section</th><th>Questions</th><th>Resource</th><th>Code</th>${admin ? '<th class="ips-pf-actions"></th>' : ''}</tr>`;
+  for (const group of profiles.guideGroups(guides, SECTION_ORDER.map(x => x[0]))) {
+    const s = group.section || {};
+    const named = s.system === LOINC ? profiles.IPS_SECTIONS.find(x => x.code === s.code) : null;
+    const section = named ? `${escape(named.title)} <span class="ips-small">(${escape(`${profileSystemName(s.system)}|${s.code}`)})</span>` : codingText(s);
+    group.guides.forEach(({ guide, index }, k) => {
+      const questions = '<ul class="ips-pf-questions">' + guide.questions.map(q => `<li>${escape(q.text)} <span class="ips-small">(${escape(QUESTION_TYPE_WORDS[q.type] || q.type)}` +
+        (q.type === 'choice' ? `: ${escape(q.answers.map(a => a.display || a.code).join(', '))}` : '') +
+        (q.type === 'quantity' && q.units.length ? `, in ${escape(q.units.map(u => u.code).join(', '))}` : '') + ')</span></li>').join('') + '</ul>';
+      const resource = guide.resource ? escape(profiles.GUIDE_RESOURCES.find(r => r.code === guide.resource)?.label || guide.resource) : '';
+      const move = (dir, label, title) => `<form method="post" action="${url}/guide/${index}/move" class="ips-inline">${csrfField(ctx.csrf)}<input type="hidden" name="direction" value="${dir}"/>` +
+        `<button type="submit" class="btn btn-default ips-btn" title="${title}" aria-label="${title}">${label}</button></form>`;
+      const actions = !admin ? '' : `<td class="ips-pf-actions" data-guide="${index}">` +
+        '<button type="button" class="btn btn-default ips-btn ips-pf-edit-guide">Edit</button> ' +
+        `<form method="post" action="${url}/guide/${index}/delete" class="ips-inline" data-confirm="Delete this guided input?">${csrfField(ctx.csrf)}` +
+        '<button type="submit" class="btn btn-default ips-btn">Delete</button></form>' +
+        (k > 0 ? ' ' + move('up', '&uarr;', 'Move up') : '') + (k < group.guides.length - 1 ? ' ' + move('down', '&darr;', 'Move down') : '') + '</td>';
+      h += '<tr>' + (k === 0 ? `<td rowspan="${group.guides.length}">${section}</td>` : '') +
+        `<td>${questions}</td><td>${resource}</td><td>${codingText(guide.code)}</td>${actions}</tr>`;
+    });
+  }
+  return h + '</table>';
+}
+
 /**
  * A clinical profile: the same page for everyone. The administrator also gets add, edit and
  * delete on each row (a row at a time, the script edits it in place), and the full editor.
@@ -2149,9 +2237,11 @@ function renderProfile(sd, ctx, editor = null) {
     `<div class="ips-facts">Clinical profile on Bundle &nbsp;&middot;&nbsp; <code>${escape(sd.url)}</code> &nbsp;&middot;&nbsp; updated ${escape(dateOnly(sd.date))}</div></div>`;
   h += '<div class="ips-actions-line">' +
     `<a class="btn btn-default" href="${url}?download=1">Download JSON</a>` +
-    (admin ? ` <a class="btn btn-default" href="${url}/edit">Edit all</a> ` +
-      `<form method="post" action="${url}/delete" class="ips-inline" data-confirm="${escape(`Delete the clinical profile ${sd.title}?`)}">${csrfField(ctx.csrf)}` +
-      '<button type="submit" class="btn btn-default">Delete profile</button></form>' : '') + '</div>';
+    (admin ? ` <form method="post" action="${url}/delete" class="ips-inline" data-confirm="${escape(`Delete the clinical profile ${sd.title}?`)}">${csrfField(ctx.csrf)}` +
+      '<button type="submit" class="btn btn-default">Delete profile</button></form>' +
+      `<details class="ips-inline ips-pf-rename"><summary class="btn btn-default">Rename</summary><form method="post" action="${url}/title" class="ips-inline">${csrfField(ctx.csrf)}` +
+      `<input type="text" name="title" class="form-control ips-inline" style="width: 22em; display: inline-block" required aria-label="The profile's title" value="${escape(sd.title)}"/> ` +
+      '<button type="submit" class="btn btn-primary">Save</button></form></details>' : '') + '</div>';
   const constraints = (sd.differential?.element?.[0]?.constraint || []).filter(c => c && typeof c === 'object');
   // the actions on a row, for the administrator
   const actions = (c) => !admin ? '' : '<td class="ips-pf-actions">' +
@@ -2192,19 +2282,25 @@ function renderProfile(sd, ctx, editor = null) {
   if (constraints.length === 0 && !admin) {
     h += '<p>This profile has no constraints yet.</p>';
   }
-  h += '<p class="ips-small">Each rule is checked against the document (the Bundle). <code>section(system, code, min, max)</code> finds the sections of the document\'s Composition ' +
-    '(nested ones too) with that code, when there are min..max of them; <code>entry(system, code, min, max)</code> finds a section\'s entries with that code ' +
+  h += guidedInput(sd, ctx, admin);
+  h += '<p class="ips-small">Each rule is checked against the document (the Bundle). <code>section(system, code)</code> finds the section of the document\'s Composition ' +
+    '(nested ones too) with that code, when there is one; <code>isKnown()</code>, <code>hasData()</code> and <code>sameSubject()</code> are what a required section must be - ' +
+    'asked/known (no emptyReason, or nil known), with supporting entries (or an emptyReason), and about the document\'s patient (no focus, or the subject); ' +
+    '<code>entry(system, code, min, max)</code> finds a section\'s entries with that code ' +
     '(their <code>code</code>, <code>medicationCodeableConcept</code> or <code>vaccineCode</code>), when there are min..max of them; ' +
     '<code>resources(system, code, type)</code> finds the resources in the document with that code (of that type, when one is given); ' +
     '<code>entryIn(valueSet, min, max)</code> and <code>resourcesIn(valueSet, type)</code> are the same with a code in a value set, asked of the terminology server. ' +
-    'A cardinality <code>[m..n]</code> after a section or an entry is how many there may be; with none, there must be at least one.</p>';
+    'A cardinality <code>[m..n]</code> after an entry is how many there may be; with none, there must be at least one. ' +
+    'Guided input is questions for the people filling a document in, about a section, kept as a Questionnaire in the profile.</p>';
   if (admin) {
     const cfg = {
-      mode: 'rows', profile: { id: sd.id, title: sd.title, constraints: editor.constraints },
+      mode: 'rows', profile: { id: sd.id, title: sd.title, constraints: editor.constraints, guides: editor.guides },
+      questionTypes: editor.questionTypes, guideResources: editor.guideResources,
       sections: editor.sections, systems: editor.systems, resourceTypes: editor.resourceTypes, sectionSystem: editor.sectionSystem, csrf: ctx.csrf || '',
       parts: PROFILE_PARTS,
       urls: {
         constraint: `${ctx.base}/StructureDefinition/${sd.id}/constraint`,
+        guide: `${ctx.base}/StructureDefinition/${sd.id}/guide`,
         lookup: editor.canLookup ? `${ctx.base}/lookup` : null,
         lookupVs: `${ctx.base}/lookup-vs`
       },
@@ -2216,35 +2312,6 @@ function renderProfile(sd, ctx, editor = null) {
     h += `<script>window.IPS_PROFILE = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
     h += `<script src="${escape(scripts.src(ctx.base, 'profile-editor.js'))}"></script>`;
   }
-  return h;
-}
-
-/** The profile editor (the administrator's): the page carries the profile, the script edits it. */
-function renderProfileEditor(sd, ctx, options) {
-  const base = ctx.base;
-  let h = STYLE + userBar(ctx) + profileCrumbs(ctx, sd ? sd.title : 'New profile');
-  h += `<h3>${sd ? 'Edit clinical profile' : 'New clinical profile'}</h3>`;
-  h += '<p>The title, and the expectations: each a description, and a rule. A rule that a section is there, or that a section has entries with a code, ' +
-    'is a row of the table - the section (one of the IPS sections, or any code), how many there may be, and optionally the code of the entries and how many - ' +
-    'where a cardinality is blank for any number, or <code>min..max</code> (<code>1..1</code>, <code>1..*</code>). A rule about the resources in the document with a code ' +
-    '(<code>Bundle.resources(system, code, type)...</code>) is a row of the second table: the type (or any), the code, and the rest of the rule, as FHIRPath on those resources ' +
-    '(<code>.exists()</code>, <code>.count() = 1</code>, <code>.all(clinicalStatus.coding.code = \'active\')</code>). Entries and resources can be matched by a value set instead of a code: ' +
-    'choose <i>In a value set...</i> as the system, and search for one by title, or paste its canonical. Any other rule is a FHIRPath expression on the document (the Bundle).' +
-    (options.canLookup ? '' : ' (There is no terminology server, so codes can\'t be looked up.)') + '</p>';
-  h += '<noscript><div class="alert alert-warning">The editor needs scripts.</div></noscript>';
-  h += '<div id="ips-profile-editor"></div>';
-  const cfg = {
-    profile: options.profile, sections: options.sections, systems: options.systems, resourceTypes: options.resourceTypes, sectionSystem: options.sectionSystem, csrf: ctx.csrf || '',
-    parts: PROFILE_PARTS,
-    urls: {
-      save: sd ? `${base}/StructureDefinition/${sd.id}` : `${base}/StructureDefinition`,
-      lookup: options.canLookup ? `${base}/lookup` : null,
-      lookupVs: `${base}/lookup-vs`,
-      back: sd ? `${base}/StructureDefinition/${sd.id}` : `${base}/StructureDefinition`
-    }
-  };
-  h += `<script>window.IPS_PROFILE = ${JSON.stringify(cfg).replace(/</g, '\\u003c').replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')};</script>`;
-  h += `<script src="${escape(scripts.src(base, 'profile-editor.js'))}"></script>`;
   return h;
 }
 
@@ -3267,5 +3334,5 @@ module.exports = {
   analysisOk,
   renderHome, renderProjects, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderPatientComments, PATIENT_COMMENT_MAX, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
-  renderProfiles, renderProfile, renderProfileEditor, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
+  renderProfiles, renderProfile, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };

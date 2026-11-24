@@ -101,20 +101,21 @@ CapabilityStatement):
     GET /ips/{code}/Bundle/{id}/$document?source=modified&system-sign=true&patient-notes=true
     POST /ips/{code}/Bundle/{id}/$document    (a Parameters resource)
 
-Parameters: `source` (`original`, the default, or `modified`), and the booleans `user-sign`
-(as the owner of the API token in `Authorization: Bearer` - 401 without one, 409 if they have
-no key pair to sign with), `system-sign`, `patient-notes` (the patient's comments; nothing
-added, and no error, when there are none) and `regenerate-narrative`. The copy is made as the
-web page makes it: any patient notes section (LOINC 51855-5) removed, the narrative regenerated,
-signed, then the patient's comments added as the first section (not signed). What comes back is
-chosen by `Accept`, or `_format` (a short name or the mime type): `application/fhir+json` or
-`application/json` (`json`, the default), `application/zip` (`zip`), `application/pdf`
-(`pdf`), `application/smart-health-link` (`shl`) or `application/verified-health-link`
-(`vhl`); anything else is 406. The ZIP and the PDF are made on the server (`ips/export.js`):
-the PDF is the same content as the browser's - the title, the patient, the date and each
-section's narrative, with the document attached - laid out as text in the standard PDF fonts
-(tables as rows of cells, no images; characters outside Windows-1252 show as `?`). An SHL or
-VHL answer is the QR code as a PNG, with the link it carries in `X-Health-Link`, the manifest in
+Parameters: `source` (`original`, the default, or `modified`), `format-type` (below), and the
+booleans `user-sign` (as the owner of the API token in `Authorization: Bearer` - 401 without one,
+409 if they have no key pair to sign with), `system-sign`, `patient-notes` (the patient's
+comments; nothing added, and no error, when there are none) and `regenerate-narrative`. The copy
+is made as the web page makes it: any patient notes section (LOINC 51855-5) removed, the
+narrative regenerated, signed, then the patient's comments added as the first section (not
+signed). What comes back is chosen by `format-type` when it is given - `json`, `pdf`, `zip`,
+`shl` or `vhl` - whatever `Accept` says; otherwise by `Accept` (or `_format`, which takes the same
+mime types): `application/fhir+json` or `application/json` (the default), `application/zip`,
+`application/pdf`, or `image/png` (a VHL's QR code; `format-type=shl` for an SHL's); anything
+else is 406. The ZIP and the PDF are made on the server (`ips/export.js`): the PDF is the same
+content as the browser's - the title, the patient, the date and each section's narrative, with
+the document attached - laid out as text in the standard PDF fonts (tables as rows of cells, no
+images; characters outside Windows-1252 show as `?`). An SHL or VHL answer is the QR code as a
+PNG (`image/png`), with the link it carries in `X-Health-Link`, the manifest in
 `X-Health-Link-Manifest` and the expiry in `X-Health-Link-Expires`. `$document` shares the
 rate limit of sharing and of the web page's signed downloads.
 
@@ -671,6 +672,22 @@ keeps the model in localStorage until it is submitted. The older way to submit
 builds the document, checks it as a submission is checked, and stores it, or hands it back
 as a file.
 
+The editor can follow a [clinical profile](#clinical-profiles): `?profile=profile-{id}` (or the
+bare id), with a project or without; an unknown profile is 404. The compose page (`/ips/{code}/compose`) lists the general editor, the patient editor, and then each clinical
+profile, which opens the general editor following it. A banner names the profile.
+Its section rules narrow each section's choices: a section it has a rule for can't be left out
+(and opens), `hasData()` rules out narrative, an entry rule rules out narrative and empty, and
+`isKnown()` leaves nil known as the only reason to be empty. A choice that isn't allowed is
+greyed out rather than taken away, since a loaded document may already have made it. The
+profile's guided input is shown at the head of each section, under the entries / narrative /
+empty choice: a list, a guide to a line - first dismiss, then its questions in order, each with
+its input at the end of its text (yes/no, a choice of its answers, a date, a value and unit -
+one of its units, when it names any), then Apply when there is something to answer (applying
+is still to come). A dismissed guide is greyed out and cut to one line, with "show" to bring it
+back. Guides for a section the editor doesn't have (the Patient Story, another code) are shown
+above the sections, under their section's title. The answers and what is dismissed are kept in
+the model (`model.guidance`), so the draft keeps them; the composer ignores them.
+
 ### The patient IPS editor
 
 `/ips/{code}/compose/patient` (or `/ips/compose/patient`) is the form that was the Patient
@@ -779,7 +796,7 @@ come back as a list for the page to show.
 
 A clinical profile says what a kind of clinical document is expected to contain. It is a StructureDefinition: a profile on Bundle (the document) with one element, the root, whose constraints are the expectations. Each constraint has a description and a FHIRPath expression on the document. Profiles are shared across all projects (`/ips/StructureDefinition`). Everyone can see them; only the administrator creates, edits, uploads and deletes them.
 
-The administrator edits only the title and the constraints. The server sets everything else:
+The administrator edits only the title, the constraints and the guided input (below). The server sets everything else:
 
 - the id: `profile-` plus a random private id;
 - the url: `[base]/ips/StructureDefinition/profile-{id}`, fixed when the profile is made;
@@ -790,9 +807,22 @@ The administrator edits only the title and the constraints. The server sets ever
 Most expectations take one of two shapes, using the module's own [FHIRPath functions](#fhirpath-functions):
 
 ```
-Bundle.section(system, code [, min, max]).exists()
-Bundle.section(system, code [, min, max]).entry(system, code [, min, max]).exists()
+Bundle.section(system, code).exists()
+Bundle.section(system, code).isKnown()
+Bundle.section(system, code).where(isKnown() and sameSubject()).exists()
+Bundle.section(system, code)[.where(checks)].entry(system, code [, min, max]).exists()
 ```
+
+The section has no bounds (more than one of the same section is a corner case IPS documents
+don't have: a `section()` with bounds is an other rule). What it must be is up to three checks,
+in this order: `isKnown()` (must be asked/known), `hasData()` (must have supporting entries)
+and `sameSubject()` (about the same Patient). One check on its own is the rule; more than one,
+or any with an entry part, go in a `where()`. `isKnown()`: the section has no emptyReason, or a
+nil known one (`list-empty-reason#nilknown`) - any other emptyReason is not known. `hasData()`:
+the section has an emptyReason, or else entries. `sameSubject()` on a section: it has no focus,
+or its focus is the Composition's subject. On no section they give nothing (so the rule fails),
+and on anything that isn't a section, false. They are the Java `DocumentFunctions`' (the
+validator's) as well as `ips/fhirpath-ips.js`'s.
 
 Rules about the resources in the document, whatever section they are in, take a third shape:
 
@@ -802,19 +832,58 @@ Bundle.resources(system, code [, type]).{the rest of the rule}
 
 Entries and resources can be matched by value set instead of by one code: `Bundle.section(...).entryIn(valueSet [, min, max]).exists()`, and `Bundle.resourcesIn(valueSet [, type])...`. Sections are always matched by code. An example rule: `Bundle.resources('http://snomed.info/sct', '38341003', 'Condition').all(clinicalStatus.coding.code = 'active')`.
 
-The editor (`/ips/StructureDefinition/new`, or Edit on a profile) is in three parts, and so is the page that shows a profile:
+A new profile is made on the list page (`/ips/StructureDefinition`) from just a title (`POST /ips/StructureDefinition` with `{title}`), and its rules and guided input are added on its own page, which is in four parts:
 
-- **Required sections and entries:** the first two shapes, each a row of a table with four columns (the section, its cardinality, the entry code and its cardinality).
+- **Required sections and entries:** the first shape, each a row of a table: the section, with its checks as three checkboxes in a row (must be asked/known, must have supporting entries, about the same Patient), the entry code and its cardinality.
 - **Rules about resources:** the third shape, each a row of a table with four columns (the type, which is optional, the system, the code, and the rest of the rule as FHIRPath starting with a dot).
 - **Other rules:** any other FHIRPath.
+- **Guided input:** below.
 
-The page that shows a profile is the same for everyone. Its first part is a table of three columns: the **Expectation** (the description), the **Section** (an IPS section by its title, or `system|code`) and the **Entry** (`Code is system|code`, or `Code is in` a value set, by its title, or its URL when the title isn't known). A code system is shown by name when it is a known one. A cardinality, `[m..n]`, follows a section or an entry unless it is `1..1` or not given (none means at least one). The second part is also a table of three columns: the **Expectation**, the **Resource Set** (the type, as `MedicationAdministrations where` or `Any resource where`, then the code as in the Entry column) and the **Rule**, which is the rest of the expression in words where it is one of these: `.exists()` is "Must be present somewhere"; `.all(sameSubject())` is "Patient must match the Document"; `.x.exists()` and `.x.y.exists()` are "Must have an x" and "Must have an x.y" (no deeper); `.conformsTo(url)` (or `.all(conformsTo(url))`) is "Conform to" the profile, named by its title when it is one of the clinical profiles or by its jurisdiction and package when it is a national profile; and `.category.hasCoding(system, code [, version])` (or inside `.all()`) is "Has category system|code". Any other rest is shown as FHIRPath, and so are the other rules. On the same page the administrator edits the rules one at a time: each row has Edit and Delete, and each part has an Add button. Add and Edit open a dialog for the one rule - the expectation, then the parts of the rule, each with what it means (for a rule about resources, what must be true of them is a choice: present somewhere, the patient matches the document's, an element, conformance to a profile, a category, or other FHIRPath), and the FHIRPath it makes - and Save stores that one rule by itself (`POST /ips/StructureDefinition/{id}/constraint` to add, `.../constraint/{key}` to change, `.../constraint/{key}/delete` to delete). An edited rule keeps its key. The full editor is still there (Edit all), for the title, or for many changes at once.
+The page that shows a profile is the same for everyone. Its first part is a table of three columns: the **Expectation** (the description), the **Section** (an IPS section by its title, or `system|code`) and the **Entry** (`Code is system|code`, or `Code is in` a value set, by its title, or its URL when the title isn't known). A code system is shown by name when it is a known one. A section's checks follow it, in words (must be asked/known, must have supporting entries, about the same Patient). A cardinality, `[m..n]`, follows an entry unless it is `1..1` or not given (none means at least one). The second part is also a table of three columns: the **Expectation**, the **Resource Set** (the type, as `MedicationAdministrations where` or `Any resource where`, then the code as in the Entry column) and the **Rule**, which is the rest of the expression in words where it is one of these: `.exists()` is "Must be present somewhere"; `.all(sameSubject())` is "Patient must match the Document"; `.x.exists()` and `.x.y.exists()` are "Must have an x" and "Must have an x.y" (no deeper); `.conformsTo(url)` (or `.all(conformsTo(url))`) is "Conform to" the profile, named by its title when it is one of the clinical profiles or by its jurisdiction and package when it is a national profile; and `.category.hasCoding(system, code [, version])` (or inside `.all()`) is "Has category system|code". Any other rest is shown as FHIRPath, and so are the other rules. On the same page the administrator edits the rules one at a time: each row has Edit and Delete, and each part has an Add button. Add and Edit open a dialog for the one rule - the expectation, then the parts of the rule, each with what it means (for a rule about resources, what must be true of them is a choice: present somewhere, the patient matches the document's, an element, conformance to a profile, a category, or other FHIRPath), and the FHIRPath it makes - and Save stores that one rule by itself (`POST /ips/StructureDefinition/{id}/constraint` to add, `.../constraint/{key}` to change, `.../constraint/{key}/delete` to delete). An edited rule keeps its key. Rename changes the title (`POST .../title`; the name follows it). There is no full editor any more: an old link to one (`.../edit`) lands on the profile's page.
 
 A rule moves between the parts when it is switched between table and FHIRPath, and it lands in the part whose shape it fits. A section is one of the IPS sections, or any code in any system. An entry or resource code is a code in a named code system (SNOMED CT, LOINC, ICD-10...) or in any other given by URL, and it is looked up on the terminology server (`GET /ips/lookup?system=&q=`, for the administrator only). Choosing "In a value set..." as the system matches entries or resources by value set instead. The code box becomes a value set search (`GET /ips/lookup-vs?q=`, for the administrator only): this module's own value sets that match the title come first, then the terminology server's (a `ValueSet?title=` search). A suggestion shows its title, with its URL underneath. A canonical can also be typed or pasted in, with `|version` to pin a version. When the editor opens, it looks up the title of each value set by URL (`?url=`). If the terminology server doesn't know a value set, it says so as a warning, not an error: the value set has to be known when documents are checked, not when the profile is saved. A cardinality is blank (no bounds) or `min..max`, where max may be `*`. Before a profile is saved, every expression is parsed and run once against an empty document. That catches unknown functions and wrong numbers of arguments as well as syntax errors.
 
-A profile can be downloaded as JSON (`?download=1`), and a downloaded profile can be uploaded again as a new profile, with a new id, url and keys. An upload must be no more than a profile like this: a profile on Bundle with no snapshot, and one differential element (the root) carrying constraints that have only a key, an `error` severity, a description, an expression and a source. Anything more is rejected, with the reasons. A profile downloaded when clinical profiles were on Composition is accepted and moved onto Bundle, as profiles already stored are when the server starts: `Composition.section(...)` becomes `Bundle.section(...)`, and any other `Composition.x` becomes `Bundle.entry.resource.ofType(Composition).x`.
+A profile can be downloaded as JSON (`?download=1`), and a downloaded profile can be uploaded again as a new profile, with a new id, url and keys. An upload must be no more than a profile like this: a profile on Bundle with no snapshot, and one differential element (the root) carrying constraints that have only a key, an `error` severity, a description, an expression and a source - and guided input, as below. Anything more is rejected, with the reasons. A profile downloaded when clinical profiles were on Composition is accepted and moved onto Bundle, as profiles already stored are when the server starts: `Composition.section(...)` becomes `Bundle.section(...)`, and any other `Composition.x` becomes `Bundle.entry.resource.ofType(Composition).x`.
 
 As FHIR: `GET /ips/StructureDefinition` is a searchset of them all, and `GET /ips/StructureDefinition/{id}` is one of them.
+
+### Guided input
+
+Guided input is questions for the people filling a document in, about a section. When a profile
+has any, it contains a Questionnaire (`#Q`), and has an extension
+`http://www.healthintersections.com.au/fhir/StructureDefinition/input-guide` for each guide, in
+order, with these sub-extensions:
+
+- `questionnaire` (canonical, 1..1): `#Q`;
+- `question` (id, 1..*): the linkIds of its questions in the Questionnaire, in order. The server
+  makes them (`q` and 8 random hex digits, so one is never used again), keeps a question's linkId
+  for as long as the question is kept, and takes a question's item out of the Questionnaire when
+  the question goes (and the Questionnaire, when the last guide goes). People never see them;
+- `section` (Coding, 1..1): the section the questions are about - one of the IPS sections, or any
+  code, as `system|code`, so sections other than the IPS ones can be guided too;
+- `resource` (code, 0..1): what the answers make - `Condition:problem`, `Condition:diagnosis`,
+  `Observation:vitals`, `MedicationStatement` or `AllergyIntolerance` (the class after the colon
+  changes how it is used);
+- `code` (Coding, 0..1): the resource's code - only with a resource.
+
+A question has text, a type - `display`, `boolean`, `quantity`, `date` or `choice` - and
+optionally a definition: a path in a resource (`Condition.onset[x]`), kept in the
+Questionnaire as `http://hl7.org/fhir/StructureDefinition/Condition#Condition.onset[x]`. A
+choice has its answers (Codings, as `answerOption`); a quantity may name its units (Codings,
+UCUM by default, as `questionnaire-unitOption` extensions).
+
+The page shows the guided input as a table - Section, Questions (each with its type), Resource,
+Code - grouped by section: the IPS sections in the IPS order, then other sections as they first
+appear; in a section, the guides' own order. The administrator adds, edits and deletes a guide at
+a time, and moves it up or down within its section (`POST .../guide` to add, `.../guide/{n}` to
+change, `.../guide/{n}/delete`, `.../guide/{n}/move` with `direction` up or down - n is the
+guide's place among the extensions). The dialog has the section (the same chooser as the rules),
+the questions (added, deleted and moved up and down; answers and units with the code system and
+code lookup), the resource, and its code. Saving a profile's rules or title leaves its guided
+input as it is. An upload keeps its guided input, with new linkIds; anything more than this - an
+extension other than input-guide, a contained resource other than `#Q`, more in the
+Questionnaire or its items than the above, or a guide naming a question the Questionnaire
+doesn't have - is refused.
 
 ## National profiles
 
@@ -901,14 +970,16 @@ runaway statement would otherwise hold the server.
 
 ## FHIRPath functions
 
-`ips/fhirpath-ips.js` adds two functions to fhirpath.js, for expressions on IPS documents:
+`ips/fhirpath-ips.js` adds these functions to fhirpath.js, for expressions on IPS documents (the Java `DocumentFunctions` in org.hl7.fhir.core, which the validator runs, has the same):
 
 - `section(system, code [, min, max])`: the input is documents (Bundles) or Compositions. On a document it moves into the document's Composition by itself, which is why a clinical profile's rules, evaluated on the document, can say `Bundle.section(...)`. For each input, it returns the Composition's sections, nested ones included, whose `code` has a coding with that system and code.
 - `resources(system, code [, type])`: the input is documents, or anything in one (a Composition, say). It returns every resource in the document whose `code`, `medicationCodeableConcept` or `vaccineCode` has a coding with that system and code, and that is of the given type when a type is given.
 - `entryIn(valueSet [, min, max])` and `resourcesIn(valueSet [, type])`: as `entry()` and `resources()`, but they match a code in a value set (a canonical, with or without `|version`) rather than one given code. A resource is in when any coding of its code is. These two ask a terminology server, so the evaluation must be asynchronous (`evaluateAsync`), with a `membership` function in the options. A `MembershipSession` (`ips/membership.js`, made by the module's `membershipSession()`) provides one: it asks `ValueSet/$validate-code` with the CodeableConcept, only for what a rule actually reaches. Within a session, each question is asked once, and there's a budget of 500 per document. Definite answers are also kept in the module's cache, so the next document doesn't ask again. When the server can't answer (it doesn't know the value set, say), the answer is "not a member" for that run, and the session's `unresolved()` lists the value set and the server's message, so a rule that failed for that reason can be told apart from one that plainly failed. The module's own value sets (`ips/valuesets/`) are sent with the question, so any server can answer for them; any other value set must be one the server knows.
 - `entry(system, code [, min, max])`: the input is sections, usually from `section()`. For each one, it returns its resolved entries whose `code`, `medicationCodeableConcept` or `vaccineCode` has a coding with that system and code. `medicationReference` is not followed.
+- `isKnown()` and `hasData()`: the input is sections. `isKnown()` is true when each has no `emptyReason`, or a nil known one (`list-empty-reason#nilknown`); `hasData()` when each has an `emptyReason`, or else entries. Empty on no input; false for anything that isn't a section of a Composition.
+- `sameSubject([other])`: on a section, true when it has no `focus`, else whether the focus is the subject of `other` (or, without it, of the section's Composition); on a resource, whether its `subject` (or `patient`) is `other`'s (or, without it, the document's Composition's). References are the same when their reference strings are, else when their identifiers' system and value are. Empty when the input or `other` isn't one item, or a subject is missing.
 
-`min` and `max` are optional (both or neither), and `max` may be `'*'`. The bounds apply to each input item: when the number found is outside them, that item adds nothing. That isn't an error. References are resolved in the Bundle the section is in, or failing that the Bundle the expression was evaluated on:
+`min` and `max` are optional (both or neither), and `max` may be `'*'`. Without them, `section()` is `1..1` - a document with two of the same section has none, for a rule - and `entry()` and `entryIn()` are `0..*` (no bounds), as in the Java `DocumentFunctions`. The bounds apply to each input item: when the number found is outside them, that item adds nothing. That isn't an error. References are resolved in the Bundle the section is in, or failing that the Bundle the expression was evaluated on:
 
 - absolute `fullUrl`s (`urn:uuid:`, `http…`) match as they are;
 - a relative `Type/id` is resolved against the base of the Composition's `fullUrl`, or matched by type and id when there's no usable base;

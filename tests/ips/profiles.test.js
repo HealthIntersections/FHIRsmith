@@ -2,28 +2,41 @@ const profiles = require('../../ips/profiles');
 
 const L = 'http://loinc.org';
 const S = 'http://snomed.info/sct';
-const sec = `Bundle.section('${L}', '11450-4', 1, '*').exists()`;
+const sec = `Bundle.section('${L}', '11450-4').where(isKnown() and hasData()).exists()`;
 const ent = `Bundle.section('${L}', '10160-0').entry('${S}', '774421004', 1, 1).exists()`;
 
 describe('the two shapes', () => {
   test('are found, and made again the same', () => {
-    expect(profiles.parseShape(sec)).toEqual({ section: { system: L, code: '11450-4', min: 1, max: '*' }, entry: null });
-    expect(profiles.parseShape(ent)).toEqual({ section: { system: L, code: '10160-0', min: null, max: null }, entry: { system: S, code: '774421004', min: 1, max: 1 } });
-    for (const x of [sec, ent]) {
+    expect(profiles.parseShape(sec)).toEqual({ section: { system: L, code: '11450-4', checks: ['isKnown', 'hasData'] }, entry: null });
+    expect(profiles.parseShape(ent)).toEqual({ section: { system: L, code: '10160-0', checks: [] }, entry: { system: S, code: '774421004', min: 1, max: 1 } });
+    const one = `Bundle.section('${L}', '81338-6').isKnown()`;
+    const plain = `Bundle.section('${L}', '81338-6').exists()`;
+    const withEntry = `Bundle.section('${L}', '10160-0').where(sameSubject()).entry('${S}', '774421004').exists()`;
+    expect(profiles.parseShape(one)).toEqual({ section: { system: L, code: '81338-6', checks: ['isKnown'] }, entry: null });
+    expect(profiles.parseShape(withEntry).section.checks).toEqual(['sameSubject']);
+    for (const x of [sec, ent, one, plain, withEntry]) {
       expect(profiles.shapeExpression(profiles.parseShape(x))).toBe(x);
     }
+    // checks are written in their order; one on its own, without entries, is the rule
+    expect(profiles.shapeExpression(profiles.parseShape(`Bundle.section('${L}', '1').where(sameSubject() and isKnown()).exists()`))).toBe(`Bundle.section('${L}', '1').where(isKnown() and sameSubject()).exists()`);
+    expect(profiles.shapeExpression(profiles.parseShape(`Bundle.section('${L}', '1').where(hasData()).exists()`))).toBe(`Bundle.section('${L}', '1').hasData()`);
+    // a section with bounds is a rule of its own
+    expect(profiles.parseShape(`Bundle.section('${L}', '11450-4', 1, '*').exists()`)).toBeNull();
+    expect(profiles.kindOf(`Bundle.section('${L}', '11450-4', 1, 1).exists()`)).toBe('other');
     // spacing doesn't matter; quotes in strings are escaped both ways
-    expect(profiles.parseShape(" Bundle . section ( 'a' ,'b',0,2 ) . exists ( ) ")).toEqual({ section: { system: 'a', code: 'b', min: 0, max: 2 }, entry: null });
+    expect(profiles.parseShape(" Bundle . section ( 'a' ,'b' ) . isKnown ( ) ")).toEqual({ section: { system: 'a', code: 'b', checks: ['isKnown'] }, entry: null });
     // FHIRPath's escapes, as FHIRPath reads them
     expect(profiles.parseShape("Bundle.section('x', 'A\\u0042\\f\\`\\/').exists()").section.code).toBe('AB\f`/');
-    const odd = { section: { system: "it's", code: 'a\\b', min: null, max: null }, entry: null };
+    const odd = { section: { system: "it's", code: 'a\\b', checks: [] }, entry: null };
     expect(profiles.parseShape(profiles.shapeExpression(odd))).toEqual(odd);
   });
 
   test('anything else is not one', () => {
     for (const x of [`Composition.section('${L}', '11450-4').exists()`, 'Bundle.section.exists()', `Bundle.section('${L}', '1').count() = 1`, `Bundle.section('${L}', '1', 1).exists()`,
       `Bundle.section('${L}', '1', 2, 1).exists()`, `Bundle.section('', '1').exists()`, `Bundle.section('${L}', '1').entry('${S}', '2').entry('${S}', '3').exists()`,
-      `Patient.section('${L}', '1').exists()`, null, 42]) {
+      `Patient.section('${L}', '1').exists()`, `Bundle.section('${L}', '1').where(isKnown() and isKnown()).exists()`, `Bundle.section('${L}', '1').isKnown().exists()`,
+      `Bundle.section('${L}', '1').where(isKnown())`, `Bundle.section('${L}', '1').where(isKnown() or hasData()).exists()`, `Bundle.section('${L}', '1').where(other()).exists()`,
+      `Bundle.section('${L}', '1').isKnown().entry('${S}', '2').exists()`, null, 42]) {
       expect(profiles.parseShape(x)).toBeNull();
     }
   });
@@ -48,8 +61,8 @@ describe('the two shapes', () => {
 
   test('entries and resources by value set', () => {
     const V = 'http://hl7.org/fhir/uv/ips/ValueSet/problems-uv-ips';
-    const a = `Bundle.section('${L}', '11450-4', 1, '*').entryIn('${V}', 1, '*').exists()`;
-    expect(profiles.parseShape(a)).toEqual({ section: { system: L, code: '11450-4', min: 1, max: '*' }, entry: { valueSet: V, min: 1, max: '*' } });
+    const a = `Bundle.section('${L}', '11450-4').where(hasData()).entryIn('${V}', 1, '*').exists()`;
+    expect(profiles.parseShape(a)).toEqual({ section: { system: L, code: '11450-4', checks: ['hasData'] }, entry: { valueSet: V, min: 1, max: '*' } });
     expect(profiles.shapeExpression(profiles.parseShape(a))).toBe(a);
     expect(profiles.parseShape(`Bundle.section('${L}', '11450-4').entryIn('${V}|1.1.0').exists()`).entry).toEqual({ valueSet: `${V}|1.1.0`, min: null, max: null });
     const b = `Bundle.resourcesIn('${V}', 'Condition').all(clinicalStatus.coding.code = 'active')`;
@@ -68,6 +81,13 @@ describe('the two shapes', () => {
     expect(profiles.describePart(profiles.parseShape(a).entry, false, titleOf)).toEqual({ what: 'IPS Problems', code: V, card: '1..*', valueSet: true });
     expect(profiles.describePart(profiles.parseShape(a).entry, false)).toEqual({ what: V, code: null, card: '1..*', valueSet: true });
     expect(profiles.describeResource(profiles.parseResourceShape(b), titleOf)).toMatchObject({ type: 'Condition', valueSet: V, title: 'IPS Problems' });
+  });
+
+  test('the IPS sections include the Patient Story, and it is described by name', () => {
+    expect(profiles.IPS_SECTIONS).toContainEqual({ code: '81338-6', title: 'Patient Story' });
+    expect(new Set(profiles.IPS_SECTIONS.map(s => s.code)).size).toBe(profiles.IPS_SECTIONS.length);
+    expect(profiles.describePart({ system: 'http://loinc.org', code: '81338-6', min: 1, max: 1 }, true))
+      .toEqual({ what: 'Patient Story', code: 'LOINC 81338-6', card: '1..1' });
   });
 
   test('cardinalities', () => {
@@ -127,7 +147,7 @@ describe('uploads', () => {
   const made = () => profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Referral', constraints: [{ key: 'cp-7', human: 'Problems', expression: sec }] });
 
   test('what the server makes comes back in, without its keys', () => {
-    expect(profiles.fromUpload(made())).toEqual({ input: { title: 'Referral', constraints: [{ human: 'Problems', expression: sec }] }, problems: [] });
+    expect(profiles.fromUpload(made())).toEqual({ input: { title: 'Referral', constraints: [{ human: 'Problems', expression: sec }], guides: [] }, problems: [] });
     // the name is used when there is no title
     const sd = made();
     delete sd.title;
@@ -208,5 +228,131 @@ describe('the rules mean what they say on a document', () => {
     ['Bundle.entry.resource.ofType(Composition).section.count() >= 1', true]
   ])('%s', (expression, expected) => {
     expect(evaluate(doc, expression)).toEqual([expected]);
+  });
+});
+
+describe('guided input', () => {
+  const U = 'http://unitsofmeasure.org';
+  const guides = () => [
+    { section: { system: L, code: '11450-4' }, questions: [{ text: 'Any problems?', type: 'boolean' }, { text: 'Which?', type: 'choice', definition: 'Condition.code', answers: [{ system: S, code: '38341003', display: 'Hypertension' }] }],
+      resource: 'Condition:problem', code: { system: S, code: '38341003' } },
+    { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', units: [{ system: U, code: 'kg' }] }], resource: 'Observation:vitals' },
+    { section: { system: 'http://example.org/cs', code: 'z' }, questions: [{ text: 'Read this', type: 'display' }] }
+  ];
+  const made = () => {
+    const c = profiles.checkGuides(guides());
+    expect(c.problems).toEqual([]);
+    return profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Guided', constraints: [], guides: c.guides });
+  };
+
+  test('a contained Questionnaire (#Q), and an input-guide extension for each guide', () => {
+    const sd = made();
+    const q = sd.contained[0];
+    expect(q).toMatchObject({ resourceType: 'Questionnaire', id: 'Q', status: 'active' });
+    expect(q.item.map(i => i.type)).toEqual(['boolean', 'choice', 'quantity', 'display']);
+    expect(q.item[1]).toEqual({ linkId: q.item[1].linkId, definition: 'http://hl7.org/fhir/StructureDefinition/Condition#Condition.code', text: 'Which?', type: 'choice',
+      answerOption: [{ valueCoding: { system: S, code: '38341003', display: 'Hypertension' } }] });
+    expect(q.item[2].extension).toEqual([{ url: profiles.UNIT_OPTION, valueCoding: { system: U, code: 'kg' } }]);
+    expect(q.item.every(i => /^q[0-9a-f]{8}$/.test(i.linkId))).toBe(true);
+    expect(sd.extension.map(e => e.url)).toEqual([profiles.INPUT_GUIDE, profiles.INPUT_GUIDE, profiles.INPUT_GUIDE]);
+    expect(sd.extension[0].extension).toEqual([
+      { url: 'questionnaire', valueCanonical: '#Q' },
+      { url: 'question', valueId: q.item[0].linkId }, { url: 'question', valueId: q.item[1].linkId },
+      { url: 'section', valueCoding: { system: L, code: '11450-4' } },
+      { url: 'resource', valueCode: 'Condition:problem' },
+      { url: 'code', valueCoding: { system: S, code: '38341003' } }
+    ]);
+    expect(sd.extension[2].extension.map(e => e.url)).toEqual(['questionnaire', 'question', 'section']);
+    // read back as the editor has it: definitions as paths
+    const back = profiles.guidesOf(sd);
+    expect(back[1].questions[0]).toEqual({ linkId: q.item[2].linkId, text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', answers: [], units: [{ system: U, code: 'kg' }] });
+    // none: no Questionnaire, no extensions
+    const plain = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Plain', constraints: [] });
+    expect(plain.contained).toBeUndefined();
+    expect(plain.extension).toBeUndefined();
+  });
+
+  test('linkIds are kept for the questions a profile has, and new ones are never ones it had', () => {
+    const sd = made();
+    const back = profiles.guidesOf(sd);
+    const ids = back.flatMap(g => g.questions.map(q => q.linkId));
+    expect(profiles.checkGuides(back, sd).guides.flatMap(g => g.questions.map(q => q.linkId))).toEqual(ids);
+    // a question that comes back without its linkId, or with one the profile doesn't have, gets a new one
+    back[0].questions[0].linkId = null;
+    back[0].questions[1].linkId = 'qmadeup';
+    const again = profiles.checkGuides(back, sd).guides[0].questions.map(q => q.linkId);
+    expect(again.every(id => !ids.includes(id) && /^q[0-9a-f]{8}$/.test(id))).toBe(true);
+  });
+
+  test('what is wrong with a guide is said', () => {
+    expect(profiles.checkGuides('x').problems).toEqual(['The guided input must be a list']);
+    expect(profiles.checkGuides([{ section: { system: L }, questions: [] }]).problems).toEqual(['Input guide 1 has no section (a system and code)', 'Input guide 1 has no questions']);
+    const p = profiles.checkGuides([{ section: { system: L, code: '1' }, resource: 'Encounter', code: { system: S },
+      questions: [{ text: '', type: 'text' }, { text: 'x', type: 'choice' }, { text: 'x', type: 'boolean', answers: [{ system: S, code: '1' }], units: [{ system: U, code: 'kg' }] },
+        { text: 'x', type: 'date', definition: 'condition.onset' }] }]).problems;
+    expect(p).toEqual([
+      "Input guide 1 makes a resource this server doesn't know: 'Encounter' (Condition:problem, Condition:diagnosis, Observation:vitals, MedicationStatement, AllergyIntolerance)",
+      "Input guide 1 has a code that isn't a system and code",
+      'Input guide 1, question 1 has no text', 'Input guide 1, question 1 has no type (display, boolean, quantity, date, choice)',
+      'Input guide 1, question 2 is a choice, but has no answers to choose from',
+      'Input guide 1, question 3 has answers, but only a choice can have them', 'Input guide 1, question 3 has units, but only a quantity can have them',
+      "Input guide 1, question 4's definition is not a path in a resource, like Condition.onset[x]"
+    ]);
+    expect(profiles.checkGuides([{ section: { system: L, code: '1' }, code: { system: S, code: '2' }, questions: [{ text: 'x', type: 'date' }] }]).problems)
+      .toEqual(["Input guide 1 has a code, but no resource: the code is the resource's"]);
+  });
+
+  test('an upload keeps its guided input (with new linkIds), and anything more is refused', () => {
+    const sd = made();
+    const up = profiles.fromUpload(sd);
+    expect(up.problems).toEqual([]);
+    expect(up.input.guides.map(g => g.questions.map(q => q.text))).toEqual([['Any problems?', 'Which?'], ['Weight'], ['Read this']]);
+    expect(up.input.guides[0].questions[0].linkId).toBeUndefined();
+    const refused = (change) => {
+      const x = structuredClone(sd);
+      change(x);
+      return profiles.fromUpload(x).problems;
+    };
+    expect(refused(x => x.extension[0].extension.push({ url: 'question', valueId: 'qnope' }))).toEqual(["Input guide 1 names question 'qnope', which the Questionnaire doesn't have"]);
+    expect(refused(x => x.extension.push({ url: 'http://example.org/other', valueString: 'x' }))).toEqual([`Its only extensions may be input guides (${profiles.INPUT_GUIDE})`]);
+    expect(refused(x => x.contained.push({ resourceType: 'ValueSet', id: 'v' }))).toEqual(['It may contain only the input guides\' Questionnaire (#Q)']);
+    expect(refused(x => { x.contained[0].title = 'x'; })).toEqual(['Its Questionnaire has more than input guides use: title']);
+    expect(refused(x => { x.contained[0].item[0].required = true; })).toEqual([`Question '${sd.contained[0].item[0].linkId}' has more than input guides use: required`]);
+    expect(refused(x => { delete x.contained; })).toEqual(['It has input guides, but no Questionnaire (#Q)']);
+    expect(refused(x => { x.extension[0].extension[0].valueCanonical = '#Other'; })).toEqual(['Input guide 1 must name the Questionnaire #Q, once']);
+    expect(refused(x => { x.contained[0].item[1].definition = 'http://example.org/x'; })).toEqual([`Question '${sd.contained[0].item[1].linkId}' has a definition that isn't http://hl7.org/fhir/StructureDefinition/{type}#{path}`]);
+  });
+
+  test('shown grouped by section: the IPS sections in their order, then the others as they first appear', () => {
+    const g = guides();
+    const all = [g[2], g[0], { ...g[0], questions: [{ text: 'More?', type: 'boolean' }] }, g[1], { ...g[2], section: { system: 'http://example.org/cs', code: 'a' } }];
+    const groups = profiles.guideGroups(all, ['11450-4', '8716-3']);
+    expect(groups.map(x => x.section.code)).toEqual(['11450-4', '8716-3', 'z', 'a']);
+    expect(groups[0].guides.map(x => x.index)).toEqual([1, 2]);
+  });
+});
+
+describe('the editor\'s guidance from a profile', () => {
+  test('per section: the checks, whether entries are needed, the rules; and the guides, keyed by their linkIds', () => {
+    const guides = profiles.checkGuides([
+      { section: { system: L, code: '11450-4' }, questions: [{ text: 'Anticoagulants?', type: 'boolean' }, { text: 'Note', type: 'display' }], resource: 'MedicationStatement' },
+      { section: { system: L, code: '81338-6' }, questions: [{ text: 'What matters most?', type: 'display' }] },
+      { section: { system: 'http://example.org/cs', code: 'x', display: 'Travel' }, questions: [{ text: 'Where to?', type: 'display' }] }
+    ]).guides;
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Tourism', guides, constraints: [
+      { key: 'cp-1', human: 'Problems', expression: `Bundle.section('${L}', '11450-4').where(isKnown() and hasData()).exists()` },
+      { key: 'cp-2', human: 'Hypertension', expression: `Bundle.section('${L}', '11450-4').entry('${S}', '38341003').exists()` },
+      { key: 'cp-3', human: 'Devices', expression: `Bundle.section('${L}', '46264-8').exists()` },
+      { key: 'cp-4', human: 'Other', expression: 'Bundle.entry.count() > 2' }] });
+    const g = profiles.editorGuidance(sd);
+    expect(g.id).toBe('profile-abcdef012345');
+    expect(g.title).toBe('Tourism');
+    expect(g.sections).toEqual({
+      [`${L}|11450-4`]: { checks: ['isKnown', 'hasData'], needsEntries: true, rules: ['Problems', 'Hypertension'] },
+      [`${L}|46264-8`]: { checks: [], needsEntries: false, rules: ['Devices'] }
+    });
+    expect(g.guides.map(x => x.sectionTitle)).toEqual(['Problem List', 'Patient Story', 'Travel']);
+    expect(g.guides[0]).toMatchObject({ key: guides[0].questions.map(q => q.linkId).join('+'), resource: 'MedicationStatement' });
+    expect(g.guides[0].questions.map(q => q.type)).toEqual(['boolean', 'display']);
   });
 });

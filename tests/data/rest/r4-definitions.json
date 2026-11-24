@@ -1,0 +1,4305 @@
+{
+ "fhirVersion": "4.0.1",
+ "resourceTypes": [
+  "AuditEvent",
+  "Condition",
+  "Device",
+  "Encounter",
+  "Group",
+  "List",
+  "MedicationRequest",
+  "Observation",
+  "Organization",
+  "Patient",
+  "Practitioner",
+  "RelatedPerson",
+  "SearchParameter",
+  "ValueSet"
+ ],
+ "searchParameters": [
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-action",
+   "code": "action",
+   "type": "token",
+   "expression": "AuditEvent.action",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Type of action performed during the event",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-address",
+   "code": "address",
+   "type": "string",
+   "expression": "AuditEvent.agent.network.address",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Identifier for the network access point of the user device",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-agent-name",
+   "code": "agent-name",
+   "type": "string",
+   "expression": "AuditEvent.agent.name",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Human friendly name for the agent",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-agent-role",
+   "code": "agent-role",
+   "type": "token",
+   "expression": "AuditEvent.agent.role",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Agent role in the event",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-agent",
+   "code": "agent",
+   "type": "reference",
+   "expression": "AuditEvent.agent.who",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Identifier of who",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "Device",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-altid",
+   "code": "altid",
+   "type": "token",
+   "expression": "AuditEvent.agent.altId",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Alternative User identity",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-date",
+   "code": "date",
+   "type": "date",
+   "expression": "AuditEvent.recorded",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Time when the event was recorded",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-entity-name",
+   "code": "entity-name",
+   "type": "string",
+   "expression": "AuditEvent.entity.name",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Descriptor for entity",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-entity-role",
+   "code": "entity-role",
+   "type": "token",
+   "expression": "AuditEvent.entity.role",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "What role the entity played",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-entity-type",
+   "code": "entity-type",
+   "type": "token",
+   "expression": "AuditEvent.entity.type",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Type of entity involved",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-entity",
+   "code": "entity",
+   "type": "reference",
+   "expression": "AuditEvent.entity.what",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Specific instance of resource",
+   "target": [
+    "Account",
+    "ActivityDefinition",
+    "AdverseEvent",
+    "AllergyIntolerance",
+    "Appointment",
+    "AppointmentResponse",
+    "AuditEvent",
+    "Basic",
+    "Binary",
+    "BiologicallyDerivedProduct",
+    "BodyStructure",
+    "Bundle",
+    "CapabilityStatement",
+    "CarePlan",
+    "CareTeam",
+    "CatalogEntry",
+    "ChargeItem",
+    "ChargeItemDefinition",
+    "Claim",
+    "ClaimResponse",
+    "ClinicalImpression",
+    "CodeSystem",
+    "Communication",
+    "CommunicationRequest",
+    "CompartmentDefinition",
+    "Composition",
+    "ConceptMap",
+    "Condition",
+    "Consent",
+    "Contract",
+    "Coverage",
+    "CoverageEligibilityRequest",
+    "CoverageEligibilityResponse",
+    "DetectedIssue",
+    "Device",
+    "DeviceDefinition",
+    "DeviceMetric",
+    "DeviceRequest",
+    "DeviceUseStatement",
+    "DiagnosticReport",
+    "DocumentManifest",
+    "DocumentReference",
+    "EffectEvidenceSynthesis",
+    "Encounter",
+    "Endpoint",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "EpisodeOfCare",
+    "EventDefinition",
+    "Evidence",
+    "EvidenceVariable",
+    "ExampleScenario",
+    "ExplanationOfBenefit",
+    "FamilyMemberHistory",
+    "Flag",
+    "Goal",
+    "GraphDefinition",
+    "Group",
+    "GuidanceResponse",
+    "HealthcareService",
+    "ImagingStudy",
+    "Immunization",
+    "ImmunizationEvaluation",
+    "ImmunizationRecommendation",
+    "ImplementationGuide",
+    "InsurancePlan",
+    "Invoice",
+    "Library",
+    "Linkage",
+    "List",
+    "Location",
+    "Measure",
+    "MeasureReport",
+    "Media",
+    "Medication",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationKnowledge",
+    "MedicationRequest",
+    "MedicationStatement",
+    "MedicinalProduct",
+    "MedicinalProductAuthorization",
+    "MedicinalProductContraindication",
+    "MedicinalProductIndication",
+    "MedicinalProductIngredient",
+    "MedicinalProductInteraction",
+    "MedicinalProductManufactured",
+    "MedicinalProductPackaged",
+    "MedicinalProductPharmaceutical",
+    "MedicinalProductUndesirableEffect",
+    "MessageDefinition",
+    "MessageHeader",
+    "MolecularSequence",
+    "NamingSystem",
+    "NutritionOrder",
+    "Observation",
+    "ObservationDefinition",
+    "OperationDefinition",
+    "OperationOutcome",
+    "Organization",
+    "OrganizationAffiliation",
+    "Patient",
+    "PaymentNotice",
+    "PaymentReconciliation",
+    "Person",
+    "PlanDefinition",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "RequestGroup",
+    "ResearchDefinition",
+    "ResearchElementDefinition",
+    "ResearchStudy",
+    "ResearchSubject",
+    "RiskAssessment",
+    "RiskEvidenceSynthesis",
+    "Schedule",
+    "SearchParameter",
+    "ServiceRequest",
+    "Slot",
+    "Specimen",
+    "SpecimenDefinition",
+    "StructureDefinition",
+    "StructureMap",
+    "Subscription",
+    "Substance",
+    "SubstanceNucleicAcid",
+    "SubstancePolymer",
+    "SubstanceProtein",
+    "SubstanceReferenceInformation",
+    "SubstanceSourceMaterial",
+    "SubstanceSpecification",
+    "SupplyDelivery",
+    "SupplyRequest",
+    "Task",
+    "TerminologyCapabilities",
+    "TestReport",
+    "TestScript",
+    "ValueSet",
+    "VerificationResult",
+    "VisionPrescription"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-outcome",
+   "code": "outcome",
+   "type": "token",
+   "expression": "AuditEvent.outcome",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Whether the event succeeded or failed",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-patient",
+   "code": "patient",
+   "type": "reference",
+   "expression": "AuditEvent.agent.who.where(resolve() is Patient) | AuditEvent.entity.what.where(resolve() is Patient)",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Identifier of who",
+   "target": [
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-policy",
+   "code": "policy",
+   "type": "uri",
+   "expression": "AuditEvent.agent.policy",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Policy that authorized event",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-site",
+   "code": "site",
+   "type": "token",
+   "expression": "AuditEvent.source.site",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Logical source location within the enterprise",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-source",
+   "code": "source",
+   "type": "reference",
+   "expression": "AuditEvent.source.observer",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "The identity of source detecting the event",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "Device",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-subtype",
+   "code": "subtype",
+   "type": "token",
+   "expression": "AuditEvent.subtype",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "More specific type/id for the event",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/AuditEvent-type",
+   "code": "type",
+   "type": "token",
+   "expression": "AuditEvent.type",
+   "base": [
+    "AuditEvent"
+   ],
+   "description": "Type/identifier of event",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-code",
+   "code": "code",
+   "type": "token",
+   "expression": "AllergyIntolerance.code | AllergyIntolerance.reaction.substance | Condition.code | (DeviceRequest.code as CodeableConcept) | DiagnosticReport.code | FamilyMemberHistory.condition.code | List.code | Medication.code | (MedicationAdministration.medication as CodeableConcept) | (MedicationDispense.medication as CodeableConcept) | (MedicationRequest.medication as CodeableConcept) | (MedicationStatement.medication as CodeableConcept) | Observation.code | Procedure.code | ServiceRequest.code",
+   "base": [
+    "Condition",
+    "List",
+    "MedicationRequest",
+    "Observation"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [AllergyIntolerance](allergyintolerance.html): Code that identifies the allergy or intolerance\r\n* [Condition](condition.html): Code for the condition\r\n* [DeviceRequest](devicerequest.html): Code for what is being requested/ordered\r\n* [DiagnosticReport](diagnosticreport.html): The code for the report, as opposed to codes for the atomic results, which are the names on the observation resource referred to from the result\r\n* [FamilyMemberHistory](familymemberhistory.html): A search by a condition code\r\n* [List](list.html): What the purpose of this list is\r\n* [Medication](medication.html): Returns medications for a specific code\r\n* [MedicationAdministration](medicationadministration.html): Return administrations of this medication code\r\n* [MedicationDispense](medicationdispense.html): Returns dispenses of this medicine code\r\n* [MedicationRequest](medicationrequest.html): Return prescriptions of this medication code\r\n* [MedicationStatement](medicationstatement.html): Return statements of this medication code\r\n* [Observation](observation.html): The code of the observation type\r\n* [Procedure](procedure.html): A code to identify a  procedure\r\n* [ServiceRequest](servicerequest.html): What is being requested/ordered\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-date",
+   "code": "date",
+   "type": "date",
+   "expression": "AllergyIntolerance.recordedDate | CarePlan.period | CareTeam.period | ClinicalImpression.date | Composition.date | Consent.dateTime | DiagnosticReport.effective | Encounter.period | EpisodeOfCare.period | FamilyMemberHistory.date | Flag.period | Immunization.occurrence | List.date | Observation.effective | Procedure.performed | (RiskAssessment.occurrence as dateTime) | SupplyRequest.authoredOn",
+   "base": [
+    "Encounter",
+    "List",
+    "Observation"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [AllergyIntolerance](allergyintolerance.html): Date first version of the resource instance was recorded\r\n* [CarePlan](careplan.html): Time period plan covers\r\n* [CareTeam](careteam.html): Time period team covers\r\n* [ClinicalImpression](clinicalimpression.html): When the assessment was documented\r\n* [Composition](composition.html): Composition editing time\r\n* [Consent](consent.html): When this Consent was created or indexed\r\n* [DiagnosticReport](diagnosticreport.html): The clinically relevant time of the report\r\n* [Encounter](encounter.html): A date within the period the Encounter lasted\r\n* [EpisodeOfCare](episodeofcare.html): The provided date search value falls within the episode of care's period\r\n* [FamilyMemberHistory](familymemberhistory.html): When history was recorded or last updated\r\n* [Flag](flag.html): Time period when flag is active\r\n* [Immunization](immunization.html): Vaccination  (non)-Administration Date\r\n* [List](list.html): When the list was prepared\r\n* [Observation](observation.html): Obtained date/time. If the obtained element is a period, a date that falls in the period\r\n* [Procedure](procedure.html): When the procedure was performed\r\n* [RiskAssessment](riskassessment.html): When was assessment made?\r\n* [SupplyRequest](supplyrequest.html): When the request was made\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-encounter",
+   "code": "encounter",
+   "type": "reference",
+   "expression": "Composition.encounter | DeviceRequest.encounter | DiagnosticReport.encounter | DocumentReference.context.encounter | Flag.encounter | List.encounter | NutritionOrder.encounter | Observation.encounter | Procedure.encounter | RiskAssessment.encounter | ServiceRequest.encounter | VisionPrescription.encounter",
+   "base": [
+    "List",
+    "Observation"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Composition](composition.html): Context of the Composition\r\n* [DeviceRequest](devicerequest.html): Encounter during which request was created\r\n* [DiagnosticReport](diagnosticreport.html): The Encounter when the order was made\r\n* [DocumentReference](documentreference.html): Context of the document  content\r\n* [Flag](flag.html): Alert relevant during encounter\r\n* [List](list.html): Context in which list created\r\n* [NutritionOrder](nutritionorder.html): Return nutrition orders with this encounter identifier\r\n* [Observation](observation.html): Encounter related to the observation\r\n* [Procedure](procedure.html): Encounter created as part of\r\n* [RiskAssessment](riskassessment.html): Where was assessment performed?\r\n* [ServiceRequest](servicerequest.html): An encounter in which this request is made\r\n* [VisionPrescription](visionprescription.html): Return prescriptions with this encounter identifier\r\n",
+   "target": [
+    "Encounter",
+    "EpisodeOfCare"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "AllergyIntolerance.identifier | CarePlan.identifier | CareTeam.identifier | Composition.identifier | Condition.identifier | Consent.identifier | DetectedIssue.identifier | DeviceRequest.identifier | DiagnosticReport.identifier | DocumentManifest.masterIdentifier | DocumentManifest.identifier | DocumentReference.masterIdentifier | DocumentReference.identifier | Encounter.identifier | EpisodeOfCare.identifier | FamilyMemberHistory.identifier | Goal.identifier | ImagingStudy.identifier | Immunization.identifier | List.identifier | MedicationAdministration.identifier | MedicationDispense.identifier | MedicationRequest.identifier | MedicationStatement.identifier | NutritionOrder.identifier | Observation.identifier | Procedure.identifier | RiskAssessment.identifier | ServiceRequest.identifier | SupplyDelivery.identifier | SupplyRequest.identifier | VisionPrescription.identifier",
+   "base": [
+    "Condition",
+    "Encounter",
+    "List",
+    "MedicationRequest",
+    "Observation"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [AllergyIntolerance](allergyintolerance.html): External ids for this item\r\n* [CarePlan](careplan.html): External Ids for this plan\r\n* [CareTeam](careteam.html): External Ids for this team\r\n* [Composition](composition.html): Version-independent identifier for the Composition\r\n* [Condition](condition.html): A unique identifier of the condition record\r\n* [Consent](consent.html): Identifier for this record (external references)\r\n* [DetectedIssue](detectedissue.html): Unique id for the detected issue\r\n* [DeviceRequest](devicerequest.html): Business identifier for request/order\r\n* [DiagnosticReport](diagnosticreport.html): An identifier for the report\r\n* [DocumentManifest](documentmanifest.html): Unique Identifier for the set of documents\r\n* [DocumentReference](documentreference.html): Master Version Specific Identifier\r\n* [Encounter](encounter.html): Identifier(s) by which this encounter is known\r\n* [EpisodeOfCare](episodeofcare.html): Business Identifier(s) relevant for this EpisodeOfCare\r\n* [FamilyMemberHistory](familymemberhistory.html): A search by a record identifier\r\n* [Goal](goal.html): External Ids for this goal\r\n* [ImagingStudy](imagingstudy.html): Identifiers for the Study, such as DICOM Study Instance UID and Accession number\r\n* [Immunization](immunization.html): Business identifier\r\n* [List](list.html): Business identifier\r\n* [MedicationAdministration](medicationadministration.html): Return administrations with this external identifier\r\n* [MedicationDispense](medicationdispense.html): Returns dispenses with this external identifier\r\n* [MedicationRequest](medicationrequest.html): Return prescriptions with this external identifier\r\n* [MedicationStatement](medicationstatement.html): Return statements with this external identifier\r\n* [NutritionOrder](nutritionorder.html): Return nutrition orders with this external identifier\r\n* [Observation](observation.html): The unique id for a particular observation\r\n* [Procedure](procedure.html): A unique identifier for a procedure\r\n* [RiskAssessment](riskassessment.html): Unique identifier for the assessment\r\n* [ServiceRequest](servicerequest.html): Identifiers assigned to this order\r\n* [SupplyDelivery](supplydelivery.html): External identifier\r\n* [SupplyRequest](supplyrequest.html): Business Identifier for SupplyRequest\r\n* [VisionPrescription](visionprescription.html): Return prescriptions with this external identifier\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-patient",
+   "code": "patient",
+   "type": "reference",
+   "expression": "AllergyIntolerance.patient | CarePlan.subject.where(resolve() is Patient) | CareTeam.subject.where(resolve() is Patient) | ClinicalImpression.subject.where(resolve() is Patient) | Composition.subject.where(resolve() is Patient) | Condition.subject.where(resolve() is Patient) | Consent.patient | DetectedIssue.patient | DeviceRequest.subject.where(resolve() is Patient) | DeviceUseStatement.subject | DiagnosticReport.subject.where(resolve() is Patient) | DocumentManifest.subject.where(resolve() is Patient) | DocumentReference.subject.where(resolve() is Patient) | Encounter.subject.where(resolve() is Patient) | EpisodeOfCare.patient | FamilyMemberHistory.patient | Flag.subject.where(resolve() is Patient) | Goal.subject.where(resolve() is Patient) | ImagingStudy.subject.where(resolve() is Patient) | Immunization.patient | List.subject.where(resolve() is Patient) | MedicationAdministration.subject.where(resolve() is Patient) | MedicationDispense.subject.where(resolve() is Patient) | MedicationRequest.subject.where(resolve() is Patient) | MedicationStatement.subject.where(resolve() is Patient) | NutritionOrder.patient | Observation.subject.where(resolve() is Patient) | Procedure.subject.where(resolve() is Patient) | RiskAssessment.subject.where(resolve() is Patient) | ServiceRequest.subject.where(resolve() is Patient) | SupplyDelivery.patient | VisionPrescription.patient",
+   "base": [
+    "Condition",
+    "Encounter",
+    "List",
+    "MedicationRequest",
+    "Observation"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [AllergyIntolerance](allergyintolerance.html): Who the sensitivity is for\r\n* [CarePlan](careplan.html): Who the care plan is for\r\n* [CareTeam](careteam.html): Who care team is for\r\n* [ClinicalImpression](clinicalimpression.html): Patient or group assessed\r\n* [Composition](composition.html): Who and/or what the composition is about\r\n* [Condition](condition.html): Who has the condition?\r\n* [Consent](consent.html): Who the consent applies to\r\n* [DetectedIssue](detectedissue.html): Associated patient\r\n* [DeviceRequest](devicerequest.html): Individual the service is ordered for\r\n* [DeviceUseStatement](deviceusestatement.html): Search by subject - a patient\r\n* [DiagnosticReport](diagnosticreport.html): The subject of the report if a patient\r\n* [DocumentManifest](documentmanifest.html): The subject of the set of documents\r\n* [DocumentReference](documentreference.html): Who/what is the subject of the document\r\n* [Encounter](encounter.html): The patient or group present at the encounter\r\n* [EpisodeOfCare](episodeofcare.html): The patient who is the focus of this episode of care\r\n* [FamilyMemberHistory](familymemberhistory.html): The identity of a subject to list family member history items for\r\n* [Flag](flag.html): The identity of a subject to list flags for\r\n* [Goal](goal.html): Who this goal is intended for\r\n* [ImagingStudy](imagingstudy.html): Who the study is about\r\n* [Immunization](immunization.html): The patient for the vaccination record\r\n* [List](list.html): If all resources have the same subject\r\n* [MedicationAdministration](medicationadministration.html): The identity of a patient to list administrations  for\r\n* [MedicationDispense](medicationdispense.html): The identity of a patient to list dispenses  for\r\n* [MedicationRequest](medicationrequest.html): Returns prescriptions for a specific patient\r\n* [MedicationStatement](medicationstatement.html): Returns statements for a specific patient.\r\n* [NutritionOrder](nutritionorder.html): The identity of the person who requires the diet, formula or nutritional supplement\r\n* [Observation](observation.html): The subject that the observation is about (if patient)\r\n* [Procedure](procedure.html): Search by subject - a patient\r\n* [RiskAssessment](riskassessment.html): Who/what does assessment apply to?\r\n* [ServiceRequest](servicerequest.html): Search by subject - a patient\r\n* [SupplyDelivery](supplydelivery.html): Patient for whom the item is supplied\r\n* [VisionPrescription](visionprescription.html): The identity of a patient to list dispenses for\r\n",
+   "target": [
+    "Patient",
+    "Group"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/clinical-type",
+   "code": "type",
+   "type": "token",
+   "expression": "AllergyIntolerance.type | Composition.type | DocumentManifest.type | DocumentReference.type | Encounter.type | EpisodeOfCare.type",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [AllergyIntolerance](allergyintolerance.html): allergy | intolerance - Underlying mechanism (if known)\r\n* [Composition](composition.html): Kind of composition (LOINC if possible)\r\n* [DocumentManifest](documentmanifest.html): Kind of document set\r\n* [DocumentReference](documentreference.html): Kind of document (LOINC if possible)\r\n* [Encounter](encounter.html): Specific type of encounter\r\n* [EpisodeOfCare](episodeofcare.html): Type/class  - e.g. specialist referral, disease management\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-abatement-age",
+   "code": "abatement-age",
+   "type": "quantity",
+   "expression": "Condition.abatement.as(Age) | Condition.abatement.as(Range)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Abatement as age or age range",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-abatement-date",
+   "code": "abatement-date",
+   "type": "date",
+   "expression": "Condition.abatement.as(dateTime) | Condition.abatement.as(Period)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Date-related abatements (dateTime and period)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-abatement-string",
+   "code": "abatement-string",
+   "type": "string",
+   "expression": "Condition.abatement.as(string)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Abatement as a string",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-asserter",
+   "code": "asserter",
+   "type": "reference",
+   "expression": "Condition.asserter",
+   "base": [
+    "Condition"
+   ],
+   "description": "Person who asserts this condition",
+   "target": [
+    "Practitioner",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-body-site",
+   "code": "body-site",
+   "type": "token",
+   "expression": "Condition.bodySite",
+   "base": [
+    "Condition"
+   ],
+   "description": "Anatomical location, if relevant",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-category",
+   "code": "category",
+   "type": "token",
+   "expression": "Condition.category",
+   "base": [
+    "Condition"
+   ],
+   "description": "The category of the condition",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-clinical-status",
+   "code": "clinical-status",
+   "type": "token",
+   "expression": "Condition.clinicalStatus",
+   "base": [
+    "Condition"
+   ],
+   "description": "The clinical status of the condition",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-encounter",
+   "code": "encounter",
+   "type": "reference",
+   "expression": "Condition.encounter",
+   "base": [
+    "Condition"
+   ],
+   "description": "Encounter created as part of",
+   "target": [
+    "Encounter"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-evidence-detail",
+   "code": "evidence-detail",
+   "type": "reference",
+   "expression": "Condition.evidence.detail",
+   "base": [
+    "Condition"
+   ],
+   "description": "Supporting information found elsewhere",
+   "target": [
+    "Account",
+    "ActivityDefinition",
+    "AdverseEvent",
+    "AllergyIntolerance",
+    "Appointment",
+    "AppointmentResponse",
+    "AuditEvent",
+    "Basic",
+    "Binary",
+    "BiologicallyDerivedProduct",
+    "BodyStructure",
+    "Bundle",
+    "CapabilityStatement",
+    "CarePlan",
+    "CareTeam",
+    "CatalogEntry",
+    "ChargeItem",
+    "ChargeItemDefinition",
+    "Claim",
+    "ClaimResponse",
+    "ClinicalImpression",
+    "CodeSystem",
+    "Communication",
+    "CommunicationRequest",
+    "CompartmentDefinition",
+    "Composition",
+    "ConceptMap",
+    "Condition",
+    "Consent",
+    "Contract",
+    "Coverage",
+    "CoverageEligibilityRequest",
+    "CoverageEligibilityResponse",
+    "DetectedIssue",
+    "Device",
+    "DeviceDefinition",
+    "DeviceMetric",
+    "DeviceRequest",
+    "DeviceUseStatement",
+    "DiagnosticReport",
+    "DocumentManifest",
+    "DocumentReference",
+    "EffectEvidenceSynthesis",
+    "Encounter",
+    "Endpoint",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "EpisodeOfCare",
+    "EventDefinition",
+    "Evidence",
+    "EvidenceVariable",
+    "ExampleScenario",
+    "ExplanationOfBenefit",
+    "FamilyMemberHistory",
+    "Flag",
+    "Goal",
+    "GraphDefinition",
+    "Group",
+    "GuidanceResponse",
+    "HealthcareService",
+    "ImagingStudy",
+    "Immunization",
+    "ImmunizationEvaluation",
+    "ImmunizationRecommendation",
+    "ImplementationGuide",
+    "InsurancePlan",
+    "Invoice",
+    "Library",
+    "Linkage",
+    "List",
+    "Location",
+    "Measure",
+    "MeasureReport",
+    "Media",
+    "Medication",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationKnowledge",
+    "MedicationRequest",
+    "MedicationStatement",
+    "MedicinalProduct",
+    "MedicinalProductAuthorization",
+    "MedicinalProductContraindication",
+    "MedicinalProductIndication",
+    "MedicinalProductIngredient",
+    "MedicinalProductInteraction",
+    "MedicinalProductManufactured",
+    "MedicinalProductPackaged",
+    "MedicinalProductPharmaceutical",
+    "MedicinalProductUndesirableEffect",
+    "MessageDefinition",
+    "MessageHeader",
+    "MolecularSequence",
+    "NamingSystem",
+    "NutritionOrder",
+    "Observation",
+    "ObservationDefinition",
+    "OperationDefinition",
+    "OperationOutcome",
+    "Organization",
+    "OrganizationAffiliation",
+    "Patient",
+    "PaymentNotice",
+    "PaymentReconciliation",
+    "Person",
+    "PlanDefinition",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "RequestGroup",
+    "ResearchDefinition",
+    "ResearchElementDefinition",
+    "ResearchStudy",
+    "ResearchSubject",
+    "RiskAssessment",
+    "RiskEvidenceSynthesis",
+    "Schedule",
+    "SearchParameter",
+    "ServiceRequest",
+    "Slot",
+    "Specimen",
+    "SpecimenDefinition",
+    "StructureDefinition",
+    "StructureMap",
+    "Subscription",
+    "Substance",
+    "SubstanceNucleicAcid",
+    "SubstancePolymer",
+    "SubstanceProtein",
+    "SubstanceReferenceInformation",
+    "SubstanceSourceMaterial",
+    "SubstanceSpecification",
+    "SupplyDelivery",
+    "SupplyRequest",
+    "Task",
+    "TerminologyCapabilities",
+    "TestReport",
+    "TestScript",
+    "ValueSet",
+    "VerificationResult",
+    "VisionPrescription"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-evidence",
+   "code": "evidence",
+   "type": "token",
+   "expression": "Condition.evidence.code",
+   "base": [
+    "Condition"
+   ],
+   "description": "Manifestation/symptom",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-onset-age",
+   "code": "onset-age",
+   "type": "quantity",
+   "expression": "Condition.onset.as(Age) | Condition.onset.as(Range)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Onsets as age or age range",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-onset-date",
+   "code": "onset-date",
+   "type": "date",
+   "expression": "Condition.onset.as(dateTime) | Condition.onset.as(Period)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Date related onsets (dateTime and Period)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-onset-info",
+   "code": "onset-info",
+   "type": "string",
+   "expression": "Condition.onset.as(string)",
+   "base": [
+    "Condition"
+   ],
+   "description": "Onsets as a string",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-recorded-date",
+   "code": "recorded-date",
+   "type": "date",
+   "expression": "Condition.recordedDate",
+   "base": [
+    "Condition"
+   ],
+   "description": "Date record was first recorded",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-severity",
+   "code": "severity",
+   "type": "token",
+   "expression": "Condition.severity",
+   "base": [
+    "Condition"
+   ],
+   "description": "The severity of the condition",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-stage",
+   "code": "stage",
+   "type": "token",
+   "expression": "Condition.stage.summary",
+   "base": [
+    "Condition"
+   ],
+   "description": "Simple summary (disease specific)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-subject",
+   "code": "subject",
+   "type": "reference",
+   "expression": "Condition.subject",
+   "base": [
+    "Condition"
+   ],
+   "description": "Who has the condition?",
+   "target": [
+    "Group",
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Condition-verification-status",
+   "code": "verification-status",
+   "type": "token",
+   "expression": "Condition.verificationStatus",
+   "base": [
+    "Condition"
+   ],
+   "description": "unconfirmed | provisional | differential | confirmed | refuted | entered-in-error",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-context-quantity",
+   "code": "context-quantity",
+   "type": "quantity",
+   "expression": "(CapabilityStatement.useContext.value as Quantity) | (CapabilityStatement.useContext.value as Range) | (CodeSystem.useContext.value as Quantity) | (CodeSystem.useContext.value as Range) | (CompartmentDefinition.useContext.value as Quantity) | (CompartmentDefinition.useContext.value as Range) | (ConceptMap.useContext.value as Quantity) | (ConceptMap.useContext.value as Range) | (GraphDefinition.useContext.value as Quantity) | (GraphDefinition.useContext.value as Range) | (ImplementationGuide.useContext.value as Quantity) | (ImplementationGuide.useContext.value as Range) | (MessageDefinition.useContext.value as Quantity) | (MessageDefinition.useContext.value as Range) | (NamingSystem.useContext.value as Quantity) | (NamingSystem.useContext.value as Range) | (OperationDefinition.useContext.value as Quantity) | (OperationDefinition.useContext.value as Range) | (SearchParameter.useContext.value as Quantity) | (SearchParameter.useContext.value as Range) | (StructureDefinition.useContext.value as Quantity) | (StructureDefinition.useContext.value as Range) | (StructureMap.useContext.value as Quantity) | (StructureMap.useContext.value as Range) | (TerminologyCapabilities.useContext.value as Quantity) | (TerminologyCapabilities.useContext.value as Range) | (ValueSet.useContext.value as Quantity) | (ValueSet.useContext.value as Range)",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): A quantity- or range-valued use context assigned to the capability statement\r\n* [CodeSystem](codesystem.html): A quantity- or range-valued use context assigned to the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): A quantity- or range-valued use context assigned to the compartment definition\r\n* [ConceptMap](conceptmap.html): A quantity- or range-valued use context assigned to the concept map\r\n* [GraphDefinition](graphdefinition.html): A quantity- or range-valued use context assigned to the graph definition\r\n* [ImplementationGuide](implementationguide.html): A quantity- or range-valued use context assigned to the implementation guide\r\n* [MessageDefinition](messagedefinition.html): A quantity- or range-valued use context assigned to the message definition\r\n* [NamingSystem](namingsystem.html): A quantity- or range-valued use context assigned to the naming system\r\n* [OperationDefinition](operationdefinition.html): A quantity- or range-valued use context assigned to the operation definition\r\n* [SearchParameter](searchparameter.html): A quantity- or range-valued use context assigned to the search parameter\r\n* [StructureDefinition](structuredefinition.html): A quantity- or range-valued use context assigned to the structure definition\r\n* [StructureMap](structuremap.html): A quantity- or range-valued use context assigned to the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): A quantity- or range-valued use context assigned to the terminology capabilities\r\n* [ValueSet](valueset.html): A quantity- or range-valued use context assigned to the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-context-type-quantity",
+   "code": "context-type-quantity",
+   "type": "composite",
+   "expression": "CapabilityStatement.useContext | CodeSystem.useContext | CompartmentDefinition.useContext | ConceptMap.useContext | GraphDefinition.useContext | ImplementationGuide.useContext | MessageDefinition.useContext | NamingSystem.useContext | OperationDefinition.useContext | SearchParameter.useContext | StructureDefinition.useContext | StructureMap.useContext | TerminologyCapabilities.useContext | ValueSet.useContext",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): A use context type and quantity- or range-based value assigned to the capability statement\r\n* [CodeSystem](codesystem.html): A use context type and quantity- or range-based value assigned to the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): A use context type and quantity- or range-based value assigned to the compartment definition\r\n* [ConceptMap](conceptmap.html): A use context type and quantity- or range-based value assigned to the concept map\r\n* [GraphDefinition](graphdefinition.html): A use context type and quantity- or range-based value assigned to the graph definition\r\n* [ImplementationGuide](implementationguide.html): A use context type and quantity- or range-based value assigned to the implementation guide\r\n* [MessageDefinition](messagedefinition.html): A use context type and quantity- or range-based value assigned to the message definition\r\n* [NamingSystem](namingsystem.html): A use context type and quantity- or range-based value assigned to the naming system\r\n* [OperationDefinition](operationdefinition.html): A use context type and quantity- or range-based value assigned to the operation definition\r\n* [SearchParameter](searchparameter.html): A use context type and quantity- or range-based value assigned to the search parameter\r\n* [StructureDefinition](structuredefinition.html): A use context type and quantity- or range-based value assigned to the structure definition\r\n* [StructureMap](structuremap.html): A use context type and quantity- or range-based value assigned to the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): A use context type and quantity- or range-based value assigned to the terminology capabilities\r\n* [ValueSet](valueset.html): A use context type and quantity- or range-based value assigned to the value set\r\n",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/conformance-context-type",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/conformance-context-quantity",
+     "expression": "value.as(Quantity) | value.as(Range)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-context-type-value",
+   "code": "context-type-value",
+   "type": "composite",
+   "expression": "CapabilityStatement.useContext | CodeSystem.useContext | CompartmentDefinition.useContext | ConceptMap.useContext | GraphDefinition.useContext | ImplementationGuide.useContext | MessageDefinition.useContext | NamingSystem.useContext | OperationDefinition.useContext | SearchParameter.useContext | StructureDefinition.useContext | StructureMap.useContext | TerminologyCapabilities.useContext | ValueSet.useContext",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): A use context type and value assigned to the capability statement\r\n* [CodeSystem](codesystem.html): A use context type and value assigned to the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): A use context type and value assigned to the compartment definition\r\n* [ConceptMap](conceptmap.html): A use context type and value assigned to the concept map\r\n* [GraphDefinition](graphdefinition.html): A use context type and value assigned to the graph definition\r\n* [ImplementationGuide](implementationguide.html): A use context type and value assigned to the implementation guide\r\n* [MessageDefinition](messagedefinition.html): A use context type and value assigned to the message definition\r\n* [NamingSystem](namingsystem.html): A use context type and value assigned to the naming system\r\n* [OperationDefinition](operationdefinition.html): A use context type and value assigned to the operation definition\r\n* [SearchParameter](searchparameter.html): A use context type and value assigned to the search parameter\r\n* [StructureDefinition](structuredefinition.html): A use context type and value assigned to the structure definition\r\n* [StructureMap](structuremap.html): A use context type and value assigned to the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): A use context type and value assigned to the terminology capabilities\r\n* [ValueSet](valueset.html): A use context type and value assigned to the value set\r\n",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/conformance-context-type",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/conformance-context",
+     "expression": "value.as(CodeableConcept)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-context-type",
+   "code": "context-type",
+   "type": "token",
+   "expression": "CapabilityStatement.useContext.code | CodeSystem.useContext.code | CompartmentDefinition.useContext.code | ConceptMap.useContext.code | GraphDefinition.useContext.code | ImplementationGuide.useContext.code | MessageDefinition.useContext.code | NamingSystem.useContext.code | OperationDefinition.useContext.code | SearchParameter.useContext.code | StructureDefinition.useContext.code | StructureMap.useContext.code | TerminologyCapabilities.useContext.code | ValueSet.useContext.code",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): A type of use context assigned to the capability statement\r\n* [CodeSystem](codesystem.html): A type of use context assigned to the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): A type of use context assigned to the compartment definition\r\n* [ConceptMap](conceptmap.html): A type of use context assigned to the concept map\r\n* [GraphDefinition](graphdefinition.html): A type of use context assigned to the graph definition\r\n* [ImplementationGuide](implementationguide.html): A type of use context assigned to the implementation guide\r\n* [MessageDefinition](messagedefinition.html): A type of use context assigned to the message definition\r\n* [NamingSystem](namingsystem.html): A type of use context assigned to the naming system\r\n* [OperationDefinition](operationdefinition.html): A type of use context assigned to the operation definition\r\n* [SearchParameter](searchparameter.html): A type of use context assigned to the search parameter\r\n* [StructureDefinition](structuredefinition.html): A type of use context assigned to the structure definition\r\n* [StructureMap](structuremap.html): A type of use context assigned to the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): A type of use context assigned to the terminology capabilities\r\n* [ValueSet](valueset.html): A type of use context assigned to the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-context",
+   "code": "context",
+   "type": "token",
+   "expression": "(CapabilityStatement.useContext.value as CodeableConcept) | (CodeSystem.useContext.value as CodeableConcept) | (CompartmentDefinition.useContext.value as CodeableConcept) | (ConceptMap.useContext.value as CodeableConcept) | (GraphDefinition.useContext.value as CodeableConcept) | (ImplementationGuide.useContext.value as CodeableConcept) | (MessageDefinition.useContext.value as CodeableConcept) | (NamingSystem.useContext.value as CodeableConcept) | (OperationDefinition.useContext.value as CodeableConcept) | (SearchParameter.useContext.value as CodeableConcept) | (StructureDefinition.useContext.value as CodeableConcept) | (StructureMap.useContext.value as CodeableConcept) | (TerminologyCapabilities.useContext.value as CodeableConcept) | (ValueSet.useContext.value as CodeableConcept)",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): A use context assigned to the capability statement\r\n* [CodeSystem](codesystem.html): A use context assigned to the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): A use context assigned to the compartment definition\r\n* [ConceptMap](conceptmap.html): A use context assigned to the concept map\r\n* [GraphDefinition](graphdefinition.html): A use context assigned to the graph definition\r\n* [ImplementationGuide](implementationguide.html): A use context assigned to the implementation guide\r\n* [MessageDefinition](messagedefinition.html): A use context assigned to the message definition\r\n* [NamingSystem](namingsystem.html): A use context assigned to the naming system\r\n* [OperationDefinition](operationdefinition.html): A use context assigned to the operation definition\r\n* [SearchParameter](searchparameter.html): A use context assigned to the search parameter\r\n* [StructureDefinition](structuredefinition.html): A use context assigned to the structure definition\r\n* [StructureMap](structuremap.html): A use context assigned to the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): A use context assigned to the terminology capabilities\r\n* [ValueSet](valueset.html): A use context assigned to the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-date",
+   "code": "date",
+   "type": "date",
+   "expression": "CapabilityStatement.date | CodeSystem.date | CompartmentDefinition.date | ConceptMap.date | GraphDefinition.date | ImplementationGuide.date | MessageDefinition.date | NamingSystem.date | OperationDefinition.date | SearchParameter.date | StructureDefinition.date | StructureMap.date | TerminologyCapabilities.date | ValueSet.date",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The capability statement publication date\r\n* [CodeSystem](codesystem.html): The code system publication date\r\n* [CompartmentDefinition](compartmentdefinition.html): The compartment definition publication date\r\n* [ConceptMap](conceptmap.html): The concept map publication date\r\n* [GraphDefinition](graphdefinition.html): The graph definition publication date\r\n* [ImplementationGuide](implementationguide.html): The implementation guide publication date\r\n* [MessageDefinition](messagedefinition.html): The message definition publication date\r\n* [NamingSystem](namingsystem.html): The naming system publication date\r\n* [OperationDefinition](operationdefinition.html): The operation definition publication date\r\n* [SearchParameter](searchparameter.html): The search parameter publication date\r\n* [StructureDefinition](structuredefinition.html): The structure definition publication date\r\n* [StructureMap](structuremap.html): The structure map publication date\r\n* [TerminologyCapabilities](terminologycapabilities.html): The terminology capabilities publication date\r\n* [ValueSet](valueset.html): The value set publication date\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-description",
+   "code": "description",
+   "type": "string",
+   "expression": "CapabilityStatement.description | CodeSystem.description | CompartmentDefinition.description | ConceptMap.description | GraphDefinition.description | ImplementationGuide.description | MessageDefinition.description | NamingSystem.description | OperationDefinition.description | SearchParameter.description | StructureDefinition.description | StructureMap.description | TerminologyCapabilities.description | ValueSet.description",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The description of the capability statement\r\n* [CodeSystem](codesystem.html): The description of the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): The description of the compartment definition\r\n* [ConceptMap](conceptmap.html): The description of the concept map\r\n* [GraphDefinition](graphdefinition.html): The description of the graph definition\r\n* [ImplementationGuide](implementationguide.html): The description of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): The description of the message definition\r\n* [NamingSystem](namingsystem.html): The description of the naming system\r\n* [OperationDefinition](operationdefinition.html): The description of the operation definition\r\n* [SearchParameter](searchparameter.html): The description of the search parameter\r\n* [StructureDefinition](structuredefinition.html): The description of the structure definition\r\n* [StructureMap](structuremap.html): The description of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): The description of the terminology capabilities\r\n* [ValueSet](valueset.html): The description of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "CodeSystem.identifier | ConceptMap.identifier | MessageDefinition.identifier | StructureDefinition.identifier | StructureMap.identifier | ValueSet.identifier",
+   "base": [
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CodeSystem](codesystem.html): External identifier for the code system\r\n* [ConceptMap](conceptmap.html): External identifier for the concept map\r\n* [MessageDefinition](messagedefinition.html): External identifier for the message definition\r\n* [StructureDefinition](structuredefinition.html): External identifier for the structure definition\r\n* [StructureMap](structuremap.html): External identifier for the structure map\r\n* [ValueSet](valueset.html): External identifier for the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-jurisdiction",
+   "code": "jurisdiction",
+   "type": "token",
+   "expression": "CapabilityStatement.jurisdiction | CodeSystem.jurisdiction | ConceptMap.jurisdiction | GraphDefinition.jurisdiction | ImplementationGuide.jurisdiction | MessageDefinition.jurisdiction | NamingSystem.jurisdiction | OperationDefinition.jurisdiction | SearchParameter.jurisdiction | StructureDefinition.jurisdiction | StructureMap.jurisdiction | TerminologyCapabilities.jurisdiction | ValueSet.jurisdiction",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): Intended jurisdiction for the capability statement\r\n* [CodeSystem](codesystem.html): Intended jurisdiction for the code system\r\n* [ConceptMap](conceptmap.html): Intended jurisdiction for the concept map\r\n* [GraphDefinition](graphdefinition.html): Intended jurisdiction for the graph definition\r\n* [ImplementationGuide](implementationguide.html): Intended jurisdiction for the implementation guide\r\n* [MessageDefinition](messagedefinition.html): Intended jurisdiction for the message definition\r\n* [NamingSystem](namingsystem.html): Intended jurisdiction for the naming system\r\n* [OperationDefinition](operationdefinition.html): Intended jurisdiction for the operation definition\r\n* [SearchParameter](searchparameter.html): Intended jurisdiction for the search parameter\r\n* [StructureDefinition](structuredefinition.html): Intended jurisdiction for the structure definition\r\n* [StructureMap](structuremap.html): Intended jurisdiction for the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): Intended jurisdiction for the terminology capabilities\r\n* [ValueSet](valueset.html): Intended jurisdiction for the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-name",
+   "code": "name",
+   "type": "string",
+   "expression": "CapabilityStatement.name | CodeSystem.name | CompartmentDefinition.name | ConceptMap.name | GraphDefinition.name | ImplementationGuide.name | MessageDefinition.name | NamingSystem.name | OperationDefinition.name | SearchParameter.name | StructureDefinition.name | StructureMap.name | TerminologyCapabilities.name | ValueSet.name",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): Computationally friendly name of the capability statement\r\n* [CodeSystem](codesystem.html): Computationally friendly name of the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): Computationally friendly name of the compartment definition\r\n* [ConceptMap](conceptmap.html): Computationally friendly name of the concept map\r\n* [GraphDefinition](graphdefinition.html): Computationally friendly name of the graph definition\r\n* [ImplementationGuide](implementationguide.html): Computationally friendly name of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): Computationally friendly name of the message definition\r\n* [NamingSystem](namingsystem.html): Computationally friendly name of the naming system\r\n* [OperationDefinition](operationdefinition.html): Computationally friendly name of the operation definition\r\n* [SearchParameter](searchparameter.html): Computationally friendly name of the search parameter\r\n* [StructureDefinition](structuredefinition.html): Computationally friendly name of the structure definition\r\n* [StructureMap](structuremap.html): Computationally friendly name of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): Computationally friendly name of the terminology capabilities\r\n* [ValueSet](valueset.html): Computationally friendly name of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-publisher",
+   "code": "publisher",
+   "type": "string",
+   "expression": "CapabilityStatement.publisher | CodeSystem.publisher | CompartmentDefinition.publisher | ConceptMap.publisher | GraphDefinition.publisher | ImplementationGuide.publisher | MessageDefinition.publisher | NamingSystem.publisher | OperationDefinition.publisher | SearchParameter.publisher | StructureDefinition.publisher | StructureMap.publisher | TerminologyCapabilities.publisher | ValueSet.publisher",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): Name of the publisher of the capability statement\r\n* [CodeSystem](codesystem.html): Name of the publisher of the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): Name of the publisher of the compartment definition\r\n* [ConceptMap](conceptmap.html): Name of the publisher of the concept map\r\n* [GraphDefinition](graphdefinition.html): Name of the publisher of the graph definition\r\n* [ImplementationGuide](implementationguide.html): Name of the publisher of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): Name of the publisher of the message definition\r\n* [NamingSystem](namingsystem.html): Name of the publisher of the naming system\r\n* [OperationDefinition](operationdefinition.html): Name of the publisher of the operation definition\r\n* [SearchParameter](searchparameter.html): Name of the publisher of the search parameter\r\n* [StructureDefinition](structuredefinition.html): Name of the publisher of the structure definition\r\n* [StructureMap](structuremap.html): Name of the publisher of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): Name of the publisher of the terminology capabilities\r\n* [ValueSet](valueset.html): Name of the publisher of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-status",
+   "code": "status",
+   "type": "token",
+   "expression": "CapabilityStatement.status | CodeSystem.status | CompartmentDefinition.status | ConceptMap.status | GraphDefinition.status | ImplementationGuide.status | MessageDefinition.status | NamingSystem.status | OperationDefinition.status | SearchParameter.status | StructureDefinition.status | StructureMap.status | TerminologyCapabilities.status | ValueSet.status",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The current status of the capability statement\r\n* [CodeSystem](codesystem.html): The current status of the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): The current status of the compartment definition\r\n* [ConceptMap](conceptmap.html): The current status of the concept map\r\n* [GraphDefinition](graphdefinition.html): The current status of the graph definition\r\n* [ImplementationGuide](implementationguide.html): The current status of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): The current status of the message definition\r\n* [NamingSystem](namingsystem.html): The current status of the naming system\r\n* [OperationDefinition](operationdefinition.html): The current status of the operation definition\r\n* [SearchParameter](searchparameter.html): The current status of the search parameter\r\n* [StructureDefinition](structuredefinition.html): The current status of the structure definition\r\n* [StructureMap](structuremap.html): The current status of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): The current status of the terminology capabilities\r\n* [ValueSet](valueset.html): The current status of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-title",
+   "code": "title",
+   "type": "string",
+   "expression": "CapabilityStatement.title | CodeSystem.title | ConceptMap.title | ImplementationGuide.title | MessageDefinition.title | OperationDefinition.title | StructureDefinition.title | StructureMap.title | TerminologyCapabilities.title | ValueSet.title",
+   "base": [
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The human-friendly name of the capability statement\r\n* [CodeSystem](codesystem.html): The human-friendly name of the code system\r\n* [ConceptMap](conceptmap.html): The human-friendly name of the concept map\r\n* [ImplementationGuide](implementationguide.html): The human-friendly name of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): The human-friendly name of the message definition\r\n* [OperationDefinition](operationdefinition.html): The human-friendly name of the operation definition\r\n* [StructureDefinition](structuredefinition.html): The human-friendly name of the structure definition\r\n* [StructureMap](structuremap.html): The human-friendly name of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): The human-friendly name of the terminology capabilities\r\n* [ValueSet](valueset.html): The human-friendly name of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-url",
+   "code": "url",
+   "type": "uri",
+   "expression": "CapabilityStatement.url | CodeSystem.url | CompartmentDefinition.url | ConceptMap.url | GraphDefinition.url | ImplementationGuide.url | MessageDefinition.url | OperationDefinition.url | SearchParameter.url | StructureDefinition.url | StructureMap.url | TerminologyCapabilities.url | ValueSet.url",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The uri that identifies the capability statement\r\n* [CodeSystem](codesystem.html): The uri that identifies the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): The uri that identifies the compartment definition\r\n* [ConceptMap](conceptmap.html): The uri that identifies the concept map\r\n* [GraphDefinition](graphdefinition.html): The uri that identifies the graph definition\r\n* [ImplementationGuide](implementationguide.html): The uri that identifies the implementation guide\r\n* [MessageDefinition](messagedefinition.html): The uri that identifies the message definition\r\n* [OperationDefinition](operationdefinition.html): The uri that identifies the operation definition\r\n* [SearchParameter](searchparameter.html): The uri that identifies the search parameter\r\n* [StructureDefinition](structuredefinition.html): The uri that identifies the structure definition\r\n* [StructureMap](structuremap.html): The uri that identifies the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): The uri that identifies the terminology capabilities\r\n* [ValueSet](valueset.html): The uri that identifies the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/conformance-version",
+   "code": "version",
+   "type": "token",
+   "expression": "CapabilityStatement.version | CodeSystem.version | CompartmentDefinition.version | ConceptMap.version | GraphDefinition.version | ImplementationGuide.version | MessageDefinition.version | OperationDefinition.version | SearchParameter.version | StructureDefinition.version | StructureMap.version | TerminologyCapabilities.version | ValueSet.version",
+   "base": [
+    "SearchParameter",
+    "ValueSet"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [CapabilityStatement](capabilitystatement.html): The business version of the capability statement\r\n* [CodeSystem](codesystem.html): The business version of the code system\r\n* [CompartmentDefinition](compartmentdefinition.html): The business version of the compartment definition\r\n* [ConceptMap](conceptmap.html): The business version of the concept map\r\n* [GraphDefinition](graphdefinition.html): The business version of the graph definition\r\n* [ImplementationGuide](implementationguide.html): The business version of the implementation guide\r\n* [MessageDefinition](messagedefinition.html): The business version of the message definition\r\n* [OperationDefinition](operationdefinition.html): The business version of the operation definition\r\n* [SearchParameter](searchparameter.html): The business version of the search parameter\r\n* [StructureDefinition](structuredefinition.html): The business version of the structure definition\r\n* [StructureMap](structuremap.html): The business version of the structure map\r\n* [TerminologyCapabilities](terminologycapabilities.html): The business version of the terminology capabilities\r\n* [ValueSet](valueset.html): The business version of the value set\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-device-name",
+   "code": "device-name",
+   "type": "string",
+   "expression": "Device.deviceName.name | Device.type.coding.display | Device.type.text",
+   "base": [
+    "Device"
+   ],
+   "description": "A server defined search that may match any of the string fields in Device.deviceName or Device.type.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/device-extensions-Device-din",
+   "code": "din",
+   "type": "token",
+   "expression": "Device.extension('http://hl7.org/fhir/SearchParameter/device-extensions-Device-din')",
+   "base": [
+    "Device"
+   ],
+   "description": "The donation identification number (DIN)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "Device.identifier",
+   "base": [
+    "Device"
+   ],
+   "description": "Instance id from manufacturer, owner, and others",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-location",
+   "code": "location",
+   "type": "reference",
+   "expression": "Device.location",
+   "base": [
+    "Device"
+   ],
+   "description": "A location, where the resource is found",
+   "target": [
+    "Location"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-manufacturer",
+   "code": "manufacturer",
+   "type": "string",
+   "expression": "Device.manufacturer",
+   "base": [
+    "Device"
+   ],
+   "description": "The manufacturer of the device",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-model",
+   "code": "model",
+   "type": "string",
+   "expression": "Device.modelNumber",
+   "base": [
+    "Device"
+   ],
+   "description": "The model of the device",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-organization",
+   "code": "organization",
+   "type": "reference",
+   "expression": "Device.owner",
+   "base": [
+    "Device"
+   ],
+   "description": "The organization responsible for the device",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-patient",
+   "code": "patient",
+   "type": "reference",
+   "expression": "Device.patient",
+   "base": [
+    "Device"
+   ],
+   "description": "Patient information, if the resource is affixed to a person",
+   "target": [
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-status",
+   "code": "status",
+   "type": "token",
+   "expression": "Device.status",
+   "base": [
+    "Device"
+   ],
+   "description": "active | inactive | entered-in-error | unknown",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-type",
+   "code": "type",
+   "type": "token",
+   "expression": "Device.type",
+   "base": [
+    "Device"
+   ],
+   "description": "The type of the device",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-udi-carrier",
+   "code": "udi-carrier",
+   "type": "string",
+   "expression": "Device.udiCarrier.carrierHRF",
+   "base": [
+    "Device"
+   ],
+   "description": "UDI Barcode (RFID or other technology) string in *HRF* format.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-udi-di",
+   "code": "udi-di",
+   "type": "string",
+   "expression": "Device.udiCarrier.deviceIdentifier",
+   "base": [
+    "Device"
+   ],
+   "description": "The udi Device Identifier (DI)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Device-url",
+   "code": "url",
+   "type": "uri",
+   "expression": "Device.url",
+   "base": [
+    "Device"
+   ],
+   "description": "Network address to contact device",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/DomainResource-text",
+   "code": "_text",
+   "type": "string",
+   "expression": null,
+   "base": [
+    "DomainResource"
+   ],
+   "description": "Search on the narrative of the resource",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-account",
+   "code": "account",
+   "type": "reference",
+   "expression": "Encounter.account",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The set of accounts that may be used for billing for this Encounter",
+   "target": [
+    "Account"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-appointment",
+   "code": "appointment",
+   "type": "reference",
+   "expression": "Encounter.appointment",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The appointment that scheduled this encounter",
+   "target": [
+    "Appointment"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-based-on",
+   "code": "based-on",
+   "type": "reference",
+   "expression": "Encounter.basedOn",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The ServiceRequest that initiated this encounter",
+   "target": [
+    "ServiceRequest"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-class",
+   "code": "class",
+   "type": "token",
+   "expression": "Encounter.class",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Classification of patient encounter",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-diagnosis",
+   "code": "diagnosis",
+   "type": "reference",
+   "expression": "Encounter.diagnosis.condition",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The diagnosis or procedure relevant to the encounter",
+   "target": [
+    "Condition",
+    "Procedure"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-episode-of-care",
+   "code": "episode-of-care",
+   "type": "reference",
+   "expression": "Encounter.episodeOfCare",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Episode(s) of care that this encounter should be recorded against",
+   "target": [
+    "EpisodeOfCare"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-length",
+   "code": "length",
+   "type": "quantity",
+   "expression": "Encounter.length",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Length of encounter in days",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-location-period",
+   "code": "location-period",
+   "type": "date",
+   "expression": "Encounter.location.period",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Time period during which the patient was present at the location",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-location",
+   "code": "location",
+   "type": "reference",
+   "expression": "Encounter.location.location",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Location the encounter takes place",
+   "target": [
+    "Location"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-part-of",
+   "code": "part-of",
+   "type": "reference",
+   "expression": "Encounter.partOf",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Another Encounter this encounter is part of",
+   "target": [
+    "Encounter"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-participant-type",
+   "code": "participant-type",
+   "type": "token",
+   "expression": "Encounter.participant.type",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Role of participant in encounter",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-participant",
+   "code": "participant",
+   "type": "reference",
+   "expression": "Encounter.participant.individual",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Persons involved in the encounter other than the patient",
+   "target": [
+    "Practitioner",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-practitioner",
+   "code": "practitioner",
+   "type": "reference",
+   "expression": "Encounter.participant.individual.where(resolve() is Practitioner)",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Persons involved in the encounter other than the patient",
+   "target": [
+    "Practitioner"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-reason-code",
+   "code": "reason-code",
+   "type": "token",
+   "expression": "Encounter.reasonCode",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Coded reason the encounter takes place",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-reason-reference",
+   "code": "reason-reference",
+   "type": "reference",
+   "expression": "Encounter.reasonReference",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Reason the encounter takes place (reference)",
+   "target": [
+    "Condition",
+    "Observation",
+    "Procedure",
+    "ImmunizationRecommendation"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-service-provider",
+   "code": "service-provider",
+   "type": "reference",
+   "expression": "Encounter.serviceProvider",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The organization (facility) responsible for this encounter",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-special-arrangement",
+   "code": "special-arrangement",
+   "type": "token",
+   "expression": "Encounter.hospitalization.specialArrangement",
+   "base": [
+    "Encounter"
+   ],
+   "description": "Wheelchair, translator, stretcher, etc.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-status",
+   "code": "status",
+   "type": "token",
+   "expression": "Encounter.status",
+   "base": [
+    "Encounter"
+   ],
+   "description": "planned | arrived | triaged | in-progress | onleave | finished | cancelled +",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Encounter-subject",
+   "code": "subject",
+   "type": "reference",
+   "expression": "Encounter.subject",
+   "base": [
+    "Encounter"
+   ],
+   "description": "The patient or group present at the encounter",
+   "target": [
+    "Group",
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/example-extension",
+   "code": "part-agree",
+   "type": "reference",
+   "expression": "DocumentReference.extension('http://example.org/fhir/StructureDefinition/participation-agreement')",
+   "base": [
+    "Patient"
+   ],
+   "description": "Search by url for a participation agreement, which is stored in a DocumentReference",
+   "target": [
+    "DocumentReference"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/example-reference",
+   "code": "subject",
+   "type": "reference",
+   "expression": "Condition.subject",
+   "base": [
+    "Condition"
+   ],
+   "description": "Search by condition subject",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/example",
+   "code": "_id",
+   "type": "token",
+   "expression": "id",
+   "base": [
+    "Resource"
+   ],
+   "description": "Search by resource identifier - e.g. same as the read interaction, but can return included resources",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/filter",
+   "code": "_filter",
+   "type": "special",
+   "expression": null,
+   "base": [
+    "Resource"
+   ],
+   "description": "This is the formal declaration for the _filter parameter, documented at [http://hl7.org/fhir/search_filter.html](http://hl7.org/fhir/search_filter.html)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-actual",
+   "code": "actual",
+   "type": "token",
+   "expression": "Group.actual",
+   "base": [
+    "Group"
+   ],
+   "description": "Descriptive or actual",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-characteristic-value",
+   "code": "characteristic-value",
+   "type": "composite",
+   "expression": "Group.characteristic",
+   "base": [
+    "Group"
+   ],
+   "description": "A composite of both characteristic and value",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Group-characteristic",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Group-value",
+     "expression": "value"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-characteristic",
+   "code": "characteristic",
+   "type": "token",
+   "expression": "Group.characteristic.code",
+   "base": [
+    "Group"
+   ],
+   "description": "Kind of characteristic",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-code",
+   "code": "code",
+   "type": "token",
+   "expression": "Group.code",
+   "base": [
+    "Group"
+   ],
+   "description": "The kind of resources contained",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-exclude",
+   "code": "exclude",
+   "type": "token",
+   "expression": "Group.characteristic.exclude",
+   "base": [
+    "Group"
+   ],
+   "description": "Group includes or excludes",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "Group.identifier",
+   "base": [
+    "Group"
+   ],
+   "description": "Unique id",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-managing-entity",
+   "code": "managing-entity",
+   "type": "reference",
+   "expression": "Group.managingEntity",
+   "base": [
+    "Group"
+   ],
+   "description": "Entity that is the custodian of the Group's definition",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-member",
+   "code": "member",
+   "type": "reference",
+   "expression": "Group.member.entity",
+   "base": [
+    "Group"
+   ],
+   "description": "Reference to the group member",
+   "target": [
+    "Practitioner",
+    "Group",
+    "Device",
+    "Medication",
+    "Patient",
+    "Substance",
+    "PractitionerRole"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-type",
+   "code": "type",
+   "type": "token",
+   "expression": "Group.type",
+   "base": [
+    "Group"
+   ],
+   "description": "The type of resources the group contains",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Group-value",
+   "code": "value",
+   "type": "token",
+   "expression": "(Group.characteristic.value as CodeableConcept) | (Group.characteristic.value as boolean)",
+   "base": [
+    "Group"
+   ],
+   "description": "Value held by characteristic",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address-city",
+   "code": "address-city",
+   "type": "string",
+   "expression": "Patient.address.city | Person.address.city | Practitioner.address.city | RelatedPerson.address.city",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A city specified in an address\r\n* [Person](person.html): A city specified in an address\r\n* [Practitioner](practitioner.html): A city specified in an address\r\n* [RelatedPerson](relatedperson.html): A city specified in an address\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address-country",
+   "code": "address-country",
+   "type": "string",
+   "expression": "Patient.address.country | Person.address.country | Practitioner.address.country | RelatedPerson.address.country",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A country specified in an address\r\n* [Person](person.html): A country specified in an address\r\n* [Practitioner](practitioner.html): A country specified in an address\r\n* [RelatedPerson](relatedperson.html): A country specified in an address\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address-postalcode",
+   "code": "address-postalcode",
+   "type": "string",
+   "expression": "Patient.address.postalCode | Person.address.postalCode | Practitioner.address.postalCode | RelatedPerson.address.postalCode",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A postalCode specified in an address\r\n* [Person](person.html): A postal code specified in an address\r\n* [Practitioner](practitioner.html): A postalCode specified in an address\r\n* [RelatedPerson](relatedperson.html): A postal code specified in an address\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address-state",
+   "code": "address-state",
+   "type": "string",
+   "expression": "Patient.address.state | Person.address.state | Practitioner.address.state | RelatedPerson.address.state",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A state specified in an address\r\n* [Person](person.html): A state specified in an address\r\n* [Practitioner](practitioner.html): A state specified in an address\r\n* [RelatedPerson](relatedperson.html): A state specified in an address\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address-use",
+   "code": "address-use",
+   "type": "token",
+   "expression": "Patient.address.use | Person.address.use | Practitioner.address.use | RelatedPerson.address.use",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A use code specified in an address\r\n* [Person](person.html): A use code specified in an address\r\n* [Practitioner](practitioner.html): A use code specified in an address\r\n* [RelatedPerson](relatedperson.html): A use code specified in an address\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-address",
+   "code": "address",
+   "type": "string",
+   "expression": "Patient.address | Person.address | Practitioner.address | RelatedPerson.address",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A server defined search that may match any of the string fields in the Address, including line, city, district, state, country, postalCode, and/or text\r\n* [Person](person.html): A server defined search that may match any of the string fields in the Address, including line, city, district, state, country, postalCode, and/or text\r\n* [Practitioner](practitioner.html): A server defined search that may match any of the string fields in the Address, including line, city, district, state, country, postalCode, and/or text\r\n* [RelatedPerson](relatedperson.html): A server defined search that may match any of the string fields in the Address, including line, city, district, state, country, postalCode, and/or text\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-birthdate",
+   "code": "birthdate",
+   "type": "date",
+   "expression": "Patient.birthDate | Person.birthDate | RelatedPerson.birthDate",
+   "base": [
+    "Patient",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): The patient's date of birth\r\n* [Person](person.html): The person's date of birth\r\n* [RelatedPerson](relatedperson.html): The Related Person's date of birth\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-email",
+   "code": "email",
+   "type": "token",
+   "expression": "Patient.telecom.where(system='email') | Person.telecom.where(system='email') | Practitioner.telecom.where(system='email') | PractitionerRole.telecom.where(system='email') | RelatedPerson.telecom.where(system='email')",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A value in an email contact\r\n* [Person](person.html): A value in an email contact\r\n* [Practitioner](practitioner.html): A value in an email contact\r\n* [PractitionerRole](practitionerrole.html): A value in an email contact\r\n* [RelatedPerson](relatedperson.html): A value in an email contact\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-family",
+   "code": "family",
+   "type": "string",
+   "expression": "Patient.name.family | Practitioner.name.family",
+   "base": [
+    "Patient",
+    "Practitioner"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A portion of the family name of the patient\r\n* [Practitioner](practitioner.html): A portion of the family name\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-gender",
+   "code": "gender",
+   "type": "token",
+   "expression": "Patient.gender | Person.gender | Practitioner.gender | RelatedPerson.gender",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): Gender of the patient\r\n* [Person](person.html): The gender of the person\r\n* [Practitioner](practitioner.html): Gender of the practitioner\r\n* [RelatedPerson](relatedperson.html): Gender of the related person\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-given",
+   "code": "given",
+   "type": "string",
+   "expression": "Patient.name.given | Practitioner.name.given",
+   "base": [
+    "Patient",
+    "Practitioner"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A portion of the given name of the patient\r\n* [Practitioner](practitioner.html): A portion of the given name\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-phone",
+   "code": "phone",
+   "type": "token",
+   "expression": "Patient.telecom.where(system='phone') | Person.telecom.where(system='phone') | Practitioner.telecom.where(system='phone') | PractitionerRole.telecom.where(system='phone') | RelatedPerson.telecom.where(system='phone')",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A value in a phone contact\r\n* [Person](person.html): A value in a phone contact\r\n* [Practitioner](practitioner.html): A value in a phone contact\r\n* [PractitionerRole](practitionerrole.html): A value in a phone contact\r\n* [RelatedPerson](relatedperson.html): A value in a phone contact\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-phonetic",
+   "code": "phonetic",
+   "type": "string",
+   "expression": "Patient.name | Person.name | Practitioner.name | RelatedPerson.name",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): A portion of either family or given name using some kind of phonetic matching algorithm\r\n* [Person](person.html): A portion of name using some kind of phonetic matching algorithm\r\n* [Practitioner](practitioner.html): A portion of either family or given name using some kind of phonetic matching algorithm\r\n* [RelatedPerson](relatedperson.html): A portion of name using some kind of phonetic matching algorithm\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/individual-telecom",
+   "code": "telecom",
+   "type": "token",
+   "expression": "Patient.telecom | Person.telecom | Practitioner.telecom | PractitionerRole.telecom | RelatedPerson.telecom",
+   "base": [
+    "Patient",
+    "Practitioner",
+    "RelatedPerson"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [Patient](patient.html): The value in any kind of telecom details of the patient\r\n* [Person](person.html): The value in any kind of contact\r\n* [Practitioner](practitioner.html): The value in any kind of contact\r\n* [PractitionerRole](practitionerrole.html): The value in any kind of contact\r\n* [RelatedPerson](relatedperson.html): The value in any kind of contact\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-empty-reason",
+   "code": "empty-reason",
+   "type": "token",
+   "expression": "List.emptyReason",
+   "base": [
+    "List"
+   ],
+   "description": "Why list is empty",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-item",
+   "code": "item",
+   "type": "reference",
+   "expression": "List.entry.item",
+   "base": [
+    "List"
+   ],
+   "description": "Actual entry",
+   "target": [
+    "Account",
+    "ActivityDefinition",
+    "AdverseEvent",
+    "AllergyIntolerance",
+    "Appointment",
+    "AppointmentResponse",
+    "AuditEvent",
+    "Basic",
+    "Binary",
+    "BiologicallyDerivedProduct",
+    "BodyStructure",
+    "Bundle",
+    "CapabilityStatement",
+    "CarePlan",
+    "CareTeam",
+    "CatalogEntry",
+    "ChargeItem",
+    "ChargeItemDefinition",
+    "Claim",
+    "ClaimResponse",
+    "ClinicalImpression",
+    "CodeSystem",
+    "Communication",
+    "CommunicationRequest",
+    "CompartmentDefinition",
+    "Composition",
+    "ConceptMap",
+    "Condition",
+    "Consent",
+    "Contract",
+    "Coverage",
+    "CoverageEligibilityRequest",
+    "CoverageEligibilityResponse",
+    "DetectedIssue",
+    "Device",
+    "DeviceDefinition",
+    "DeviceMetric",
+    "DeviceRequest",
+    "DeviceUseStatement",
+    "DiagnosticReport",
+    "DocumentManifest",
+    "DocumentReference",
+    "EffectEvidenceSynthesis",
+    "Encounter",
+    "Endpoint",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "EpisodeOfCare",
+    "EventDefinition",
+    "Evidence",
+    "EvidenceVariable",
+    "ExampleScenario",
+    "ExplanationOfBenefit",
+    "FamilyMemberHistory",
+    "Flag",
+    "Goal",
+    "GraphDefinition",
+    "Group",
+    "GuidanceResponse",
+    "HealthcareService",
+    "ImagingStudy",
+    "Immunization",
+    "ImmunizationEvaluation",
+    "ImmunizationRecommendation",
+    "ImplementationGuide",
+    "InsurancePlan",
+    "Invoice",
+    "Library",
+    "Linkage",
+    "List",
+    "Location",
+    "Measure",
+    "MeasureReport",
+    "Media",
+    "Medication",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationKnowledge",
+    "MedicationRequest",
+    "MedicationStatement",
+    "MedicinalProduct",
+    "MedicinalProductAuthorization",
+    "MedicinalProductContraindication",
+    "MedicinalProductIndication",
+    "MedicinalProductIngredient",
+    "MedicinalProductInteraction",
+    "MedicinalProductManufactured",
+    "MedicinalProductPackaged",
+    "MedicinalProductPharmaceutical",
+    "MedicinalProductUndesirableEffect",
+    "MessageDefinition",
+    "MessageHeader",
+    "MolecularSequence",
+    "NamingSystem",
+    "NutritionOrder",
+    "Observation",
+    "ObservationDefinition",
+    "OperationDefinition",
+    "OperationOutcome",
+    "Organization",
+    "OrganizationAffiliation",
+    "Patient",
+    "PaymentNotice",
+    "PaymentReconciliation",
+    "Person",
+    "PlanDefinition",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "RequestGroup",
+    "ResearchDefinition",
+    "ResearchElementDefinition",
+    "ResearchStudy",
+    "ResearchSubject",
+    "RiskAssessment",
+    "RiskEvidenceSynthesis",
+    "Schedule",
+    "SearchParameter",
+    "ServiceRequest",
+    "Slot",
+    "Specimen",
+    "SpecimenDefinition",
+    "StructureDefinition",
+    "StructureMap",
+    "Subscription",
+    "Substance",
+    "SubstanceNucleicAcid",
+    "SubstancePolymer",
+    "SubstanceProtein",
+    "SubstanceReferenceInformation",
+    "SubstanceSourceMaterial",
+    "SubstanceSpecification",
+    "SupplyDelivery",
+    "SupplyRequest",
+    "Task",
+    "TerminologyCapabilities",
+    "TestReport",
+    "TestScript",
+    "ValueSet",
+    "VerificationResult",
+    "VisionPrescription"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-notes",
+   "code": "notes",
+   "type": "string",
+   "expression": "List.note.text",
+   "base": [
+    "List"
+   ],
+   "description": "The annotation  - text content (as markdown)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-source",
+   "code": "source",
+   "type": "reference",
+   "expression": "List.source",
+   "base": [
+    "List"
+   ],
+   "description": "Who and/or what defined the list contents (aka Author)",
+   "target": [
+    "Practitioner",
+    "Device",
+    "Patient",
+    "PractitionerRole"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-status",
+   "code": "status",
+   "type": "token",
+   "expression": "List.status",
+   "base": [
+    "List"
+   ],
+   "description": "current | retired | entered-in-error",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-subject",
+   "code": "subject",
+   "type": "reference",
+   "expression": "List.subject",
+   "base": [
+    "List"
+   ],
+   "description": "If all resources have the same subject",
+   "target": [
+    "Group",
+    "Device",
+    "Patient",
+    "Location"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/List-title",
+   "code": "title",
+   "type": "string",
+   "expression": "List.title",
+   "base": [
+    "List"
+   ],
+   "description": "Descriptive name for the list",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-authoredon",
+   "code": "authoredon",
+   "type": "date",
+   "expression": "MedicationRequest.authoredOn",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Return prescriptions written on this date",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-category",
+   "code": "category",
+   "type": "token",
+   "expression": "MedicationRequest.category",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns prescriptions with different categories",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-intended-dispenser",
+   "code": "intended-dispenser",
+   "type": "reference",
+   "expression": "MedicationRequest.dispenseRequest.performer",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns prescriptions intended to be dispensed by this Organization",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-intended-performer",
+   "code": "intended-performer",
+   "type": "reference",
+   "expression": "MedicationRequest.performer",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns the intended performer of the administration of the medication request",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "CareTeam",
+    "Device",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-intended-performertype",
+   "code": "intended-performertype",
+   "type": "token",
+   "expression": "MedicationRequest.performerType",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns requests for a specific type of performer",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-intent",
+   "code": "intent",
+   "type": "token",
+   "expression": "MedicationRequest.intent",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns prescriptions with different intents",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-priority",
+   "code": "priority",
+   "type": "token",
+   "expression": "MedicationRequest.priority",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns prescriptions with different priorities",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-requester",
+   "code": "requester",
+   "type": "reference",
+   "expression": "MedicationRequest.requester",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Returns prescriptions prescribed by this prescriber",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "Device",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/MedicationRequest-subject",
+   "code": "subject",
+   "type": "reference",
+   "expression": "MedicationRequest.subject",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "The identity of a patient to list orders  for",
+   "target": [
+    "Group",
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/medications-date",
+   "code": "date",
+   "type": "date",
+   "expression": "MedicationRequest.dosageInstruction.timing.event",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [MedicationRequest](medicationrequest.html): Returns medication request to be administered on a specific date\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/medications-encounter",
+   "code": "encounter",
+   "type": "reference",
+   "expression": "MedicationRequest.encounter",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [MedicationRequest](medicationrequest.html): Return prescriptions with this encounter identifier\r\n",
+   "target": [
+    "Encounter"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/medications-medication",
+   "code": "medication",
+   "type": "reference",
+   "expression": "(MedicationAdministration.medication as Reference) | (MedicationDispense.medication as Reference) | (MedicationRequest.medication as Reference) | (MedicationStatement.medication as Reference)",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [MedicationAdministration](medicationadministration.html): Return administrations of this medication resource\r\n* [MedicationDispense](medicationdispense.html): Returns dispenses of this medicine resource\r\n* [MedicationRequest](medicationrequest.html): Return prescriptions for this medication reference\r\n* [MedicationStatement](medicationstatement.html): Return statements of this medication reference\r\n",
+   "target": [
+    "Medication"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/medications-status",
+   "code": "status",
+   "type": "token",
+   "expression": "MedicationAdministration.status | MedicationDispense.status | MedicationRequest.status | MedicationStatement.status",
+   "base": [
+    "MedicationRequest"
+   ],
+   "description": "Multiple Resources: \r\n\r\n* [MedicationAdministration](medicationadministration.html): MedicationAdministration event status (for example one of active/paused/completed/nullified)\r\n* [MedicationDispense](medicationdispense.html): Returns dispenses with a specified dispense status\r\n* [MedicationRequest](medicationrequest.html): Status of the prescription\r\n* [MedicationStatement](medicationstatement.html): Return statements that match the given status\r\n",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-based-on",
+   "code": "based-on",
+   "type": "reference",
+   "expression": "Observation.basedOn",
+   "base": [
+    "Observation"
+   ],
+   "description": "Reference to the service request.",
+   "target": [
+    "CarePlan",
+    "MedicationRequest",
+    "NutritionOrder",
+    "DeviceRequest",
+    "ServiceRequest",
+    "ImmunizationRecommendation"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-category",
+   "code": "category",
+   "type": "token",
+   "expression": "Observation.category",
+   "base": [
+    "Observation"
+   ],
+   "description": "The classification of the type of observation",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-code-value-concept",
+   "code": "code-value-concept",
+   "type": "composite",
+   "expression": "Observation",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and coded value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/clinical-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-value-concept",
+     "expression": "value.as(CodeableConcept)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-code-value-date",
+   "code": "code-value-date",
+   "type": "composite",
+   "expression": "Observation",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and date/time value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/clinical-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-value-date",
+     "expression": "value.as(DateTime) | value.as(Period)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-code-value-quantity",
+   "code": "code-value-quantity",
+   "type": "composite",
+   "expression": "Observation",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and quantity value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/clinical-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-value-quantity",
+     "expression": "value.as(Quantity)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-code-value-string",
+   "code": "code-value-string",
+   "type": "composite",
+   "expression": "Observation",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and string value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/clinical-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-value-string",
+     "expression": "value.as(string)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-code-value-concept",
+   "code": "combo-code-value-concept",
+   "type": "composite",
+   "expression": "Observation | Observation.component",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and coded value parameter pair, including in components",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-combo-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-combo-value-concept",
+     "expression": "value.as(CodeableConcept)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-code-value-quantity",
+   "code": "combo-code-value-quantity",
+   "type": "composite",
+   "expression": "Observation | Observation.component",
+   "base": [
+    "Observation"
+   ],
+   "description": "Code and quantity value parameter pair, including in components",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-combo-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-combo-value-quantity",
+     "expression": "value.as(Quantity)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-code",
+   "code": "combo-code",
+   "type": "token",
+   "expression": "Observation.code | Observation.component.code",
+   "base": [
+    "Observation"
+   ],
+   "description": "The code of the observation type or component type",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-data-absent-reason",
+   "code": "combo-data-absent-reason",
+   "type": "token",
+   "expression": "Observation.dataAbsentReason | Observation.component.dataAbsentReason",
+   "base": [
+    "Observation"
+   ],
+   "description": "The reason why the expected value in the element Observation.value[x] or Observation.component.value[x] is missing.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-value-concept",
+   "code": "combo-value-concept",
+   "type": "token",
+   "expression": "(Observation.value as CodeableConcept) | (Observation.component.value as CodeableConcept)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value or component value of the observation, if the value is a CodeableConcept",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-combo-value-quantity",
+   "code": "combo-value-quantity",
+   "type": "quantity",
+   "expression": "(Observation.value as Quantity) | (Observation.value as SampledData) | (Observation.component.value as Quantity) | (Observation.component.value as SampledData)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value or component value of the observation, if the value is a Quantity, or a SampledData (just search on the bounds of the values in sampled data)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-code-value-concept",
+   "code": "component-code-value-concept",
+   "type": "composite",
+   "expression": "Observation.component",
+   "base": [
+    "Observation"
+   ],
+   "description": "Component code and component coded value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-component-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-component-value-concept",
+     "expression": "value.as(CodeableConcept)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-code-value-quantity",
+   "code": "component-code-value-quantity",
+   "type": "composite",
+   "expression": "Observation.component",
+   "base": [
+    "Observation"
+   ],
+   "description": "Component code and component quantity value parameter pair",
+   "target": [],
+   "component": [
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-component-code",
+     "expression": "code"
+    },
+    {
+     "definition": "http://hl7.org/fhir/SearchParameter/Observation-component-value-quantity",
+     "expression": "value.as(Quantity)"
+    }
+   ]
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-code",
+   "code": "component-code",
+   "type": "token",
+   "expression": "Observation.component.code",
+   "base": [
+    "Observation"
+   ],
+   "description": "The component code of the observation type",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-data-absent-reason",
+   "code": "component-data-absent-reason",
+   "type": "token",
+   "expression": "Observation.component.dataAbsentReason",
+   "base": [
+    "Observation"
+   ],
+   "description": "The reason why the expected value in the element Observation.component.value[x] is missing.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-value-concept",
+   "code": "component-value-concept",
+   "type": "token",
+   "expression": "(Observation.component.value as CodeableConcept)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the component observation, if the value is a CodeableConcept",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-component-value-quantity",
+   "code": "component-value-quantity",
+   "type": "quantity",
+   "expression": "(Observation.component.value as Quantity) | (Observation.component.value as SampledData)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the component observation, if the value is a Quantity, or a SampledData (just search on the bounds of the values in sampled data)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-data-absent-reason",
+   "code": "data-absent-reason",
+   "type": "token",
+   "expression": "Observation.dataAbsentReason",
+   "base": [
+    "Observation"
+   ],
+   "description": "The reason why the expected value in the element Observation.value[x] is missing.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-derived-from",
+   "code": "derived-from",
+   "type": "reference",
+   "expression": "Observation.derivedFrom",
+   "base": [
+    "Observation"
+   ],
+   "description": "Related measurements the observation is made from",
+   "target": [
+    "Media",
+    "Observation",
+    "ImagingStudy",
+    "MolecularSequence",
+    "QuestionnaireResponse",
+    "DocumentReference"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-device",
+   "code": "device",
+   "type": "reference",
+   "expression": "Observation.device",
+   "base": [
+    "Observation"
+   ],
+   "description": "The Device that generated the observation data.",
+   "target": [
+    "Device",
+    "DeviceMetric"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-focus",
+   "code": "focus",
+   "type": "reference",
+   "expression": "Observation.focus",
+   "base": [
+    "Observation"
+   ],
+   "description": "The focus of an observation when the focus is not the patient of record.",
+   "target": [
+    "Account",
+    "ActivityDefinition",
+    "AdverseEvent",
+    "AllergyIntolerance",
+    "Appointment",
+    "AppointmentResponse",
+    "AuditEvent",
+    "Basic",
+    "Binary",
+    "BiologicallyDerivedProduct",
+    "BodyStructure",
+    "Bundle",
+    "CapabilityStatement",
+    "CarePlan",
+    "CareTeam",
+    "CatalogEntry",
+    "ChargeItem",
+    "ChargeItemDefinition",
+    "Claim",
+    "ClaimResponse",
+    "ClinicalImpression",
+    "CodeSystem",
+    "Communication",
+    "CommunicationRequest",
+    "CompartmentDefinition",
+    "Composition",
+    "ConceptMap",
+    "Condition",
+    "Consent",
+    "Contract",
+    "Coverage",
+    "CoverageEligibilityRequest",
+    "CoverageEligibilityResponse",
+    "DetectedIssue",
+    "Device",
+    "DeviceDefinition",
+    "DeviceMetric",
+    "DeviceRequest",
+    "DeviceUseStatement",
+    "DiagnosticReport",
+    "DocumentManifest",
+    "DocumentReference",
+    "EffectEvidenceSynthesis",
+    "Encounter",
+    "Endpoint",
+    "EnrollmentRequest",
+    "EnrollmentResponse",
+    "EpisodeOfCare",
+    "EventDefinition",
+    "Evidence",
+    "EvidenceVariable",
+    "ExampleScenario",
+    "ExplanationOfBenefit",
+    "FamilyMemberHistory",
+    "Flag",
+    "Goal",
+    "GraphDefinition",
+    "Group",
+    "GuidanceResponse",
+    "HealthcareService",
+    "ImagingStudy",
+    "Immunization",
+    "ImmunizationEvaluation",
+    "ImmunizationRecommendation",
+    "ImplementationGuide",
+    "InsurancePlan",
+    "Invoice",
+    "Library",
+    "Linkage",
+    "List",
+    "Location",
+    "Measure",
+    "MeasureReport",
+    "Media",
+    "Medication",
+    "MedicationAdministration",
+    "MedicationDispense",
+    "MedicationKnowledge",
+    "MedicationRequest",
+    "MedicationStatement",
+    "MedicinalProduct",
+    "MedicinalProductAuthorization",
+    "MedicinalProductContraindication",
+    "MedicinalProductIndication",
+    "MedicinalProductIngredient",
+    "MedicinalProductInteraction",
+    "MedicinalProductManufactured",
+    "MedicinalProductPackaged",
+    "MedicinalProductPharmaceutical",
+    "MedicinalProductUndesirableEffect",
+    "MessageDefinition",
+    "MessageHeader",
+    "MolecularSequence",
+    "NamingSystem",
+    "NutritionOrder",
+    "Observation",
+    "ObservationDefinition",
+    "OperationDefinition",
+    "OperationOutcome",
+    "Organization",
+    "OrganizationAffiliation",
+    "Patient",
+    "PaymentNotice",
+    "PaymentReconciliation",
+    "Person",
+    "PlanDefinition",
+    "Practitioner",
+    "PractitionerRole",
+    "Procedure",
+    "Provenance",
+    "Questionnaire",
+    "QuestionnaireResponse",
+    "RelatedPerson",
+    "RequestGroup",
+    "ResearchDefinition",
+    "ResearchElementDefinition",
+    "ResearchStudy",
+    "ResearchSubject",
+    "RiskAssessment",
+    "RiskEvidenceSynthesis",
+    "Schedule",
+    "SearchParameter",
+    "ServiceRequest",
+    "Slot",
+    "Specimen",
+    "SpecimenDefinition",
+    "StructureDefinition",
+    "StructureMap",
+    "Subscription",
+    "Substance",
+    "SubstanceNucleicAcid",
+    "SubstancePolymer",
+    "SubstanceProtein",
+    "SubstanceReferenceInformation",
+    "SubstanceSourceMaterial",
+    "SubstanceSpecification",
+    "SupplyDelivery",
+    "SupplyRequest",
+    "Task",
+    "TerminologyCapabilities",
+    "TestReport",
+    "TestScript",
+    "ValueSet",
+    "VerificationResult",
+    "VisionPrescription"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/observation-genetic-Observation-amino-acid-change",
+   "code": "amino-acid-change",
+   "type": "string",
+   "expression": "Observation.extension('http://hl7.org/fhir/StructureDefinition/observation-geneticsAminoAcidChangeName')",
+   "base": [
+    "Observation"
+   ],
+   "description": "HGVS Protein Change",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/observation-genetic-Observation-dna-variant",
+   "code": "dna-variant",
+   "type": "string",
+   "expression": "Observation.extension('http://hl7.org/fhir/StructureDefinition/observation-geneticsDnaVariant')",
+   "base": [
+    "Observation"
+   ],
+   "description": "HGVS DNA variant",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/observation-genetic-Observation-gene-amino-acid-change",
+   "code": "gene-amino-acid-change",
+   "type": "string",
+   "expression": "Observation.extension('http://hl7.org/fhir/StructureDefinition/observation-geneticsAminoAcidChangeName')",
+   "base": [
+    "Observation"
+   ],
+   "description": "HGNC gene symbol and HGVS Protein change",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/observation-genetic-Observation-gene-dnavariant",
+   "code": "gene-dnavariant",
+   "type": "string",
+   "expression": "Observation.extension('http://hl7.org/fhir/StructureDefinition/observation-geneticsDnaVariant')",
+   "base": [
+    "Observation"
+   ],
+   "description": "HGNC gene symbol and HGVS DNA Variant",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/observation-genetic-Observation-gene-identifier",
+   "code": "gene-identifier",
+   "type": "token",
+   "expression": "Observation.extension('http://hl7.org/fhir/StructureDefinition/observation-geneticsGene')",
+   "base": [
+    "Observation"
+   ],
+   "description": "HGNC gene symbol and identifier",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-has-member",
+   "code": "has-member",
+   "type": "reference",
+   "expression": "Observation.hasMember",
+   "base": [
+    "Observation"
+   ],
+   "description": "Related resource that belongs to the Observation group",
+   "target": [
+    "Observation",
+    "MolecularSequence",
+    "QuestionnaireResponse"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-method",
+   "code": "method",
+   "type": "token",
+   "expression": "Observation.method",
+   "base": [
+    "Observation"
+   ],
+   "description": "The method used for the observation",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-part-of",
+   "code": "part-of",
+   "type": "reference",
+   "expression": "Observation.partOf",
+   "base": [
+    "Observation"
+   ],
+   "description": "Part of referenced event",
+   "target": [
+    "Immunization",
+    "MedicationDispense",
+    "MedicationAdministration",
+    "Procedure",
+    "ImagingStudy",
+    "MedicationStatement"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-performer",
+   "code": "performer",
+   "type": "reference",
+   "expression": "Observation.performer",
+   "base": [
+    "Observation"
+   ],
+   "description": "Who performed the observation",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "CareTeam",
+    "Patient",
+    "PractitionerRole",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-specimen",
+   "code": "specimen",
+   "type": "reference",
+   "expression": "Observation.specimen",
+   "base": [
+    "Observation"
+   ],
+   "description": "Specimen used for this observation",
+   "target": [
+    "Specimen"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-status",
+   "code": "status",
+   "type": "token",
+   "expression": "Observation.status",
+   "base": [
+    "Observation"
+   ],
+   "description": "The status of the observation",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-subject",
+   "code": "subject",
+   "type": "reference",
+   "expression": "Observation.subject",
+   "base": [
+    "Observation"
+   ],
+   "description": "The subject that the observation is about",
+   "target": [
+    "Group",
+    "Device",
+    "Patient",
+    "Location"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-value-concept",
+   "code": "value-concept",
+   "type": "token",
+   "expression": "(Observation.value as CodeableConcept)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the observation, if the value is a CodeableConcept",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-value-date",
+   "code": "value-date",
+   "type": "date",
+   "expression": "(Observation.value as dateTime) | (Observation.value as Period)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the observation, if the value is a date or period of time",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-value-quantity",
+   "code": "value-quantity",
+   "type": "quantity",
+   "expression": "(Observation.value as Quantity) | (Observation.value as SampledData)",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the observation, if the value is a Quantity, or a SampledData (just search on the bounds of the values in sampled data)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Observation-value-string",
+   "code": "value-string",
+   "type": "string",
+   "expression": "(Observation.value as string) | (Observation.value as CodeableConcept).text",
+   "base": [
+    "Observation"
+   ],
+   "description": "The value of the observation, if the value is a string, and also searches in CodeableConcept.text",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-active",
+   "code": "active",
+   "type": "token",
+   "expression": "Organization.active",
+   "base": [
+    "Organization"
+   ],
+   "description": "Is the Organization record active",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address-city",
+   "code": "address-city",
+   "type": "string",
+   "expression": "Organization.address.city",
+   "base": [
+    "Organization"
+   ],
+   "description": "A city specified in an address",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address-country",
+   "code": "address-country",
+   "type": "string",
+   "expression": "Organization.address.country",
+   "base": [
+    "Organization"
+   ],
+   "description": "A country specified in an address",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address-postalcode",
+   "code": "address-postalcode",
+   "type": "string",
+   "expression": "Organization.address.postalCode",
+   "base": [
+    "Organization"
+   ],
+   "description": "A postal code specified in an address",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address-state",
+   "code": "address-state",
+   "type": "string",
+   "expression": "Organization.address.state",
+   "base": [
+    "Organization"
+   ],
+   "description": "A state specified in an address",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address-use",
+   "code": "address-use",
+   "type": "token",
+   "expression": "Organization.address.use",
+   "base": [
+    "Organization"
+   ],
+   "description": "A use code specified in an address",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-address",
+   "code": "address",
+   "type": "string",
+   "expression": "Organization.address",
+   "base": [
+    "Organization"
+   ],
+   "description": "A server defined search that may match any of the string fields in the Address, including line, city, district, state, country, postalCode, and/or text",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-endpoint",
+   "code": "endpoint",
+   "type": "reference",
+   "expression": "Organization.endpoint",
+   "base": [
+    "Organization"
+   ],
+   "description": "Technical endpoints providing access to services operated for the organization",
+   "target": [
+    "Endpoint"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "Organization.identifier",
+   "base": [
+    "Organization"
+   ],
+   "description": "Any identifier for the organization (not the accreditation issuer's identifier)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-name",
+   "code": "name",
+   "type": "string",
+   "expression": "Organization.name | Organization.alias",
+   "base": [
+    "Organization"
+   ],
+   "description": "A portion of the organization's name or alias",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-partof",
+   "code": "partof",
+   "type": "reference",
+   "expression": "Organization.partOf",
+   "base": [
+    "Organization"
+   ],
+   "description": "An organization of which this organization forms a part",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-phonetic",
+   "code": "phonetic",
+   "type": "string",
+   "expression": "Organization.name",
+   "base": [
+    "Organization"
+   ],
+   "description": "A portion of the organization's name using some kind of phonetic matching algorithm",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Organization-type",
+   "code": "type",
+   "type": "token",
+   "expression": "Organization.type",
+   "base": [
+    "Organization"
+   ],
+   "description": "A code for the type of organization",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-active",
+   "code": "active",
+   "type": "token",
+   "expression": "Patient.active",
+   "base": [
+    "Patient"
+   ],
+   "description": "Whether the patient record is active",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-death-date",
+   "code": "death-date",
+   "type": "date",
+   "expression": "(Patient.deceased as dateTime)",
+   "base": [
+    "Patient"
+   ],
+   "description": "The date of death has been provided and satisfies this search value",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-deceased",
+   "code": "deceased",
+   "type": "token",
+   "expression": "Patient.deceased.exists() and Patient.deceased != false",
+   "base": [
+    "Patient"
+   ],
+   "description": "This patient has been marked as deceased, or as a death date entered",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/patient-extensions-Patient-age",
+   "code": "age",
+   "type": "number",
+   "expression": null,
+   "base": [
+    "Patient"
+   ],
+   "description": "Searches for patients based on age as calculated based on current date and date of birth.  Deceased patients are excluded from the search.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/patient-extensions-Patient-birthOrderBoolean",
+   "code": "birthOrderBoolean",
+   "type": "token",
+   "expression": null,
+   "base": [
+    "Patient"
+   ],
+   "description": "Search based on whether a patient was part of a multiple birth or not.",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/patient-extensions-Patient-mothersMaidenName",
+   "code": "mothersMaidenName",
+   "type": "string",
+   "expression": "Patient.extension('http://hl7.org/fhir/StructureDefinition/patient-extensions-Patient-mothersMaidenName')",
+   "base": [
+    "Patient"
+   ],
+   "description": "Search based on patient's mother's maiden name",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-general-practitioner",
+   "code": "general-practitioner",
+   "type": "reference",
+   "expression": "Patient.generalPractitioner",
+   "base": [
+    "Patient"
+   ],
+   "description": "Patient's nominated general practitioner, not the organization that manages the record",
+   "target": [
+    "Practitioner",
+    "Organization",
+    "PractitionerRole"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "Patient.identifier",
+   "base": [
+    "Patient"
+   ],
+   "description": "A patient identifier",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-language",
+   "code": "language",
+   "type": "token",
+   "expression": "Patient.communication.language",
+   "base": [
+    "Patient"
+   ],
+   "description": "Language code (irrespective of use value)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-link",
+   "code": "link",
+   "type": "reference",
+   "expression": "Patient.link.other",
+   "base": [
+    "Patient"
+   ],
+   "description": "All patients linked to the given patient",
+   "target": [
+    "Patient",
+    "RelatedPerson"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-name",
+   "code": "name",
+   "type": "string",
+   "expression": "Patient.name",
+   "base": [
+    "Patient"
+   ],
+   "description": "A server defined search that may match any of the string fields in the HumanName, including family, give, prefix, suffix, suffix, and/or text",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Patient-organization",
+   "code": "organization",
+   "type": "reference",
+   "expression": "Patient.managingOrganization",
+   "base": [
+    "Patient"
+   ],
+   "description": "The organization that is the custodian of the patient record",
+   "target": [
+    "Organization"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Practitioner-active",
+   "code": "active",
+   "type": "token",
+   "expression": "Practitioner.active",
+   "base": [
+    "Practitioner"
+   ],
+   "description": "Whether the practitioner record is active",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Practitioner-communication",
+   "code": "communication",
+   "type": "token",
+   "expression": "Practitioner.communication",
+   "base": [
+    "Practitioner"
+   ],
+   "description": "One of the languages that the practitioner can communicate with",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Practitioner-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "Practitioner.identifier",
+   "base": [
+    "Practitioner"
+   ],
+   "description": "A practitioner's Identifier",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Practitioner-name",
+   "code": "name",
+   "type": "string",
+   "expression": "Practitioner.name",
+   "base": [
+    "Practitioner"
+   ],
+   "description": "A server defined search that may match any of the string fields in the HumanName, including family, give, prefix, suffix, suffix, and/or text",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/RelatedPerson-active",
+   "code": "active",
+   "type": "token",
+   "expression": "RelatedPerson.active",
+   "base": [
+    "RelatedPerson"
+   ],
+   "description": "Indicates if the related person record is active",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/RelatedPerson-identifier",
+   "code": "identifier",
+   "type": "token",
+   "expression": "RelatedPerson.identifier",
+   "base": [
+    "RelatedPerson"
+   ],
+   "description": "An Identifier of the RelatedPerson",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/RelatedPerson-name",
+   "code": "name",
+   "type": "string",
+   "expression": "RelatedPerson.name",
+   "base": [
+    "RelatedPerson"
+   ],
+   "description": "A server defined search that may match any of the string fields in the HumanName, including family, give, prefix, suffix, suffix, and/or text",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/RelatedPerson-patient",
+   "code": "patient",
+   "type": "reference",
+   "expression": "RelatedPerson.patient",
+   "base": [
+    "RelatedPerson"
+   ],
+   "description": "The patient this related person is related to",
+   "target": [
+    "Patient"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/RelatedPerson-relationship",
+   "code": "relationship",
+   "type": "token",
+   "expression": "RelatedPerson.relationship",
+   "base": [
+    "RelatedPerson"
+   ],
+   "description": "The relationship between the patient and the relatedperson",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-content",
+   "code": "_content",
+   "type": "string",
+   "expression": null,
+   "base": [
+    "Resource"
+   ],
+   "description": "Search on the entire content of the resource",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-id",
+   "code": "_id",
+   "type": "token",
+   "expression": "Resource.id",
+   "base": [
+    "Resource"
+   ],
+   "description": "Logical id of this artifact",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-lastUpdated",
+   "code": "_lastUpdated",
+   "type": "date",
+   "expression": "Resource.meta.lastUpdated",
+   "base": [
+    "Resource"
+   ],
+   "description": "When the resource version last changed",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-profile",
+   "code": "_profile",
+   "type": "uri",
+   "expression": "Resource.meta.profile",
+   "base": [
+    "Resource"
+   ],
+   "description": "Profiles this resource claims to conform to",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-query",
+   "code": "_query",
+   "type": "token",
+   "expression": null,
+   "base": [
+    "Resource"
+   ],
+   "description": "A custom search profile that describes a specific defined query operation",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-security",
+   "code": "_security",
+   "type": "token",
+   "expression": "Resource.meta.security",
+   "base": [
+    "Resource"
+   ],
+   "description": "Security Labels applied to this resource",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-source",
+   "code": "_source",
+   "type": "uri",
+   "expression": "Resource.meta.source",
+   "base": [
+    "Resource"
+   ],
+   "description": "Identifies where the resource comes from",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/Resource-tag",
+   "code": "_tag",
+   "type": "token",
+   "expression": "Resource.meta.tag",
+   "base": [
+    "Resource"
+   ],
+   "description": "Tags applied to this resource",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-base",
+   "code": "base",
+   "type": "token",
+   "expression": "SearchParameter.base",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "The resource type(s) this search parameter applies to",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-code",
+   "code": "code",
+   "type": "token",
+   "expression": "SearchParameter.code",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "Code used in URL",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-component",
+   "code": "component",
+   "type": "reference",
+   "expression": "SearchParameter.component.definition",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "Defines how the part works",
+   "target": [
+    "SearchParameter"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-derived-from",
+   "code": "derived-from",
+   "type": "reference",
+   "expression": "SearchParameter.derivedFrom",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "Original definition for the search parameter",
+   "target": [
+    "SearchParameter"
+   ],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-target",
+   "code": "target",
+   "type": "token",
+   "expression": "SearchParameter.target",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "Types of resource (if a resource reference)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/SearchParameter-type",
+   "code": "type",
+   "type": "token",
+   "expression": "SearchParameter.type",
+   "base": [
+    "SearchParameter"
+   ],
+   "description": "number | date | string | token | reference | composite | quantity | uri | special",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/ValueSet-code",
+   "code": "code",
+   "type": "token",
+   "expression": "ValueSet.expansion.contains.code | ValueSet.compose.include.concept.code",
+   "base": [
+    "ValueSet"
+   ],
+   "description": "This special parameter searches for codes in the value set. See additional notes on the ValueSet resource",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/ValueSet-expansion",
+   "code": "expansion",
+   "type": "uri",
+   "expression": "ValueSet.expansion.identifier",
+   "base": [
+    "ValueSet"
+   ],
+   "description": "Identifies the value set expansion (business identifier)",
+   "target": [],
+   "component": []
+  },
+  {
+   "url": "http://hl7.org/fhir/SearchParameter/ValueSet-reference",
+   "code": "reference",
+   "type": "uri",
+   "expression": "ValueSet.compose.include.system",
+   "base": [
+    "ValueSet"
+   ],
+   "description": "A code system included or excluded in the value set or an imported value set",
+   "target": [],
+   "component": []
+  }
+ ],
+ "compartments": [
+  {
+   "code": "Device",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/device",
+   "resource": [
+    {
+     "code": "AuditEvent",
+     "param": [
+      "agent"
+     ]
+    },
+    {
+     "code": "Condition",
+     "param": []
+    },
+    {
+     "code": "Device",
+     "param": []
+    },
+    {
+     "code": "Encounter",
+     "param": []
+    },
+    {
+     "code": "Group",
+     "param": [
+      "member"
+     ]
+    },
+    {
+     "code": "List",
+     "param": [
+      "subject",
+      "source"
+     ]
+    },
+    {
+     "code": "MedicationRequest",
+     "param": []
+    },
+    {
+     "code": "Observation",
+     "param": [
+      "subject",
+      "device"
+     ]
+    },
+    {
+     "code": "Organization",
+     "param": []
+    },
+    {
+     "code": "Patient",
+     "param": []
+    },
+    {
+     "code": "Practitioner",
+     "param": []
+    },
+    {
+     "code": "RelatedPerson",
+     "param": []
+    },
+    {
+     "code": "SearchParameter",
+     "param": []
+    },
+    {
+     "code": "ValueSet",
+     "param": []
+    }
+   ]
+  },
+  {
+   "code": "Encounter",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/encounter",
+   "resource": [
+    {
+     "code": "AuditEvent",
+     "param": []
+    },
+    {
+     "code": "Condition",
+     "param": [
+      "encounter"
+     ]
+    },
+    {
+     "code": "Device",
+     "param": []
+    },
+    {
+     "code": "Encounter",
+     "param": [
+      "{def}"
+     ]
+    },
+    {
+     "code": "Group",
+     "param": []
+    },
+    {
+     "code": "List",
+     "param": []
+    },
+    {
+     "code": "MedicationRequest",
+     "param": [
+      "encounter"
+     ]
+    },
+    {
+     "code": "Observation",
+     "param": [
+      "encounter"
+     ]
+    },
+    {
+     "code": "Organization",
+     "param": []
+    },
+    {
+     "code": "Patient",
+     "param": []
+    },
+    {
+     "code": "Practitioner",
+     "param": []
+    },
+    {
+     "code": "RelatedPerson",
+     "param": []
+    },
+    {
+     "code": "SearchParameter",
+     "param": []
+    },
+    {
+     "code": "ValueSet",
+     "param": []
+    }
+   ]
+  },
+  {
+   "code": "Device",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/example",
+   "resource": []
+  },
+  {
+   "code": "Patient",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/patient",
+   "resource": [
+    {
+     "code": "AuditEvent",
+     "param": [
+      "patient"
+     ]
+    },
+    {
+     "code": "Condition",
+     "param": [
+      "patient",
+      "asserter"
+     ]
+    },
+    {
+     "code": "Device",
+     "param": []
+    },
+    {
+     "code": "Encounter",
+     "param": [
+      "patient"
+     ]
+    },
+    {
+     "code": "Group",
+     "param": [
+      "member"
+     ]
+    },
+    {
+     "code": "List",
+     "param": [
+      "subject",
+      "source"
+     ]
+    },
+    {
+     "code": "MedicationRequest",
+     "param": [
+      "subject"
+     ]
+    },
+    {
+     "code": "Observation",
+     "param": [
+      "subject",
+      "performer"
+     ]
+    },
+    {
+     "code": "Organization",
+     "param": []
+    },
+    {
+     "code": "Patient",
+     "param": [
+      "link"
+     ]
+    },
+    {
+     "code": "Practitioner",
+     "param": []
+    },
+    {
+     "code": "RelatedPerson",
+     "param": [
+      "patient"
+     ]
+    },
+    {
+     "code": "SearchParameter",
+     "param": []
+    },
+    {
+     "code": "ValueSet",
+     "param": []
+    }
+   ]
+  },
+  {
+   "code": "Practitioner",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/practitioner",
+   "resource": [
+    {
+     "code": "AuditEvent",
+     "param": [
+      "agent"
+     ]
+    },
+    {
+     "code": "Condition",
+     "param": [
+      "asserter"
+     ]
+    },
+    {
+     "code": "Device",
+     "param": []
+    },
+    {
+     "code": "Encounter",
+     "param": [
+      "practitioner",
+      "participant"
+     ]
+    },
+    {
+     "code": "Group",
+     "param": [
+      "member"
+     ]
+    },
+    {
+     "code": "List",
+     "param": [
+      "source"
+     ]
+    },
+    {
+     "code": "MedicationRequest",
+     "param": [
+      "requester"
+     ]
+    },
+    {
+     "code": "Observation",
+     "param": [
+      "performer"
+     ]
+    },
+    {
+     "code": "Organization",
+     "param": []
+    },
+    {
+     "code": "Patient",
+     "param": [
+      "general-practitioner"
+     ]
+    },
+    {
+     "code": "Practitioner",
+     "param": [
+      "{def}"
+     ]
+    },
+    {
+     "code": "RelatedPerson",
+     "param": []
+    },
+    {
+     "code": "SearchParameter",
+     "param": []
+    },
+    {
+     "code": "ValueSet",
+     "param": []
+    }
+   ]
+  },
+  {
+   "code": "RelatedPerson",
+   "url": "http://hl7.org/fhir/CompartmentDefinition/relatedPerson",
+   "resource": [
+    {
+     "code": "AuditEvent",
+     "param": []
+    },
+    {
+     "code": "Condition",
+     "param": [
+      "asserter"
+     ]
+    },
+    {
+     "code": "Device",
+     "param": []
+    },
+    {
+     "code": "Encounter",
+     "param": [
+      "participant"
+     ]
+    },
+    {
+     "code": "Group",
+     "param": []
+    },
+    {
+     "code": "List",
+     "param": []
+    },
+    {
+     "code": "MedicationRequest",
+     "param": []
+    },
+    {
+     "code": "Observation",
+     "param": [
+      "performer"
+     ]
+    },
+    {
+     "code": "Organization",
+     "param": []
+    },
+    {
+     "code": "Patient",
+     "param": [
+      "link"
+     ]
+    },
+    {
+     "code": "Practitioner",
+     "param": []
+    },
+    {
+     "code": "RelatedPerson",
+     "param": [
+      "{def}"
+     ]
+    },
+    {
+     "code": "SearchParameter",
+     "param": []
+    },
+    {
+     "code": "ValueSet",
+     "param": []
+    }
+   ]
+  }
+ ],
+ "summary": {
+  "AuditEvent": [
+   "id",
+   "meta",
+   "implicitRules",
+   "type",
+   "subtype",
+   "action",
+   "recorded",
+   "outcome",
+   "outcomeDesc",
+   "purposeOfEvent"
+  ],
+  "Condition": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "clinicalStatus",
+   "verificationStatus",
+   "code",
+   "bodySite",
+   "subject",
+   "encounter",
+   "onset",
+   "recordedDate",
+   "recorder",
+   "asserter"
+  ],
+  "Device": [
+   "id",
+   "meta",
+   "implicitRules",
+   "udiCarrier",
+   "status",
+   "safety"
+  ],
+  "Encounter": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "status",
+   "class",
+   "type",
+   "serviceType",
+   "subject",
+   "episodeOfCare",
+   "participant",
+   "appointment",
+   "reasonCode",
+   "reasonReference",
+   "diagnosis"
+  ],
+  "Group": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "active",
+   "type",
+   "actual",
+   "code",
+   "name",
+   "quantity",
+   "managingEntity"
+  ],
+  "List": [
+   "id",
+   "meta",
+   "implicitRules",
+   "status",
+   "mode",
+   "title",
+   "code",
+   "subject",
+   "date",
+   "source"
+  ],
+  "MedicationRequest": [
+   "id",
+   "meta",
+   "implicitRules",
+   "status",
+   "intent",
+   "priority",
+   "doNotPerform",
+   "reported",
+   "medication",
+   "subject",
+   "authoredOn",
+   "requester",
+   "performerType",
+   "instantiatesCanonical",
+   "instantiatesUri",
+   "basedOn",
+   "groupIdentifier"
+  ],
+  "Observation": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "basedOn",
+   "partOf",
+   "status",
+   "code",
+   "subject",
+   "focus",
+   "encounter",
+   "effective",
+   "issued",
+   "performer",
+   "value",
+   "hasMember",
+   "derivedFrom",
+   "component"
+  ],
+  "Organization": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "active",
+   "type",
+   "name",
+   "partOf"
+  ],
+  "Patient": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "active",
+   "name",
+   "telecom",
+   "gender",
+   "birthDate",
+   "deceased",
+   "address",
+   "managingOrganization",
+   "link"
+  ],
+  "Practitioner": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "active",
+   "name",
+   "telecom",
+   "address",
+   "gender",
+   "birthDate"
+  ],
+  "RelatedPerson": [
+   "id",
+   "meta",
+   "implicitRules",
+   "identifier",
+   "active",
+   "patient",
+   "relationship",
+   "name",
+   "telecom",
+   "gender",
+   "birthDate",
+   "address"
+  ],
+  "SearchParameter": [
+   "id",
+   "meta",
+   "implicitRules",
+   "url",
+   "version",
+   "name",
+   "status",
+   "experimental",
+   "date",
+   "publisher",
+   "contact",
+   "description",
+   "useContext",
+   "jurisdiction",
+   "code",
+   "base",
+   "type"
+  ],
+  "ValueSet": [
+   "id",
+   "meta",
+   "implicitRules",
+   "url",
+   "identifier",
+   "version",
+   "name",
+   "title",
+   "status",
+   "experimental",
+   "date",
+   "publisher",
+   "contact",
+   "useContext",
+   "jurisdiction",
+   "immutable"
+  ]
+ },
+ "mandatory": {
+  "AuditEvent": [
+   "type",
+   "recorded",
+   "agent",
+   "source"
+  ],
+  "Condition": [
+   "subject"
+  ],
+  "Device": [],
+  "Encounter": [
+   "status",
+   "class"
+  ],
+  "Group": [
+   "type",
+   "actual"
+  ],
+  "List": [
+   "status",
+   "mode"
+  ],
+  "MedicationRequest": [
+   "status",
+   "intent",
+   "medication",
+   "subject"
+  ],
+  "Observation": [
+   "status",
+   "code"
+  ],
+  "Organization": [],
+  "Patient": [],
+  "Practitioner": [],
+  "RelatedPerson": [
+   "patient"
+  ],
+  "SearchParameter": [
+   "url",
+   "name",
+   "status",
+   "description",
+   "code",
+   "base",
+   "type"
+  ],
+  "ValueSet": [
+   "status"
+  ]
+ }
+}

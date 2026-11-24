@@ -117,7 +117,8 @@ with `--role`). Their settings are in `server.cluster`, documented with the arra
 [cluster.md](cluster.md): the launcher's (`workers`, `maxOutstanding`, `queueSeconds`,
 `recycleSeconds`, the fast lane, ...) under
 [The launcher](cluster.md#the-launcher-clusterjs), and what the processes share
-(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`) under
+(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`, and `workerModules`, for
+workers that serve the rest module too) under
 [Options](cluster.md#options). With no role, `server.cluster` is ignored.
 The status panel's snapshot of every process (`statusSeconds`) is under
 [Status](cluster.md#status).
@@ -288,6 +289,7 @@ Each module has its own entry under `modules`, documented with the module:
 | `packages` - package server | [packages/readme.md](packages/readme.md) |
 | `shl` - SMART Health Links | [shl/readme.md](shl/readme.md) |
 | `ips` - IPS documents | [ips/readme.md](ips/readme.md) |
+| `rest` - FHIR REST servers | [rest/README.md](rest/README.md#configuration) |
 | `testing` - test reports | [testing/readme.md](testing/readme.md) |
 | `folder` | [folder/readme.md](folder/readme.md) |
 | `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |

@@ -149,11 +149,15 @@ const SERVER = obj({
     fastLaneExtra: count(),
     normalMinSlots: count(),
     fastLaneMaxBytes: count(),
+    heavyLaneMinBytes: count(),
+    heavyLaneProcesses: count(),
     statusSeconds: positive(),
     sharedCache: bool(),
     sharedCacheMaxMB: num({ min: 0 }),
     cacheAffinity: bool(),
-    sharedClosure: bool()
+    sharedClosure: bool(),
+    // the modules the workers run besides tx (library/role.js)
+    workerModules: arr(str({ values: ['tx', 'rest'] }))
   })
 });
 
@@ -465,6 +469,31 @@ const MODULES = {
       trust: arr(obj({ kid: str({ nonEmpty: true }), name: str(), certFile: str({ nonEmpty: true }), certificate: str({ nonEmpty: true }) }))
     }),
     validator: validatorSpec
+  }),
+  // rest/README.md: where each endpoint is and which database it uses; the rest of an
+  // endpoint's settings are in its database
+  rest: obj({
+    enabled: bool(),
+    packageServers: arr(url()),
+    endpoints: arr(obj({
+      path: str({ required: true, pattern: /^\/[A-Za-z0-9/_-]*$/, patternText: 'a path like /fhir/r4' }),
+      fhirVersion: str({ pattern: /^\d+\.\d+(\.\d+)?(-[A-Za-z0-9.]+)?$/, patternText: 'a FHIR version like 4.0.1' }),
+      baseUrl: url(),
+      database: obj({
+        type: str({ values: ['sqlite', 'mysql'], required: true }),
+        file: str({ nonEmpty: true }),
+        host: str({ nonEmpty: true }),
+        port: port(),
+        database: str({ nonEmpty: true }),
+        user: str({ nonEmpty: true }),
+        password: retired('MySQL passwords don\'t go in config.json: use passwordEnv (an environment variable) or passwordFile'),
+        passwordEnv: str({ nonEmpty: true }),
+        passwordFile: str({ nonEmpty: true }),
+        connections: int({ min: 1 })
+      }, { required: true }),
+      initialSettings: any(),
+      types: any()
+    }))
   })
 };
 

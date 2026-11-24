@@ -4,7 +4,7 @@
  */
 const http = require('http');
 const path = require('path');
-const { loadSettings, classify, isFastLane, pickTarget, createLauncher, memorySampler, childExecArgv } = require('../../cluster');
+const { loadSettings, classify, isFastLane, isHeavyLane, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv } = require('../../cluster');
 const { defaultWorkers } = require('../../library/worker-count');
 const memoryGuard = require('../../library/memory-guard');
 
@@ -29,6 +29,29 @@ function get(port, urlPath, headers = {}, { method = 'GET', agent = false } = {}
     });
     req.on('error', reject);
     req.end();
+  });
+}
+
+// a POST with a body of `size` bytes (sent with its Content-Length)
+function post(port, urlPath, size, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const body = Buffer.alloc(size, 'x');
+    const req = http.request({ host: '127.0.0.1', port, path: urlPath, method: 'POST', agent: false,
+      headers: { 'Content-Type': 'application/fhir+json', 'Content-Length': String(size), ...headers } }, (res) => {
+      let text = '';
+      res.on('data', d => { text += d; });
+      res.on('end', () => {
+        let json = null;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          // not JSON
+        }
+        resolve({ status: res.statusCode, json });
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
   });
 }
 
@@ -159,6 +182,45 @@ describe('routing rules', () => {
     expect(pickTarget({ to: 'tx' }, procs, () => false).code).toBe('tx2');
   });
 
+  test('the heavy lane: a tx request with a body over the threshold, by Content-Length', () => {
+    const heavy = (url, len, minBytes = 1000) => isHeavyLane({ method: 'POST', url, headers: len === undefined ? {} : { 'content-length': len } }, TX, minBytes);
+    expect(heavy('/r4/ValueSet/$validate-code', '1001')).toBe(true);
+    expect(heavy('/r4/ValueSet/$validate-code', '1000')).toBe(false);
+    // no Content-Length (chunked), or not a number: not known to be large
+    expect(heavy('/r4/ValueSet/$validate-code', undefined)).toBe(false);
+    expect(heavy('/r4/ValueSet/$validate-code', '1e9')).toBe(false);
+    // not a tx path; or the lane is off
+    expect(heavy('/packages/upload', '5000')).toBe(false);
+    expect(heavy('/r4/ValueSet/$validate-code', '5000', 0)).toBe(false);
+  });
+
+  test('the heavy lane: which processes a request may go to', () => {
+    const procs = [
+      { code: 'm0', role: 'master', servesTx: true, ready: true, heavy: false, heavyOutstanding: 0 },
+      { code: 'tx1', role: 'tx-worker', servesTx: true, ready: true, heavy: false, heavyOutstanding: 0 },
+      { code: 'tx2', role: 'tx-worker', servesTx: true, ready: true, heavy: true, heavyOutstanding: 0 }
+    ];
+    const codes = (route, heavy) => laneProcs(route, heavy, procs).map(p => p.code);
+    // a heavy request: the lane only
+    expect(codes({ to: 'tx' }, true)).toEqual(['tx2']);
+    // another: anywhere, while the lane has no heavy request
+    expect(codes({ to: 'tx' }, false)).toEqual(['m0', 'tx1', 'tx2']);
+    // and not to the lane while it has one
+    procs[2].heavyOutstanding = 1;
+    expect(codes({ to: 'tx' }, false)).toEqual(['m0', 'tx1']);
+    // the master's own requests and a cache-id's owner aren't affected
+    expect(codes({ to: 'master' }, false)).toEqual(['m0', 'tx1', 'tx2']);
+    expect(codes({ to: 'owner', code: 'tx2' }, false)).toEqual(['m0', 'tx1', 'tx2']);
+    // the lane not ready: a heavy request goes anywhere, rather than nowhere
+    procs[2].ready = false;
+    expect(codes({ to: 'tx' }, true)).toEqual(['m0', 'tx1', 'tx2']);
+    // only the lane ready: the others go there too
+    procs[2].ready = true;
+    procs[0].ready = false;
+    procs[1].ready = false;
+    expect(codes({ to: 'tx' }, false)).toEqual(['m0', 'tx1', 'tx2']);
+  });
+
   test('the children get the launcher\'s Node flags, but not a debugger\'s or a watcher\'s', () => {
     expect(childExecArgv(['--inspect', '--max-old-space-size=8192', '--inspect-brk=0.0.0.0:9229', '--watch', '--watch-path=./x',
       '--watch-path', './y', '--inspect-port', '9230', '--inspect-wait', '--debug-port=1', '--expose-gc', '--watch-preserve-output',
@@ -230,6 +292,12 @@ describe('routing rules', () => {
     expect([s.fastLaneExtra, s.fastLaneMaxBytes, s.normalMinSlots]).toEqual([4, 1024, 4]);
     const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0, normalMinSlots: 0 } } });
     expect([s5.fastLaneExtra, s5.fastLaneMaxBytes, s5.normalMinSlots]).toEqual([0, 0, 0]);
+    // the heavy lane: bodies over 1 MB, to one tx-worker; 0 turns it off; not a count is an error
+    expect([s.heavyLaneMinBytes, s.heavyLaneProcesses]).toEqual([1024 * 1024, 1]);
+    const s6 = loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: 0, heavyLaneProcesses: 2 } } });
+    expect([s6.heavyLaneMinBytes, s6.heavyLaneProcesses]).toEqual([0, 2]);
+    expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: -1 } } })).toThrow(/heavyLaneMinBytes must be a whole number/);
+    expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneProcesses: 'one' } } })).toThrow(/heavyLaneProcesses must be a whole number/);
   });
 });
 
@@ -635,6 +703,35 @@ describe('the launcher, with fake processes', () => {
       const slow2 = await busy(2);
       expect((await get(PORT, '/r4/CodeSystem/$lookup')).status).toBe(503);
       await Promise.all(slow2);
+    });
+
+    test('the heavy lane: a large body goes to the lane, and the others keep off it while it is there', async () => {
+      const lines = [];
+      launcher = createLauncher({ ...queued(5000), maxOutstanding: 4, heavyLaneMinBytes: 1000, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual([expect.stringMatching(/^heavy lane: tx requests with a body over 1000 bytes and no cache-id go to tx2, /)]);
+      // small bodies go anywhere; large ones to the lane
+      expect((await post(PORT, '/r4/ValueSet/$validate-code', 500)).json.code).toMatch(/^tx[12]$/);
+      expect((await post(PORT, '/r4/ValueSet/$validate-code', 5000)).json.code).toBe('tx2');
+      // while the lane has a large one, every other request goes to tx1 (four at a time:
+      // tx2 has room for them, but they don't go there)
+      const big = post(PORT, '/r4/ValueSet/$validate-code?delay=800', 5000);
+      await until(() => launcher.procs.find(p => p.code === 'tx2').heavyOutstanding === 1);
+      const others = await Promise.all([1, 2, 3, 4].map(() => post(PORT, '/r4/ValueSet/$validate-code', 500)));
+      expect(others.map(r => r.json.code)).toEqual(['tx1', 'tx1', 'tx1', 'tx1']);
+      expect((await big).json.code).toBe('tx2');
+      // a large one with a cache-id goes to its owner
+      expect((await post(PORT, '/r4/ValueSet/$validate-code', 5000, { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
+      expect(launcher.procs.every(p => p.outstanding === 0 && p.heavyOutstanding === 0)).toBe(true);
+      await launcher.stop();
+      // 0: no lane
+      lines.length = 0;
+      launcher = createLauncher({ ...queued(5000), heavyLaneMinBytes: 0, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual(['heavy lane: off (heavyLaneMinBytes or heavyLaneProcesses is 0)']);
+      expect(launcher.procs.some(p => p.heavy)).toBe(false);
     });
 
     test('a CORS preflight doesn\'t wait', async () => {
