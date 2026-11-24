@@ -89,6 +89,10 @@ async function makeApp(engine, options = {}) {
   const app = express();
   app.use(express.raw({ type: 'application/fhir+json', limit: '20mb' }));
   app.use(express.json({ limit: '20mb' }));
+  if (options.before) {
+    // something else on the same app (the tx module, as a terminology server)
+    await options.before(app);
+  }
   const mod = new RestModule(null, options.log || silent);
   const admin = { id: 1, login: 'admin', name: 'Admin', isAdmin: true, has: () => true };
   await mod.initialize({

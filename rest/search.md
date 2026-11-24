@@ -99,7 +99,10 @@ The value is words and phrases:
 - Each part of the search needs a word that isn't negated (`-child` on its own can't be
   searched). At most 32 words and phrases, and 1,000 characters.
 - `_text` and `_content` work on a chain (`Observation?subject._text=pressure`) and with
-  `_type`. They can't be used in `_filter` yet, and take no modifiers.
+  `_type`, and take no modifiers.
+- In `_filter`, `_text` and `_content` take `co` or `eq` (the same: the value is a search as
+  above) and `ne`: `_text co "chest -child" and family eq smith`, `subject._content co anna`.
+  A phrase inside the filter's string needs its quotes escaped: `_text co "\"blood pressure\""`.
 
 The text is indexed with the resource, in its write transaction. A database made before
 full-text search (schema version 1) gets the index when the server starts, and the master fills
@@ -178,4 +181,4 @@ user who ran the search.
 - `:not` on anything but tokens and `_id`, `_tag`, `_security`, `_profile`
 - `:code-text` as it is defined (matching the code's display): it is treated as `:text`
 - `_query`
-- `_text` and `_content` in `_filter`, relevance ranking, and `:text-advanced`
+- relevance ranking for `_text` and `_content`, and `:text-advanced`

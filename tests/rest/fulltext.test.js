@@ -135,6 +135,23 @@ describe.each(engines())('full-text search (%s)', (engine) => {
     expect(all.body.total).toBe(2);
   });
 
+  test('in _filter: eq or co, ne, combined with anything else, and in chains', async () => {
+    const f = (x) => '/r4/Patient?_filter=' + encodeURIComponent(x);
+    expect(await found(f('_text co chest'))).toEqual([ids.p1, ids.p3].sort());
+    expect(await found(f('_text eq chest'))).toEqual([ids.p1, ids.p3].sort());
+    expect(await found(f('_text co "chest -child"'))).toEqual([ids.p1]);
+    expect(await found(f('_text co "\\"blood pressure\\""'))).toEqual([ids.p2]);
+    expect(await found(f('_text co "\\"pressure blood\\""'))).toEqual([]);
+    expect(await found(f('_text ne chest'))).toEqual([ids.p2]);
+    expect(await found(f('_text co chest and family eq smith'))).toEqual([ids.p3]);
+    expect(await found(f('_text co pain or _content co mrn12345 or _content co "anna@example.org"'))).toEqual([ids.p1, ids.p2].sort());
+    expect(await found(f('not (_content co anna)'))).toEqual([ids.p1, ids.p3].sort());
+    expect(await found('/r4/Observation?_filter=' + encodeURIComponent('subject._text co pressure'))).toEqual([ids.o1]);
+    expect(await found('/r4/Observation?_filter=' + encodeURIComponent('subject[_content co anna]._text co blood'))).toEqual([ids.o1]);
+    await found(f('_text sw chest'), 400);
+    await found(f('_text co "\\"unclosed"'), 400);
+  });
+
   test('the index follows the resource: updates and deletes', async () => {
     const id = await post({ resourceType: 'Patient', text: div('<p>Zebrafish</p>') });
     expect(await found('/r4/Patient?_text=zebrafish')).toEqual([id]);

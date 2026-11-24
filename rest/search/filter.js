@@ -27,6 +27,7 @@
 const { badRequest } = require('../library/errors');
 const { dateRange, numberRange } = require('../../library/fhir-search-values');
 const { normalise } = require('../indexing/values');
+const { parseQuery } = require('../indexing/fulltext');
 
 /**
  * A _filter value (already unquoted: every character in it is literal) in the form the search
@@ -287,6 +288,15 @@ class FilterParser {
         throw badRequest(`_filter: '${value}' is not a date`);
       }
       return { kind: 'lastUpdated', values: [{ prefix: op === 'po' ? 'ap' : op, range: r }] };
+    }
+    if (path === '_text' || path === '_content') {
+      // the value is a full-text query, as for _text= and _content= (indexing/fulltext.js)
+      if (!['eq', 'co', 'ne'].includes(op)) {
+        throw badRequest(`_filter: ${path} takes eq or co (the same), or ne, not ${op}`);
+      }
+      sp.fullTextUsed = true;
+      const node = { kind: 'fulltext', column: path === '_text' ? 'Narrative' : 'Content', tree: parseQuery(value) };
+      return op === 'ne' ? { kind: 'not', item: node } : node;
     }
     if (path === '_tag' || path === '_security' || path === '_profile') {
       if (op !== 'eq' && op !== 'ne') {

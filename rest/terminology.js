@@ -84,7 +84,6 @@ class Terminology {
     const db = ep.db;
     const closure = await db.read(q => q.get('SELECT ClosureKey, Name, Version FROM Closures WHERE Name = ?', [this.closureName]));
     let closureKey;
-    let version;
     if (!closure) {
       const r = await this.client.post('/$closure', { resourceType: 'Parameters', parameter: [{ name: 'name', valueString: this.closureName }] });
       if (r.status !== 200) {
@@ -95,10 +94,8 @@ class Terminology {
         const row = await q.get('SELECT ClosureKey FROM Closures WHERE Name = ?', [this.closureName]);
         return Number(row.ClosureKey);
       });
-      version = null;
     } else {
       closureKey = Number(closure.ClosureKey);
-      version = closure.Version;
     }
     const pending = await db.read(q => q.all(`SELECT c.ConceptKey, c.Code, s.Uri FROM Concepts c JOIN Spaces s ON s.SpaceKey = c.SpaceKey
       WHERE c.InClosure = 0 ORDER BY c.ConceptKey LIMIT ${CLOSURE_BATCH}`));
@@ -109,12 +106,11 @@ class Terminology {
     for (const c of pending) {
       params.parameter.push({ name: 'concept', valueCoding: { system: c.Uri, code: c.Code } });
     }
-    if (version) {
-      params.parameter.push({ name: 'version', valueString: version });
-    }
+    // (no version: $closure adds concepts or resynchronises from a version, never both; the
+    // answer to adding concepts is everything new they bring)
     const r = await this.client.post('/$closure', params);
     if (r.status !== 200 || !r.resource || r.resource.resourceType !== 'ConceptMap') {
-      throw new Error(`$closure failed (status ${r.status})`);
+      throw new Error(`$closure failed (status ${r.status}): ${JSON.stringify(r.resource).substring(0, 400)}`);
     }
     const pairs = [];
     for (const g of r.resource.group || []) {
