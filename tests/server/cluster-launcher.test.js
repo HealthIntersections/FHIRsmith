@@ -4,7 +4,7 @@
  */
 const http = require('http');
 const path = require('path');
-const { loadSettings, classify, isFastLane, isHeavyLane, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv } = require('../../cluster');
+const { loadSettings, classify, isFastLane, isHeavyLane, isXml, laneProcs, pickTarget, createLauncher, memorySampler, childExecArgv } = require('../../cluster');
 const { defaultWorkers } = require('../../library/worker-count');
 const memoryGuard = require('../../library/memory-guard');
 
@@ -194,6 +194,30 @@ describe('routing rules', () => {
     expect(heavy('/r4/ValueSet/$validate-code', '5000', 0)).toBe(false);
   });
 
+  test('the heavy lane: XML, as the server decides it (by _format, else Accept), or a body in XML', () => {
+    const xml = (url, headers = {}) => isXml({ url, headers });
+    expect(xml('/r4/CodeSystem/icd10cm?_format=xml')).toBe(true);
+    expect(xml('/r4/CodeSystem/icd10cm?format=application/fhir%2Bxml')).toBe(true);
+    // the page's XML tab renders the whole resource as XML
+    expect(xml('/r4/CodeSystem/icd10cm?_format=html/xml')).toBe(true);
+    expect(xml('/r4/CodeSystem/icd10cm', { accept: 'application/fhir+xml' })).toBe(true);
+    expect(xml('/r4/CodeSystem/icd10cm', { accept: 'application/xml+fhir;q=0.9' })).toBe(true);
+    // _format wins over Accept, as it does in the server
+    expect(xml('/r4/CodeSystem/icd10cm?_format=json', { accept: 'application/fhir+xml' })).toBe(false);
+    expect(xml('/r4/CodeSystem/icd10cm?_format=html', { accept: 'application/fhir+xml' })).toBe(false);
+    // a browser names XML after HTML: it gets HTML
+    expect(xml('/r4/CodeSystem/icd10cm', { accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' })).toBe(false);
+    expect(xml('/r4/CodeSystem/icd10cm', { accept: 'application/fhir+json' })).toBe(false);
+    expect(xml('/r4/CodeSystem/icd10cm')).toBe(false);
+    // a body in XML, whatever is asked for
+    expect(xml('/r4/ValueSet/$validate-code', { 'content-type': 'application/fhir+xml', accept: 'application/fhir+json' })).toBe(true);
+    // in the lane with xml on, whatever the size; not with it off; not off a tx path
+    const req = { method: 'GET', url: '/r4/CodeSystem/icd10cm?_format=xml', headers: {} };
+    expect(isHeavyLane(req, TX, 1000, true)).toBe(true);
+    expect(isHeavyLane(req, TX, 1000, false)).toBe(false);
+    expect(isHeavyLane({ ...req, url: '/packages/x?_format=xml' }, TX, 1000, true)).toBe(false);
+  });
+
   test('the heavy lane: which processes a request may go to', () => {
     const procs = [
       { code: 'm0', role: 'master', servesTx: true, ready: true, heavy: false, heavyOutstanding: 0 },
@@ -293,9 +317,10 @@ describe('routing rules', () => {
     const s5 = loadSettings([], {}, { ...config, server: { cluster: { fastLaneExtra: 0, fastLaneMaxBytes: 0, normalMinSlots: 0 } } });
     expect([s5.fastLaneExtra, s5.fastLaneMaxBytes, s5.normalMinSlots]).toEqual([0, 0, 0]);
     // the heavy lane: bodies over 1 MB, to one tx-worker; 0 turns it off; not a count is an error
-    expect([s.heavyLaneMinBytes, s.heavyLaneProcesses]).toEqual([1024 * 1024, 1]);
-    const s6 = loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: 0, heavyLaneProcesses: 2 } } });
-    expect([s6.heavyLaneMinBytes, s6.heavyLaneProcesses]).toEqual([0, 2]);
+    expect([s.heavyLaneMinBytes, s.heavyLaneProcesses, s.heavyLaneXml]).toEqual([1024 * 1024, 1, true]);
+    const s6 = loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: 0, heavyLaneProcesses: 2, heavyLaneXml: false } } });
+    expect([s6.heavyLaneMinBytes, s6.heavyLaneProcesses, s6.heavyLaneXml]).toEqual([0, 2, false]);
+    expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneXml: 'yes' } } })).toThrow(/heavyLaneXml must be true or false/);
     expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: -1 } } })).toThrow(/heavyLaneMinBytes must be a whole number/);
     expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneProcesses: 'one' } } })).toThrow(/heavyLaneProcesses must be a whole number/);
   });
@@ -710,7 +735,7 @@ describe('the launcher, with fake processes', () => {
       launcher = createLauncher({ ...queued(5000), maxOutstanding: 4, heavyLaneMinBytes: 1000, log: (m) => lines.push(m) });
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
-      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual([expect.stringMatching(/^heavy lane: tx requests with a body over 1000 bytes and no cache-id go to tx2, /)]);
+      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual([expect.stringMatching(/^heavy lane: tx requests with a body over 1000 bytes or in or for XML, without a cache-id, go to tx2, /)]);
       // small bodies go anywhere; large ones to the lane
       expect((await post(PORT, '/r4/ValueSet/$validate-code', 500)).json.code).toMatch(/^tx[12]$/);
       expect((await post(PORT, '/r4/ValueSet/$validate-code', 5000)).json.code).toBe('tx2');
@@ -721,16 +746,30 @@ describe('the launcher, with fake processes', () => {
       const others = await Promise.all([1, 2, 3, 4].map(() => post(PORT, '/r4/ValueSet/$validate-code', 500)));
       expect(others.map(r => r.json.code)).toEqual(['tx1', 'tx1', 'tx1', 'tx1']);
       expect((await big).json.code).toBe('tx2');
+      // XML, whatever the size; and while it is there, the others keep off
+      const xmlRead = get(PORT, '/r4/CodeSystem/icd10cm?_format=xml&delay=800');
+      await until(() => launcher.procs.find(p => p.code === 'tx2').heavyOutstanding === 1);
+      expect((await get(PORT, '/r4/CodeSystem/$lookup?code=1', { Accept: 'application/fhir+json' })).json.code).toBe('tx1');
+      expect((await xmlRead).json.code).toBe('tx2');
+      expect((await get(PORT, '/r4/CodeSystem/icd10cm', { Accept: 'application/fhir+xml' })).json.code).toBe('tx2');
       // a large one with a cache-id goes to its owner
       expect((await post(PORT, '/r4/ValueSet/$validate-code', 5000, { 'X-Cache-Id': 'tx1.x' })).json.code).toBe('tx1');
       expect(launcher.procs.every(p => p.outstanding === 0 && p.heavyOutstanding === 0)).toBe(true);
       await launcher.stop();
-      // 0: no lane
+      // XML only: a large JSON body goes anywhere
       lines.length = 0;
       launcher = createLauncher({ ...queued(5000), heavyLaneMinBytes: 0, log: (m) => lines.push(m) });
       await launcher.start();
       await until(() => launcher.procs.every(p => p.ready));
-      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual(['heavy lane: off (heavyLaneMinBytes or heavyLaneProcesses is 0)']);
+      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual([expect.stringMatching(/^heavy lane: tx requests in or for XML, without a cache-id, go to tx2, /)]);
+      expect((await get(PORT, '/r4/CodeSystem/icd10cm?_format=xml')).json.code).toBe('tx2');
+      await launcher.stop();
+      // 0 and false: no lane
+      lines.length = 0;
+      launcher = createLauncher({ ...queued(5000), heavyLaneMinBytes: 0, heavyLaneXml: false, log: (m) => lines.push(m) });
+      await launcher.start();
+      await until(() => launcher.procs.every(p => p.ready));
+      expect(lines.filter(l => l.startsWith('heavy lane:'))).toEqual(['heavy lane: off (heavyLaneMinBytes is 0 and heavyLaneXml false, or heavyLaneProcesses is 0)']);
       expect(launcher.procs.some(p => p.heavy)).toBe(false);
     });
 

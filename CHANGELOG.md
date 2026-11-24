@@ -5,11 +5,11 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.8] - 2026-11-24
+## [1.0.9] - 2026-11-24
 
 ### Added
 
-- Cluster: a heavy lane. A tx request with a body over `server.cluster.heavyLaneMinBytes` (1 MB, by its Content-Length) and no cache-id goes to one tx-worker (the last; `heavyLaneProcesses`, 1), which the other requests keep off while it has one: parsing a large body, and much of what is done with it, holds a process's event loop for seconds, and this keeps that to one process. On tx.fhir.org, bodies of tens of MB held every process's event loop for 2-5 s, once or twice a minute. 0 turns it off; it is logged at start ([cluster.md](cluster.md))
+- Cluster: a heavy lane. A tx request with a body over `server.cluster.heavyLaneMinBytes` (1 MB, by its Content-Length), or in or for XML (`heavyLaneXml`: by `_format`, else `Accept`, or an XML body; XML is slow to read and write, and rare), and no cache-id goes to one tx-worker (the last; `heavyLaneProcesses`, 1), which the other requests keep off while it has one: parsing a large body, and much of what is done with it, holds a process's event loop for seconds, and this keeps that to one process. On tx.fhir.org, bodies of tens of MB held every process's event loop for 2-5 s, once or twice a minute. `heavyLaneMinBytes` 0 and `heavyLaneXml` false turn it off; it is logged at start ([cluster.md](cluster.md))
 
 ### Fixed
 
