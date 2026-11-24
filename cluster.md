@@ -219,15 +219,23 @@ cookie would be lost (see [nginx.md](nginx.md#headers-to-pass-to-the-server)).
   searches and `$expand` never do. A request in the lane that turns out to be costly (a
   `GET $validate-code` against a value set that must be expanded) costs at most `fastLaneExtra`
   more requests at once on a process
-* keeps large requests to a heavy lane. A tx request with a body over `heavyLaneMinBytes`
-  (1 MB, by its `Content-Length`) and no cache-id goes only to the lane's process: the last
+* keeps large requests, and XML, to a heavy lane. A tx request with a body over
+  `heavyLaneMinBytes` (1 MB, by its `Content-Length`), or in or for XML (`heavyLaneXml`), and
+  no cache-id goes only to the lane's process: the last
   `heavyLaneProcesses` (1) tx-worker(s), `tx2` with two workers. While the lane's process has
   one, other requests don't go to it; when it has none, it takes its share like any other.
   Parsing a large body holds a process's event loop for as long as it takes, and so does
   much of what is done with what it holds (a large expansion sent as `tx-resource`, say): on
   tx.fhir.org, bodies of tens of MB held it for 2-5 s, once or twice a minute on every
   process (2026-11-24). The lane keeps that to one process, and the requests on it wait for
-  each other. A validator's usual requests, with value sets inline, are 10-100 KB. A request
+  each other. A validator's usual requests, with value sets inline, are 10-100 KB. XML is
+  read and written in JavaScript on the event loop, several times slower than JSON, and the
+  largest responses are XML (ICD-10-CM, 13.7 MB); it is also rare (67 of 46,000 requests on
+  tx.fhir.org), so the lane takes all of it, whatever its size. A request is XML as the server
+  decides it: by `_format` (or `format`) in the query if there is one, else by `Accept`
+  (`application/fhir+xml`, `application/xml+fhir` or `application/xml`, unless it also names
+  `text/html`, as a browser's does); `_format=html/xml` (the page's XML tab) counts too, and
+  so does a body whose `Content-Type` is XML. A `_format` in a form post's body isn't seen. A request
   with a cache-id goes to the process that issued it, whatever its size. A chunked body has no
   `Content-Length` and doesn't take the lane: nginx, buffering the request (its default),
   sends one. While the lane's process isn't ready, its requests go to any process. There is
@@ -488,8 +496,9 @@ behind nginx), the page shows, and empties, only the process the request reached
 | `server.cluster.recycleSeconds` | | 30 | Seconds a tx-worker may stay over the memory guard's refusal threshold with no request at work before the launcher restarts it. 30: long enough for the guard's own recovery (a forced last-resort GC and `malloc_trim` at once and again 5 s later, `malloc_trim` alone up to once a second) to have its effect, short next to a client's retries; meanwhile every request to the server is refused. The restart costs the worker's caches (see [Limits](#limits-of-this-arrangement)) and the about 15 s it takes to start; the others serve meanwhile, and the gate opens once the old process has exited. 0: never. |
 | `server.cluster.fastLaneExtra` | | 4 | How many more than `maxOutstanding` a process may have when the request is in the fast lane (above). 4: room for the cheap requests of a surge without letting a lane request that turns out to be costly crowd a process. 0: no fast lane. |
 | `server.cluster.normalMinSlots` | | 4 | While other requests wait, the fast lane leaves each process enough slots for this many of them to run, so heavy work keeps going during a flood of cheap requests. 4: in a 3x surge on 4 CPUs (1 master + 2 workers) the heavy requests answered were the same with 4, 8 or no minimum (about 7,100-7,400 in 30 s), but each heavy request running slows the cheap ones on its event loop: the `$lookup` probe took 88 ms (median) with 4, 150-210 ms with 8. With the lane held to 4 slots of its own, the surge was served at 457/s, not about 1,200/s, and the probe took 1.1 s. 0: no minimum. At most `maxOutstanding`. |
-| `server.cluster.heavyLaneMinBytes` | | 1048576 | A tx request with a body bigger than this (its `Content-Length`, in bytes) and no cache-id goes to the heavy lane (above). 1 MB: a validator's usual requests are 10-100 KB, and a body that takes long to parse is tens of MB. Logged at start. 0: no lane. |
-| `server.cluster.heavyLaneProcesses` | | 1 | How many tx-workers (the last ones) are the heavy lane. 1: large requests are rare, and every process in the lane is one whose other requests wait behind them. There is no lane unless more processes than this serve tx. 0: no lane. |
+| `server.cluster.heavyLaneMinBytes` | | 1048576 | A tx request with a body bigger than this (its `Content-Length`, in bytes) and no cache-id goes to the heavy lane (above). 1 MB: a validator's usual requests are 10-100 KB, and a body that takes long to parse is tens of MB. Logged at start. 0: not by size (with `heavyLaneXml` false as well, no lane). |
+| `server.cluster.heavyLaneXml` | | true | Whether a tx request in or for XML (no cache-id) goes to the heavy lane (above), whatever its size. true: XML is slow to read and write, and rare. false: XML goes anywhere, unless its body is over `heavyLaneMinBytes`. |
+| `server.cluster.heavyLaneProcesses` | | 1 | How many tx-workers (the last ones) are the heavy lane. 1: large requests and XML are rare, and every process in the lane is one whose other requests wait behind them. There is no lane unless more processes than this serve tx. 0: no lane. |
 | `server.cluster.fastLaneMaxBytes` | | 1024 | The largest `Content-Length` with which a `POST` `$lookup`, `$subsumes` or `$validate-code` takes the fast lane. 1024: a single coding with its parameters is about 450 bytes; an inline value set or code system is larger. Half of a validator's calls are such `POST CodeSystem/$validate-code`s, and with them in the lane a 3x surge on 4 CPUs was served at twice the rate (1210/s vs 608/s, with the same CPU) and they took 24 ms instead of 1 s; the other requests did no worse. 0: a `POST` never does. |
 | `server.memory.trimAllocator` | | true with a role; false without | Whether a process calls `malloc_trim` (Linux with glibc, and the optional `koffi` dependency): with a role, once after loading the library (it gives back 0.6-0.7 GB a process), and while the memory guard is refusing (see [Memory](#memory)). true: the C allocator keeps freed memory resident, and no GC touches it. false with a role: for diagnosis. Without a role it is off unless set true. Each process's memory line at start says whether it is on. |
 | `modules.tx.instanceCode` | | `m0` under the launcher | The master's instance code. The workers are `tx1`, `tx2`, ... The `m0` default is the launcher's: a master started by hand needs this, `--instance-code` or `FHIRSMITH_INSTANCE_CODE` (see [Roles](#roles)). |
