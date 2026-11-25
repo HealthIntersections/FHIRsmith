@@ -3,6 +3,12 @@ const assert = require('assert');
 const { CodeSystem } = require("../library/codesystem");
 const { Issue } = require('../library/operation-outcome');
 
+// ValueSet.compose.include.filter.op is bound to http://hl7.org/fhir/ValueSet/filter-operator, whose
+// equality code is "=". "equals" is kept as an alias for value sets that already use it.
+function isEqualsOp(op) {
+  return op === '=' || op === 'equals';
+}
+
 class CurrencyConcept {
   constructor(code, display, decimals, symbol) {
     this.code = code;
@@ -174,7 +180,7 @@ class Iso4217Services extends CodeSystemProvider {
     assert(op != null && typeof op === 'string', 'op must be a non-null string');
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
-    return prop === 'decimals' && op === 'equals';
+    return prop === 'decimals' && isEqualsOp(op);
   }
 
   async filter(filterContext, forIteration, prop, op, value) {
@@ -184,7 +190,7 @@ class Iso4217Services extends CodeSystemProvider {
     assert(op != null && typeof op === 'string', 'op must be a non-null string');
     assert(value != null && typeof value === 'string', 'value must be a non-null string');
 
-    if (prop === 'decimals' && op === 'equals') {
+    if (prop === 'decimals' && isEqualsOp(op)) {
       const result = new CurrencyConceptFilter();
 
       for (const concept of this.codes) {

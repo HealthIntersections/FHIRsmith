@@ -191,9 +191,21 @@ describe('Iso4217Services', () => {
       expect(await provider.doesFilter('decimals', 'equals', '3')).toBe(true);
     });
 
+    test('should support the FHIR "=" operator for decimals', async () => {
+      // ValueSet.compose.include.filter.op is bound to filter-operator, whose code is "=", not "equals"
+      expect(await provider.doesFilter('decimals', '=', '3')).toBe(true);
+
+      const ctxt = await provider.getPrepContext(false);
+      await provider.filter(ctxt, true, 'decimals', '=', '3');
+      const [set] = await provider.executeFilters(ctxt);
+      const codes = set.list.map(c => c.code).sort();
+      expect(codes).toEqual(['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND']);
+    });
+
     test('should not support other filters', async () => {
       expect(await provider.doesFilter('symbol', 'equals', '$')).toBe(false);
       expect(await provider.doesFilter('decimals', 'contains', '2')).toBe(false);
+      expect(await provider.doesFilter('decimals', 'regex', '2')).toBe(false);
       expect(await provider.doesFilter('display', 'equals', 'Dollar')).toBe(false);
     });
 
