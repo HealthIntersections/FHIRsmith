@@ -636,6 +636,21 @@ class Library {
         this.valueSetProviders.push(providerSet.valueSetProvider);
         providerSet.vsRegistered = true;
       }
+      // Load the value sets now, as the library loads, not on the first request: that reads
+      // every cached compose (thousands of files) and, but in a cluster follower, lists the
+      // collections from OCL - a minute or more, during which the first requests for OCL value
+      // sets went to OCL themselves and timed out. A failure here isn't fatal: the provider is
+      // initialized again on demand, as before
+      if (!providerSet.vsInitialized) {
+        const started = Date.now();
+        try {
+          await providerSet.valueSetProvider.initialize();
+          providerSet.vsInitialized = true;
+          this.log.info(`OCL value sets loaded at startup in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+        } catch (error) {
+          this.log.warn(`OCL value sets not loaded at startup (they will be on first use): ${error.message}`);
+        }
+      }
       if (!providerSet.cmRegistered) {
         this.conceptMapProviders.push(providerSet.conceptMapProvider);
         providerSet.cmRegistered = true;
