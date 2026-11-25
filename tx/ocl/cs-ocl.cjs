@@ -6,6 +6,7 @@ const { BaseCSServices } = require('../cs/cs-base');
 const { CodeSystem } = require('../library/codesystem');
 const { SearchFilterText } = require('../library/designations');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MARKER_EXTENSION } = require('./shared/constants');
+const { baseChecksum } = require('./shared/checksum');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
@@ -1731,6 +1732,8 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.loadedConceptCount = -1;
     this.loadedChecksum = meta?.checksum || null;
     this.customFingerprint = null;
+    // the source's base checksum the cold cache file was written for (null: unknown, an older file)
+    this.coldCacheSourceChecksum = null;
     this.backgroundLoadProgress = { processed: 0, total: null };
     this.materializedConceptList = null;
     this.materializedConceptCount = -1;
@@ -1786,6 +1789,7 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
       this.loadedConceptCount = cached.concepts.length;
       this.customFingerprint = cached.fingerprint || null;
+      this.coldCacheSourceChecksum = cached.sourceChecksum || null;
       this.isComplete = true;
 
       if (this.meta?.codeSystem?.jsonObj) {
@@ -1814,16 +1818,19 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       await ensureCacheDirectories(CACHE_CS_DIR, CACHE_VS_DIR);
 
       const fingerprint = computeCodeSystemFingerprint(concepts);
+      const sourceChecksum = baseChecksum(this.meta?.checksum || this.loadedChecksum || null);
       const cacheData = {
         canonicalUrl,
         version,
         fingerprint,
+        sourceChecksum,
         timestamp: new Date().toISOString(),
         conceptCount: concepts.length,
         concepts
       };
 
       await atomicWriteFile(cacheFilePath, JSON.stringify(cacheData, null, 2));
+      this.coldCacheSourceChecksum = sourceChecksum;
 
       return fingerprint;
     } catch (error) {
@@ -1907,14 +1914,22 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       this.reloadColdCacheIfChanged();
       return;
     }
+    // the cold cache file the factory started reading when it was made: decide once it is in,
+    // or a large source would be found incomplete (and its cache old) and downloaded again
+    if (this._coldCacheLoad) {
+      this._coldCacheLoad.then(() => this.scheduleBackgroundLoad(reason), () => this.scheduleBackgroundLoad(reason));
+      return;
+    }
     this.#syncWarmStateWithChecksum();
     const cacheFilePath = getCacheFilePath(CACHE_CS_DIR, this.system(), this.version());
     const cacheAgeMs = getColdCacheAgeMs(cacheFilePath);
 
     // If warm state is complete but cold cache is stale, force a refresh run.
     // This keeps warm data available while ensuring stale cold-cache files are replaced.
+    // A cold cache written for the source's current (base) checksum is not stale, however old
+    // the file: the source hasn't changed since, and downloading it again only loads OCL.
     if (this.isComplete) {
-      if (cacheAgeMs == null || cacheAgeMs < COLD_CACHE_FRESHNESS_MS) {
+      if (cacheAgeMs == null || cacheAgeMs < COLD_CACHE_FRESHNESS_MS || this.#coldCacheMatchesSource()) {
         return;
       }
 
@@ -1979,7 +1994,9 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       const allConcepts = Array.from(this.sharedConceptCache.values());
       const newFingerprint = computeCodeSystemFingerprint(allConcepts);
       
-      if (!this.customFingerprint || newFingerprint !== this.customFingerprint) {
+      // Save when the content changed, or when the file doesn't yet say which source checksum it
+      // is for (an older cache): written once, it then stays current while the source does
+      if (!this.customFingerprint || newFingerprint !== this.customFingerprint || !this.#coldCacheMatchesSource()) {
         // Save to cold cache
         const savedFingerprint = await this.#saveColdCache(allConcepts);
         if (savedFingerprint) {
@@ -2085,9 +2102,26 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     }
   }
 
+  /**
+   * Whether the cold cache that was read (or written) is that of the source as it is now:
+   * written for the same base checksum. False for an older file without one
+   */
+  #coldCacheMatchesSource() {
+    const current = baseChecksum(this.meta?.checksum || null);
+    return current != null && this.coldCacheSourceChecksum === current;
+  }
+
   #syncWarmStateWithChecksum() {
     const checksum = this.meta?.checksum || null;
     if (this.loadedChecksum == null) {
+      this.loadedChecksum = checksum;
+      return;
+    }
+
+    // Only a change of the source's own (base) checksum means its content changed. The
+    // |default=<version> suffix comes and goes with whether discovery resolved the default
+    // version in that run (shared/checksum.cjs); it must not throw away the loaded concepts.
+    if (baseChecksum(checksum) === baseChecksum(this.loadedChecksum)) {
       this.loadedChecksum = checksum;
       return;
     }

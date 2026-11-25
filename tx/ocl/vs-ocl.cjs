@@ -8,6 +8,7 @@ const { SearchFilterText } = require('../library/designations');
 const { TxParameters } = require('../params');
 const { OCLSourceCodeSystemFactory, OCLBackgroundJobQueue } = require('./cs-ocl');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS } = require('./shared/constants');
+const { sameDependencyChecksums } = require('./shared/checksum');
 const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
@@ -1575,25 +1576,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       return false;
     }
 
-    const currentDeps = this.#valueSetDependencyChecksums(vs);
-    const cachedDeps = cached.dependencyChecksums || {};
-    const currentKeys = Object.keys(currentDeps).sort();
-    const cachedKeys = Object.keys(cachedDeps).sort();
-
-    if (currentKeys.length !== cachedKeys.length) {
-      return false;
-    }
-
-    for (let i = 0; i < currentKeys.length; i++) {
-      if (currentKeys[i] !== cachedKeys[i]) {
-        return false;
-      }
-      if ((currentDeps[currentKeys[i]] || null) !== (cachedDeps[cachedKeys[i]] || null)) {
-        return false;
-      }
-    }
-
-    return true;
+    // compared by base checksum: a compose cached while the default version of a source it draws
+    // on couldn't be resolved (no |default=... suffix) is still that source's content
+    return sameDependencyChecksums(this.#valueSetDependencyChecksums(vs), cached.dependencyChecksums || {});
   }
 
   async #fetchCollectionsForDiscovery() {
