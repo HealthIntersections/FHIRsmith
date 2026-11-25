@@ -45,4 +45,51 @@ function sameDependencyChecksums(current, cached) {
   return true;
 }
 
-module.exports = { baseChecksum, sameDependencyChecksums, DEFAULT_SUFFIX };
+/**
+ * A collection URL as a path on the OCL server: the same whether discovery got it absolute
+ * from the API (https://host/orgs/X/collections/Y/concepts) or built it from the collection's
+ * owner and id (/orgs/X/collections/Y/concepts/)
+ */
+function collectionPath(url) {
+  if (url == null) {
+    return null;
+  }
+  let text = String(url).trim().replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+/i, '');
+  text = text.replace(/\/+$/, '');
+  return text || null;
+}
+
+/**
+ * Whether two value set metadata signatures (vs-ocl.cjs, #valueSetMetadataSignature: a JSON
+ * object as text) describe the same collection. The concepts and expansion URLs are compared
+ * as paths: their form depends on where discovery got the collection from, not on its content
+ */
+function sameCollectionSignature(current, cached) {
+  if (current === cached) {
+    return true;
+  }
+  let a;
+  let b;
+  try {
+    a = JSON.parse(current);
+    b = JSON.parse(cached);
+  } catch (e) {
+    return false;
+  }
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') {
+    return false;
+  }
+  for (const key of ['url', 'version', 'lastUpdated', 'collectionId', 'preferredSource']) {
+    if ((a[key] ?? null) !== (b[key] ?? null)) {
+      return false;
+    }
+  }
+  for (const key of ['conceptsUrl', 'expansionUrl']) {
+    if (collectionPath(a[key]) !== collectionPath(b[key])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+module.exports = { baseChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature, DEFAULT_SUFFIX };

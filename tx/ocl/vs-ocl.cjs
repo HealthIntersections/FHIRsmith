@@ -8,7 +8,7 @@ const { SearchFilterText } = require('../library/designations');
 const { TxParameters } = require('../params');
 const { OCLSourceCodeSystemFactory, OCLBackgroundJobQueue } = require('./cs-ocl');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, FILTERED_CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS } = require('./shared/constants');
-const { sameDependencyChecksums } = require('./shared/checksum');
+const { sameDependencyChecksums, sameCollectionSignature } = require('./shared/checksum');
 const { createOclHttpClient } = require('./http/client');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
 const { PublicAccessChecker } = require('./resolve/public-access');
@@ -1572,7 +1572,9 @@ class OCLValueSetProvider extends AbstractValueSetProvider {
       return false;
     }
 
-    if (cached.metadataSignature !== this.#valueSetMetadataSignature(vs)) {
+    // the concepts and expansion URLs compared as paths: absolute (from the API) or built from the
+    // collection's owner and id (from the global listing), they are the same collection
+    if (!sameCollectionSignature(this.#valueSetMetadataSignature(vs), cached.metadataSignature)) {
       return false;
     }
 

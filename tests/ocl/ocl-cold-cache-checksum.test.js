@@ -17,7 +17,7 @@ const { OCLSourceCodeSystemFactory } = require('../../tx/ocl/cs-ocl');
 const { OCLBackgroundJobQueue } = require('../../tx/ocl/jobs/background-queue');
 const { CACHE_CS_DIR, getCacheFilePath } = require('../../tx/ocl/cache/cache-paths');
 const { ensureCacheDirectories, atomicWriteFile } = require('../../tx/ocl/cache/cache-utils');
-const { baseChecksum, sameDependencyChecksums } = require('../../tx/ocl/shared/checksum');
+const { baseChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature } = require('../../tx/ocl/shared/checksum');
 
 const CANONICAL = 'http://example.org/ocl/CodeSystem/cold-cache-checksum';
 const VERSION = '1.0';
@@ -50,6 +50,54 @@ describe('OCL checksums: base and |default= suffix', () => {
     expect(sameDependencyChecksums({ [key]: 'abc' }, { 'https://example.org/CodeSystem/y|': 'abc' })).toBe(false);
     expect(sameDependencyChecksums({}, {})).toBe(true);
     expect(sameDependencyChecksums({ [key]: null }, { [key]: null })).toBe(true);
+  });
+});
+
+describe('OCL value set metadata signature: collection URLs compared as paths', () => {
+  // as found on tx.gointerop.com (2026-11-25): the compose of BRCID10 cached on 2026-11-20, with the
+  // URLs absolute from the API, and the signature from a discovery by the global listing, which
+  // builds them from the owner and id - the same collection, unchanged since 2026-11-16
+  const cachedSignature = JSON.stringify({
+    url: 'https://terminologia.saude.gov.br/fhir/ValueSet/BRCID10', version: 'HEAD',
+    lastUpdated: '2026-11-16T19:46:40.482Z', collectionId: 'BRCID10-1.0',
+    conceptsUrl: 'https://oclapi2.ips.hsl.org.br/orgs/MS/collections/BRCID10-1.0/concepts',
+    expansionUrl: 'https://oclapi2.ips.hsl.org.br/orgs/MS/collections/BRCID10-1.0/HEAD/expansions/autoexpand-HEAD',
+    preferredSource: null
+  });
+  const currentSignature = JSON.stringify({
+    url: 'https://terminologia.saude.gov.br/fhir/ValueSet/BRCID10', version: 'HEAD',
+    lastUpdated: '2026-11-16T19:46:40.482Z', collectionId: 'BRCID10-1.0',
+    conceptsUrl: '/orgs/MS/collections/BRCID10-1.0/concepts/',
+    expansionUrl: '/orgs/MS/collections/BRCID10-1.0/HEAD/expansions/autoexpand-HEAD/',
+    preferredSource: null
+  });
+
+  it('takes the host and the trailing slash off a collection URL', () => {
+    expect(collectionPath('https://oclapi2.ips.hsl.org.br/orgs/MS/collections/X/concepts')).toBe('/orgs/MS/collections/X/concepts');
+    expect(collectionPath('/orgs/MS/collections/X/concepts/')).toBe('/orgs/MS/collections/X/concepts');
+    expect(collectionPath(null)).toBe(null);
+  });
+
+  it('accepts the same collection with absolute or built URLs', () => {
+    expect(sameCollectionSignature(currentSignature, cachedSignature)).toBe(true);
+    expect(sameCollectionSignature(cachedSignature, cachedSignature)).toBe(true);
+  });
+
+  it('rejects a collection updated since, or another collection', () => {
+    const updated = JSON.parse(currentSignature);
+    updated.lastUpdated = '2026-11-24T10:00:00.000Z';
+    expect(sameCollectionSignature(JSON.stringify(updated), cachedSignature)).toBe(false);
+    const other = JSON.parse(currentSignature);
+    other.conceptsUrl = '/orgs/MS/collections/BRCID10-2.0/concepts/';
+    expect(sameCollectionSignature(JSON.stringify(other), cachedSignature)).toBe(false);
+    const otherId = JSON.parse(currentSignature);
+    otherId.collectionId = 'BRCID10-2.0';
+    expect(sameCollectionSignature(JSON.stringify(otherId), cachedSignature)).toBe(false);
+  });
+
+  it('rejects what it cannot read', () => {
+    expect(sameCollectionSignature(currentSignature, null)).toBe(false);
+    expect(sameCollectionSignature(currentSignature, 'not json')).toBe(false);
   });
 });
 
