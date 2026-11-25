@@ -1752,6 +1752,40 @@ describe('FHIR CodeSystem Provider', () => {
         });
       });
 
+      describe('Property filters on concepts that lack the property', () => {
+        // dddUnit-style: some concepts have the property, some have other properties, some have none
+        let sparseProvider;
+        beforeEach(() => {
+          sparseProvider = factory.build(opContext, [], new CodeSystem({
+            resourceType: 'CodeSystem', url: 'urn:test:sparse', version: '1', status: 'active', content: 'complete',
+            property: [{ code: 'unit', type: 'code' }, { code: 'other', type: 'string' }],
+            concept: [
+              { code: 'mg', property: [{ code: 'unit', valueCode: 'mg' }] },
+              { code: 'g', property: [{ code: 'unit', valueCode: 'g' }] },
+              { code: 'otherOnly', property: [{ code: 'other', valueString: 'x' }] },
+              { code: 'none' }
+            ]
+          }));
+        });
+        const codes = set => ['mg', 'g', 'otherOnly', 'none'].filter(c => set.findConceptByCode(c));
+
+        test('exists is a supported operator on a defined property', async () => {
+          expect(await sparseProvider.doesFilter('unit', 'exists', 'true')).toBe(true);
+        });
+
+        test('exists true selects the concepts that have a value', async () => {
+          expect(codes(await sparseProvider.filter(filterContext, true, 'unit', 'exists', 'true'))).toEqual(['mg', 'g']);
+        });
+
+        test('exists false selects the concepts that have no value, with or without a property element', async () => {
+          expect(codes(await sparseProvider.filter(filterContext, true, 'unit', 'exists', 'false'))).toEqual(['otherOnly', 'none']);
+        });
+
+        test('not-in includes concepts that have no property element at all', async () => {
+          expect(codes(await sparseProvider.filter(filterContext, true, 'unit', 'not-in', 'mg'))).toEqual(['g', 'otherOnly', 'none']);
+        });
+      });
+
       describe('Known Property Filters', () => {
         test('should filter by notSelectable property', async () => {
           const results = await simpleProvider.filter(filterContext, true, 'notSelectable', '=', 'true');
