@@ -166,12 +166,20 @@ function copyNotes(from, to) {
 /**
  * The properties that are in an object more than once: [{ path, name, offset }], path as
  * "entry[2].resource" (empty for the top), offset where the second (or later) name starts in
- * the text. The text must be JSON (else: what it found before the problem).
+ * the text. The text must be JSON (else: what it found before the problem); anything but a
+ * string or Buffer has none.
  * @param {string|Buffer} text
  * @returns {Array<{path: string, name: string, offset: number}>}
  */
 function findDuplicates(text) {
-  const s = typeof text === 'string' ? text : String(text);
+  // only text is scanned (a Buffer as UTF-8): its length is the text's, not a value someone sent
+  if (Buffer.isBuffer(text)) {
+    text = text.toString('utf8');
+  }
+  if (typeof text !== 'string') {
+    return [];
+  }
+  const s = text;
   const out = [];
   // a stack of containers: { keys: Set (objects) | null (arrays), parent, step (how it is
   // reached from its parent: a name, or an index), index (arrays: the item now) }. The path is

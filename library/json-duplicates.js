@@ -43,7 +43,13 @@ function lineAndColumn(s, offset) {
  * @returns {Object[]} OperationOutcome.issue
  */
 function duplicateIssues(text, options = {}) {
-  const s = typeof text === 'string' ? text : String(text);
+  if (Buffer.isBuffer(text)) {
+    text = text.toString('utf8');
+  }
+  if (typeof text !== 'string') {
+    return [];
+  }
+  const s = text;
   const dups = fhirJson.findDuplicates(s);
   if (!dups.length) {
     return dups;

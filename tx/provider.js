@@ -36,6 +36,10 @@ const RESOLVE_CODES_YIELD_MS = 25;
  * fn over items, at most `limit` at a time, with the results in the order of the items.
  */
 async function mapConcurrently(items, limit, fn) {
+  // a real array: its length is its items', not a value someone sent
+  if (!Array.isArray(items)) {
+    throw new TypeError('mapConcurrently: items must be an array');
+  }
   const results = new Array(items.length);
   let next = 0;
   const worker = async () => {
