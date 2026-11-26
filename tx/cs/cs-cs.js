@@ -1189,7 +1189,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     const propertyDefs = this.propertyDefinitions();
     if (propertyDefs) {
       const hasProperty = propertyDefs.some(p => p.code === prop);
-      if (hasProperty && ['=', 'in', 'not-in', 'regex'].includes(op)) {
+      if (hasProperty && ['=', 'in', 'not-in', 'regex', 'exists'].includes(op)) {
         return true;
       }
     }
@@ -1747,13 +1747,23 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @private
    */
   _conceptMatchesPropertyFilter(concept, propertyDef, op, value) {
-    if (!concept.property || !Array.isArray(concept.property)) {
+    // A concept without a property element simply has no values for this property:
+    // it must still match not-in and exists=false.
+    const allProperties = Array.isArray(concept.property) ? concept.property : [];
+    const properties = allProperties.filter(p => p.code === propertyDef.code);
+
+    if (op === 'exists') {
+      // "The specified property of the code has a value (if the filter value is true)
+      // or does not have a value (if false)."
+      if (value === 'true') {
+        return properties.length > 0;
+      }
+      if (value === 'false') {
+        return properties.length === 0;
+      }
       return false;
     }
-
-    const properties = concept.property.filter(p => p.code === propertyDef.code);
-
-    if (op === '=') {
+    else if (op === '=') {
       return properties.some(p => this._getPropertyValue(p) === value);
     }
     else if (op === 'in') {

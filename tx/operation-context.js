@@ -154,6 +154,28 @@ class ResourceCache {
   }
 
   /**
+   * Run fn (synchronous: add, set, start) with a different most concepts for one cache: a client
+   * logged in may have a bigger cache than cacheMaxConcepts (cacheMaxConceptsLoggedIn). The
+   * limit is the request's: a cache that grew big with a login is dropped by a request without
+   * one that adds to it. The memos providers keep on a cache's value sets stay within the
+   * usual limit
+   * @param {number|undefined} perCache - the limit for this request; none, or not more than the usual, changes nothing
+   * @param {function(): *} fn
+   */
+  withConceptLimit(perCache, fn) {
+    if (!(perCache > this.maxConceptsPerCache)) {
+      return fn();
+    }
+    const usual = this.maxConceptsPerCache;
+    this.maxConceptsPerCache = perCache;
+    try {
+      return fn();
+    } finally {
+      this.maxConceptsPerCache = usual;
+    }
+  }
+
+  /**
    * Refuse a change that would take one cache over its limit.
    * @param {string} cacheId
    * @param {number} concepts - what the cache would hold

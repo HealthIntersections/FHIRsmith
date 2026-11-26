@@ -2205,7 +2205,7 @@ class ValueSetExpander {
       result.purpose = undefined;
       result.compose = undefined;
       result.description = undefined;
-      result.contactList = undefined;
+      result.contact = undefined;
       result.copyright = undefined;
       result.publisher = undefined;
       result.extension = undefined;
@@ -3328,6 +3328,12 @@ class ExpandWorker extends TerminologyWorker {
    */
   async doExpand(valueSet, params, logExtraOutput) {
     this.deadCheck('doExpand');
+    // a web page for someone not logged in (auth.loginForExpensive) that names no count shows at
+    // most this many rows (tx.js, webLoginNeeded): before the cache key, which has the count in it
+    const anonymousMaxRows = this.opContext.anonymousMaxRows;
+    if (anonymousMaxRows > 0 && !(params.count >= 0)) {
+      params.count = anonymousMaxRows;
+    }
 
     const expansionCache = this.opContext.expansionCache;
     // Compute cache key (only if caching is available and not debugging)

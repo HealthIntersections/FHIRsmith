@@ -32,6 +32,7 @@ const { Store } = require('../store');
 const { Searcher } = require('../search/search');
 const { shape } = require('../search/shape');
 const { auditBuilder } = require('../audit/audit');
+const provenance = require('../interactions/provenance');
 const { Terminology } = require('../terminology');
 const { FhirError, notFound, notAllowed, forbidden, operationOutcome } = require('../library/errors');
 const format = require('../format');
@@ -42,12 +43,21 @@ const { history } = require('../interactions/history');
 const { capabilities } = require('../interactions/capabilities');
 const { bundle } = require('../interactions/bundle');
 const { findOperation } = require('../operations/operations');
+const { writeParts } = require('../../library/fhir-xml');
+const binary = require('../binary');
+const { PackageLoader } = require('../packages');
+const { QueueRunner } = require('../queue/runner');
+const { AsyncJobs, PATH: ASYNC_PATH } = require('../queue/async');
+const queueStatus = require('../queue/status');
+const terminologyProxy = require('../operations/terminology');
 const { RestWeb, wantsHtml } = require('../web');
 
 const GENERATION_CHECK_MS = 1000;
 const AUDIT_FLUSH_MS = 1000;
 const MAX_AUDIT_BUFFER = 5000;
 const REINDEX_BATCH = 200;
+// how often the queues are measured for the status page
+const STATUS_MS = 15 * 1000;
 
 // the role an interaction needs, by what access.js calls it
 const ACCESS_NAMES = {
@@ -60,7 +70,12 @@ class Endpoint {
    *   baseUrl?, initialSettings?, types? }
    * @param {Object} options
    * @param {string} options.databasesDir
-   * @param {boolean} options.master - runs migrations and the background jobs
+   * @param {boolean} options.master - runs migrations, and seeds the settings
+   * @param {boolean} [options.jobs] - runs the queue runner (queue/runner.js): the background
+   *   jobs and the queues. Default: as master (one process does both, without the cluster)
+   * @param {string} [options.localBase] - where this server is reached over HTTP (the
+   *   cluster's front door), for a jobs process: a terminology server that is a path on this
+   *   server is reached there, since the jobs process doesn't run the tx module
    * @param {Object} options.log - a logger (info, warn, error, debug)
    * @param {Object} [options.packageManager] - library/package-manager PackageManager
    * @param {string} [options.cacheFolder] - where derived definitions are cached
@@ -78,8 +93,9 @@ class Endpoint {
     this.options = options;
     this.log = options.log;
     this.master = options.master !== false;
+    this.jobs = options.jobs === undefined ? this.master : !!options.jobs;
+    this.runner = null;
     this.startedAt = Date.now();
-    this.timers = [];
     this.auditBuffer = [];
     this.lastGenerationCheck = 0;
     this.generation = null;
@@ -97,8 +113,20 @@ class Endpoint {
     if (cfg.fhirVersion) {
       initial.fhirVersion = cfg.fhirVersion;
     }
+    // packages to load into a new database: not a setting
+    const loadPackages = (initial.loadPackages || []).map(p => PackageLoader.parse(p));
+    delete initial.loadPackages;
     if (this.master) {
+      const isNew = !(await this.db.read(q => q.get("SELECT Value FROM Config WHERE Name = 'generation'")));
       await settingsStore.seed(this.db, initial, []);
+      if (isNew && loadPackages.length) {
+        await this.db.write(async (q) => {
+          for (const p of loadPackages) {
+            await PackageLoader.queue(q, p, 'initialSettings');
+          }
+        });
+        this.log.info(`Rest ${cfg.path}: a new database: ${loadPackages.length} package(s) to load (initialSettings.loadPackages)`);
+      }
     }
     let loaded = await settingsStore.load(this.db);
     if (!loaded.endpoint.fhirVersion) {
@@ -114,7 +142,10 @@ class Endpoint {
     }
     await this.apply(await settingsStore.load(this.db));
     this.web = new RestWeb(this);
-    if (this.master) {
+    this.packages = new PackageLoader(this);
+    this.asyncJobs = new AsyncJobs(this);
+    if (this.jobs) {
+      await this.packages.recover();
       this.startJobs();
     }
     this.auditTimer = setInterval(() => {
@@ -123,7 +154,7 @@ class Endpoint {
     this.auditTimer.unref();
     loaded = null;
     this.log.info(`Rest endpoint ${this.path}: FHIR ${this.settings.fhirVersion}, ${this.typeKeys.size} types, ${this.definitions.byUrl.size} search parameters, ` +
-      `${this.cfg.database.type} database${this.master ? '' : ' (worker)'}`);
+      `${this.cfg.database.type} database${this.master ? '' : this.jobs ? ' (jobs)' : ' (worker)'}${this.master && !this.jobs ? ', jobs in the jobs process' : ''}`);
   }
 
   /**
@@ -157,10 +188,14 @@ class Endpoint {
     }
     const defs = new Definitions(derived, custom, (level, msg) => this.log[level === 'warn' ? 'warn' : 'debug'](`Rest ${this.path}: ${msg}`));
     const hasResources = await this.db.read(async (q) => !!(await q.get('SELECT ResourceKey FROM Ids WHERE MostRecent IS NOT NULL LIMIT 1')));
-    const changed = await defs.sync(this.db, this.master, hasResources);
     const reload = !!this.definitions;
+    // who records the definitions in SearchParams: the master as it starts (before anything
+    // else runs), and after that the process running the jobs, which notices new ones (a
+    // custom SearchParameter) and reindexes: one writer at a time
+    const writer = this.jobs || (this.master && !reload);
+    const changed = await defs.sync(this.db, writer, hasResources);
     this.definitions = defs;
-    if (reload && this.master && changed.added + changed.changed > 0) {
+    if (reload && writer && changed.added + changed.changed > 0) {
       // the workers pick up the new definitions' keys
       await this.db.write(q => settingsStore.bumpGeneration(q));
       this.log.info(`Rest ${this.path}: ${changed.added} new and ${changed.changed} changed search parameters: reindexing`);
@@ -207,11 +242,23 @@ class Endpoint {
     this.terminology = null;
     if (this.settings.txServer) {
       try {
-        this.terminology = new Terminology(this.settings.txServer, { app: this.options.app, log: this.log });
+        this.terminology = new Terminology(this.terminologyServer(this.settings.txServer), { app: this.options.app, log: this.log });
       } catch (e) {
         this.log.error(`Rest ${this.path}: txServer: ${e.message}`);
       }
     }
+  }
+
+  /**
+   * The terminology server to use: as set, except that in a jobs process a path on this
+   * server is reached through the front door (options.localBase)
+   */
+  terminologyServer(server) {
+    const base = this.options.localBase;
+    if (base && typeof server === 'string' && server.startsWith('/')) {
+      return base.replace(/\/+$/, '') + server;
+    }
+    return server;
   }
 
   /** Reload when the settings' generation has changed (at most once a second) */
@@ -280,9 +327,15 @@ class Endpoint {
 
   /** The access name of a request's interaction */
   accessInteraction(freq) {
+    if (freq.interaction === 'operation' && terminologyProxy.handles(freq)) {
+      // (they read: what they write, the closure, is the terminology server's)
+      return 'operation-read';
+    }
     if (freq.interaction === 'operation') {
       try {
-        return findOperation(freq).read ? 'operation-read' : 'operation';
+        const op = findOperation(freq);
+        // ($expunge: the manage role)
+        return op.manage ? 'manage' : op.read ? 'operation-read' : 'operation';
       } catch (e) {
         return 'operation';
       }
@@ -363,6 +416,16 @@ class Endpoint {
   }
 
   /**
+   * What a write records besides itself, in its transaction: the Provenance from the
+   * X-Provenance header (interactions/provenance.js), and the AuditEvent
+   * @param {Object} [ctx] - the write's (deferChecks: whether reference checks wait)
+   */
+  async recordWrite(q, freq, interaction, status, what, versionKey, ctx) {
+    await provenance.target(this, q, freq, interaction, what, !!(ctx && ctx.deferChecks));
+    await this.auditWrite(q, freq, interaction, status, what, versionKey);
+  }
+
+  /**
    * Record an AuditEvent for a write, in the write's transaction, and point the version at it.
    */
   async auditWrite(q, freq, interaction, status, what, versionKey) {
@@ -411,6 +474,13 @@ class Endpoint {
    * @returns {Promise<{status: number, resource?: Object, headers?: Object, outcome?: Object, write?: boolean}>}
    */
   async dispatch(freq, ctx) {
+    // terminology requests go to the terminology server (operations/terminology.js)
+    if (terminologyProxy.handles(freq)) {
+      if (freq.type) {
+        this.checkType(freq.type, null);
+      }
+      return terminologyProxy.run(this, freq, ctx);
+    }
     switch (freq.interaction) {
       case 'read': return crud.read(this, freq, ctx);
       case 'vread': return crud.vread(this, freq, ctx);
@@ -451,7 +521,22 @@ class Endpoint {
     const limit = this.options.maxBody || '50mb';
     // bodies the server's own parsers don't take: JSON Patch, and _search forms
     r.use(express.raw({ type: ['application/json-patch+json'], limit }));
+    // XML (application/fhir+xml may have been read already, by the server's own parser)
+    r.use(express.raw({ type: ['application/fhir+xml', 'application/xml', 'text/xml', 'application/xml+fhir'], limit }));
     r.use(express.text({ type: ['application/x-www-form-urlencoded'], limit }));
+    // a Binary's content, in whatever type it is (binary.js)
+    r.use(/^\/Binary(\/[^/]*)?\/?$/, express.raw({ type: () => true, limit }));
+    // an async request's status, result and cancellation (queue/async.js)
+    const asyncJob = (req, res) => {
+      this.handleAsyncJob(req, res).catch((e) => {
+        this.log.error(`Rest ${this.path}: ${e.stack || e.message}`);
+        if (!res.headersSent) {
+          res.status(500).end();
+        }
+      });
+    };
+    r.get(`/${ASYNC_PATH}/:id`, asyncJob);
+    r.delete(`/${ASYNC_PATH}/:id`, asyncJob);
     r.all(/.*/, (req, res) => {
       this.handle(req, res).catch((e) => {
         this.log.error(`Rest ${this.path}: ${e.stack || e.message}`);
@@ -461,6 +546,35 @@ class Endpoint {
       });
     });
     return r;
+  }
+
+  /** GET or DELETE [base]/_async/{id}: an async request's status and result, or cancelling it */
+  async handleAsyncJob(req, res) {
+    try {
+      await this.refresh();
+      format.responseFormat(req, this.xmlModel());
+      const principal = this.options.principal ? await this.options.principal(req) : null;
+      if (req.method === 'DELETE') {
+        await this.respond(req, res, { headers: {}, params: [] }, await this.asyncJobs.cancel(req.params.id, principal));
+        return;
+      }
+      const r = await this.asyncJobs.status(req.params.id, principal);
+      res.status(r.status);
+      for (const [k, v] of Object.entries(r.headers || {})) {
+        res.set(k, v);
+      }
+      if (r.body) {
+        res.set('Content-Type', r.contentType);
+        res.send(r.body);
+      } else {
+        res.end();
+      }
+    } catch (e) {
+      if (!(e instanceof FhirError)) {
+        this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed: ${e.stack || e.message}`);
+      }
+      this.sendError(req, res, e instanceof FhirError ? e : new FhirError(500, 'exception', 'Internal error'));
+    }
   }
 
   baseFor(req) {
@@ -473,16 +587,26 @@ class Endpoint {
     let interaction = 'unknown';
     try {
       await this.refresh();
-      format.responseFormat(req);
+      format.responseFormat(req, this.xmlModel());
       const principal = this.options.principal ? await this.options.principal(req) : null;
       const isPatch = req.method === 'PATCH';
-      const body = ['POST', 'PUT', 'PATCH'].includes(req.method) && !(req.method === 'POST' && /\/_search\/?(\?|$)/.test(req.originalUrl))
-        ? format.requestBody(req, { patch: isPatch }) : null;
+      // a Binary's own content, and a Binary resource in a JSON or XML type of any name (binary.js)
+      const content = binary.upload(req);
+      const as = binary.binaryPath(req) ? binary.fhirFormatOf(req.get('Content-Type')) : null;
+      const body = content || (['POST', 'PUT', 'PATCH'].includes(req.method) && !(req.method === 'POST' && /\/_search\/?(\?|$)/.test(req.originalUrl))
+        ? format.requestBody(req, { patch: isPatch, xmlModel: this.xmlModel(), as: isPatch ? null : as }) : null);
       freq = request.fromHttp(req, body, principal, this.baseFor(req));
       interaction = freq.interaction;
       const acc = access.check(principal, this, this.accessInteraction(freq));
-      if (wantsHtml(req)) {
-        // a browser: the same interaction, as a page (web.js)
+      freq.provenance = provenance.fromRequest(this, freq);
+      if (!wantsHtml(req) && this.asyncJobs.wanted(req, freq)) {
+        // Prefer: respond-async: queued, for the queue runner (queue/async.js)
+        await this.respond(req, res, freq, await this.asyncJobs.kickoff(req, freq));
+        return;
+      }
+      const binaryRead = freq.type === 'Binary' && (freq.interaction === 'read' || freq.interaction === 'vread');
+      if (wantsHtml(req) && !binaryRead) {
+        // a browser: the same interaction, as a page (web.js); a Binary is its content
         await this.web.page(req, res, freq, acc, start);
         return;
       }
@@ -490,8 +614,16 @@ class Endpoint {
       if (this.auditing('all') && !result.write && freq.interaction !== 'bundle') {
         this.auditLater(freq, freq.interaction === 'operation' ? 'operation' : freq.interaction, result.status);
       }
-      this.respond(req, res, freq, result);
+      await this.respond(req, res, freq, result);
     } catch (e) {
+      if (e && e.abandoned) {
+        // the client went while a large response was being written: nothing to answer
+        return;
+      }
+      if (res.headersSent) {
+        this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed after the response started: ${e.message}`);
+        return;
+      }
       if (!(e instanceof FhirError)) {
         this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed: ${e.stack || e.message}`);
       }
@@ -511,6 +643,11 @@ class Endpoint {
     }
   }
 
+  /** The XML model (null: none, so no XML) */
+  xmlModel() {
+    return (this.definitions && this.definitions.xml) || null;
+  }
+
   sendError(req, res, fe) {
     res.status(fe.status);
     for (const [k, v] of Object.entries(fe.headers || {})) {
@@ -519,17 +656,29 @@ class Endpoint {
     if (fe.status === 401) {
       res.set('WWW-Authenticate', 'Bearer');
     }
-    res.set('Content-Type', format.FHIR_JSON + '; charset=utf-8');
-    res.send(format.serialise(req, fe.outcome()));
+    let out;
+    try {
+      out = format.serialise(req, fe.outcome(), format.errorFormat(req, this.xmlModel()), this.xmlModel());
+    } catch (e) {
+      out = format.serialise(req, fe.outcome());
+    }
+    res.set('Content-Type', out.contentType);
+    res.send(out.text);
   }
 
-  respond(req, res, freq, result) {
+  async respond(req, res, freq, result) {
     res.status(result.status);
     for (const [k, v] of Object.entries(result.headers || {})) {
       res.set(k, v);
     }
     if (result.status === 304) {
       res.end();
+      return;
+    }
+    // a read of a Binary: its content, unless a FHIR format was asked for (binary.js)
+    if (result.resource && result.resource.resourceType === 'Binary' && !result.write && freq.type === 'Binary' &&
+      (freq.interaction === 'read' || freq.interaction === 'vread') && binary.sendsContent(req, result.resource)) {
+      binary.send(req, res, result.resource);
       return;
     }
     let body = null;
@@ -547,50 +696,78 @@ class Endpoint {
     } else if (result.outcome) {
       body = operationOutcome([result.outcome]);
     }
+    const fmt = format.responseFormat(req, this.xmlModel());
     if (body === null || req.method === 'HEAD') {
       if (body !== null) {
-        res.set('Content-Type', format.FHIR_JSON + '; charset=utf-8');
+        res.set('Content-Type', fmt === 'xml' ? format.FHIR_XML + '; charset=utf-8' : format.FHIR_JSON + '; charset=utf-8');
       }
       res.end();
       return;
     }
-    res.set('Content-Type', format.FHIR_JSON + '; charset=utf-8');
-    res.send(format.serialise(req, body));
+    // (written first, so a resource that can't be written as XML is an error, not half a
+    // response; a large one in parts, letting other requests in as it goes)
+    const out = await format.serialiseParts(req, body, fmt, this.xmlModel(), () => !res.destroyed);
+    res.set('Content-Type', out.contentType);
+    if (out.parts.length === 1 && typeof out.parts[0] === 'string') {
+      res.send(out.parts[0]);
+    } else {
+      await writeParts(res, out.parts);
+    }
   }
 
-  // ---- background jobs (the master) ----
+  // ---- background jobs and queues (the process that runs the jobs: queue/runner.js) ----
 
   startJobs() {
-    const every = (ms, name, fn) => {
-      let running = false;
-      const t = setInterval(() => {
-        if (running) {
-          return;
-        }
-        running = true;
-        fn().catch(e => this.log.error(`Rest ${this.path}: ${name} failed: ${e.message}`)).finally(() => {
-          running = false;
-        });
-      }, ms);
-      t.unref();
-      this.timers.push(t);
-    };
-    every(5 * 60 * 1000, 'search cleanup', () => this.searcher.cleanup());
-    every(5000, 'closure update', async () => {
+    this.runner = new QueueRunner(this.path, this.log);
+    this.jobTasks(this.runner);
+    this.runner.start();
+    // a first measure now, rather than in STATUS_MS
+    void this.runner.runNow('queue status');
+  }
+
+  /** The endpoint's tasks, on a runner */
+  jobTasks(runner) {
+    runner.every(5 * 60 * 1000, 'search cleanup', () => this.searcher.cleanup());
+    runner.every(5000, 'closure update', async () => {
       if (this.terminology) {
         await this.terminology.updateClosure(this);
       }
     });
-    every(5000, 'value set membership', async () => {
+    runner.every(5000, 'package loads', async () => {
+      await this.packages.runQueued();
+    });
+    runner.every(5000, 'value set membership', async () => {
       if (this.terminology) {
         await this.terminology.updateValueSets(this);
       }
     });
-    every(2000, 'reindexing', async () => {
-      // the master notices new definitions (a custom SearchParameter) here, not only on requests
+    runner.every(2000, 'reindexing', async () => {
+      // new definitions (a custom SearchParameter) are noticed here, not only on requests
       await this.refresh();
       await this.reindexBatch();
     });
+    // async requests (queue/async.js): the next one, and the ones whose runner stopped or
+    // whose results have expired
+    runner.every(1000, 'async requests', async () => {
+      await this.refresh();
+      await this.asyncJobs.runNext();
+    });
+    runner.every(60 * 1000, 'async tidy', () => this.asyncJobs.tidy());
+    // the queues, for the status page (jobStatus)
+    runner.every(STATUS_MS, 'queue status', async () => {
+      this.queueFigures = await queueStatus.measure(this);
+    });
+  }
+
+  /**
+   * The background work, for the status page: the queue runner's tasks, and the queues as last
+   * measured; null in a process that doesn't run the jobs
+   */
+  jobStatus() {
+    if (!this.runner) {
+      return null;
+    }
+    return { path: this.path, tasks: this.runner.describe().filter(t => t.name !== 'queue status'), queues: this.queueFigures || null };
   }
 
   /**
@@ -637,10 +814,10 @@ class Endpoint {
   }
 
   async close() {
-    for (const t of this.timers) {
-      clearInterval(t);
+    if (this.runner) {
+      await this.runner.stop();
+      this.runner = null;
     }
-    this.timers = [];
     if (this.auditTimer) {
       clearInterval(this.auditTimer);
     }

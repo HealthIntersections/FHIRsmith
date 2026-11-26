@@ -11,9 +11,15 @@ const NO_KEYS = [];
 const URL_ONLY = ['url'];
 // anything escapeXml has to change, or refuse
 // eslint-disable-next-line no-control-regex
-const NEEDS_ESCAPE = /[&<>"'\u0000-\u0008\u000B\u000C\u000E-\u001F]/;
-const ESCAPED_CHARS = /[&<>"']/g;
-const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' };
+// (tabs and line ends too: escapeXml makes attribute values, where an XML reader would turn
+// a literal one into a space, or \r into \n)
+// eslint-disable-next-line no-control-regex
+const NEEDS_ESCAPE = /[&<>"'\u0000-\u001F]/;
+const ESCAPED_CHARS = /[&<>"'\t\n\r]/g;
+const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;', '\t': '&#9;', '\n': '&#10;', '\r': '&#13;' };
+// the elements that hold a resource, wrapped in an element named for its type (Bundle and
+// Parameters do their own)
+const RESOURCE_HOLDERS = new Set(['contained']);
 // serialising for toXmlAsync: the arrays of objects set aside by the synchronous pass,
 // to be rendered by the asynchronous one (null: not deferring). The synchronous pass
 // can't be interleaved with another, so one slot for all of them is enough
@@ -69,7 +75,7 @@ class FhirXmlBase {
     'exclude',          // ValueSet.compose.exclude 0..*
     'contains',         // ValueSet.expansion.contains 0..* (recursive)
     'parameter',        // ValueSet.expansion.parameter 0..*, Parameters.parameter 0..*
-    'valueSet',         // ValueSet.compose.include.valueSet 0..*
+    // 'valueSet': context-dependent (see _isArrayElement)
 
     // ConceptMap elements
     'group',            // ConceptMap.group 0..*
@@ -254,21 +260,19 @@ class FhirXmlBase {
    */
   static convertElementToFhirJson(element, resourceType, fhirVersion) {
     const result = { resourceType };
+    const lists = new Map();
 
     for (const child of element.children) {
       const key = child.name;
       const { value, primitiveExt } = this._convertChildElementWithExt(child, resourceType, fhirVersion);
 
+      if (this._isArrayElement(key, resourceType, fhirVersion)) {
+        this._addToList(lists, key, value, primitiveExt);
+        continue;
+      }
       // Handle the value
       if (value !== null) {
-        if (this._isArrayElement(key, resourceType, fhirVersion)) {
-          if (!result[key]) {
-            result[key] = [];
-          }
-          result[key].push(value);
-        } else {
-          result[key] = value;
-        }
+        result[key] = value;
       }
 
       // Handle primitive extension (e.g., _value with extension)
@@ -278,7 +282,44 @@ class FhirXmlBase {
       }
     }
 
+    this._setLists(result, lists);
     return result;
+  }
+
+  /**
+   * A repeating element's value, and its _ property (a primitive's id and extensions),
+   * gathered so the two lists stay in step
+   * @private
+   */
+  static _addToList(lists, key, value, primitiveExt) {
+    if (value === null && primitiveExt === null) {
+      return;
+    }
+    let l = lists.get(key);
+    if (!l) {
+      l = { values: [], exts: [] };
+      lists.set(key, l);
+    }
+    l.values.push(value);
+    l.exts.push(primitiveExt);
+  }
+
+  /**
+   * The gathered lists: name: [values], and _name: [ids and extensions], in step (with nulls),
+   * when any has one
+   * @private
+   */
+  static _setLists(obj, lists) {
+    for (const [key, l] of lists) {
+      if (l.exts.some(e => e !== null)) {
+        if (l.values.some(v => v !== null)) {
+          obj[key] = l.values;
+        }
+        obj['_' + key] = l.exts;
+      } else {
+        obj[key] = l.values;
+      }
+    }
   }
 
   /**
@@ -299,7 +340,13 @@ class FhirXmlBase {
     // 'property' is an array in CodeSystem.property, CodeSystem.concept.property,
     // ConceptMap.property (R5), but NOT in filter.property (which is a single code)
     if (elementName === 'property') {
-      return parentContext !== 'filter';
+      // (and a single uri in ConceptMap's dependsOn and product)
+      return parentContext !== 'filter' && parentContext !== 'dependsOn' && parentContext !== 'product';
+    }
+
+    // 'valueSet' is 0..* in ValueSet.compose.include / exclude, but 0..1 on CodeSystem
+    if (elementName === 'valueSet') {
+      return parentContext !== 'CodeSystem';
     }
 
     // 'target' is 0..* in ConceptMap.group.element.target (backbone array)
@@ -312,6 +359,10 @@ class FhirXmlBase {
     if (elementName === 'identifier') {
       if (parentContext === 'ConceptMap') {
         return fhirVersion >= 5;
+      }
+      // 0..1 on ValueSet.expansion
+      if (parentContext === 'expansion') {
+        return false;
       }
       return true; // 0..* on all other resource types
     }
@@ -358,6 +409,15 @@ class FhirXmlBase {
    */
   // eslint-disable-next-line no-unused-vars
   static _convertChildElementWithExt(child, parentContext = '', fhirVersion) {
+    // the narrative: its XHTML, as a string
+    if (child.name === 'div' && child.raw !== undefined) {
+      return { value: child.raw, primitiveExt: null };
+    }
+    // a contained resource: in an element named for its type
+    if (RESOURCE_HOLDERS.has(child.name) && child.children.length === 1 && /^[A-Z]/.test(child.children[0].name)) {
+      const inner = child.children[0];
+      return { value: this.convertElementToFhirJson(inner, inner.name, fhirVersion), primitiveExt: null };
+    }
     const hasValue = child.attributes.value !== undefined;
     const hasChildren = child.children.length > 0;
     const isExtensionElement = child.name === 'extension' || child.name === 'modifierExtension';
@@ -374,22 +434,25 @@ class FhirXmlBase {
       );
       const hasOnlyExtensions = hasChildren && nonExtensionChildren.length === 0;
 
+      // a primitive's id goes with its extensions (in _name)
+      const idOnly = child.attributes.id !== undefined ? { id: child.attributes.id } : null;
+
       // Case 1: Simple primitive with value, no children
       if (hasValue && !hasChildren) {
-        return { value: this._convertPrimitiveValue(child.name, child.attributes.value, parentContext), primitiveExt: null };
+        return { value: this._convertPrimitiveValue(child.name, child.attributes.value, parentContext), primitiveExt: idOnly };
       }
 
       // Case 2: Primitive with extension but no value - this is a primitive extension only
       // This ONLY applies when there are NO non-extension children
       if (!hasValue && hasOnlyExtensions) {
-        const ext = this._buildExtensionObject(extensionChildren);
+        const ext = { ...(idOnly || {}), ...this._buildExtensionObject(extensionChildren) };
         return { value: null, primitiveExt: ext };
       }
 
       // Case 3: Primitive with both value and extensions (no other children)
       // This ONLY applies when there are NO non-extension children
       if (hasValue && hasOnlyExtensions) {
-        const ext = this._buildExtensionObject(extensionChildren);
+        const ext = { ...(idOnly || {}), ...this._buildExtensionObject(extensionChildren) };
         return { value: this._convertPrimitiveValue(child.name, child.attributes.value, parentContext), primitiveExt: ext };
       }
     }
@@ -406,18 +469,18 @@ class FhirXmlBase {
     }
 
     // Process ALL children (including extensions as normal array elements)
+    const lists = new Map();
     for (const grandchild of child.children) {
       const key = grandchild.name;
       const { value, primitiveExt } = this._convertChildElementWithExt(grandchild, currentContext, fhirVersion);
 
+      if (this._isArrayElement(key, currentContext, fhirVersion)) {
+        this._addToList(lists, key, value, primitiveExt);
+        continue;
+      }
       // Handle the value
       if (value !== null) {
-        if (this._isArrayElement(key, currentContext, fhirVersion)) {
-          if (!obj[key]) {
-            obj[key] = [];
-          }
-          obj[key].push(value);
-        } else if (obj[key] !== undefined) {
+        if (obj[key] !== undefined) {
           // Convert to array if we see the same key twice
           if (!Array.isArray(obj[key])) {
             obj[key] = [obj[key]];
@@ -434,6 +497,7 @@ class FhirXmlBase {
         obj[extKey] = primitiveExt;
       }
     }
+    this._setLists(obj, lists);
 
     return { value: Object.keys(obj).length > 0 ? obj : null, primitiveExt: null };
   }
@@ -574,12 +638,24 @@ class FhirXmlBase {
    * @returns {string}
    */
   static unescapeXml(str) {
-    return str
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/&apos;/g, "'");
+    if (!str.includes('&')) {
+      return str;
+    }
+    // one pass, so &amp;#10; is the text &#10; (not a line end)
+    return str.replace(/&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9a-fA-F]+);/g, (all, name) => {
+      switch (name) {
+        case 'amp': return '&';
+        case 'lt': return '<';
+        case 'gt': return '>';
+        case 'quot': return '"';
+        case 'apos': return "'";
+      }
+      const cp = name[1] === 'x' ? parseInt(name.substring(2), 16) : parseInt(name.substring(1), 10);
+      if (cp > 0x10FFFF || (cp < 0x20 && cp !== 9 && cp !== 10 && cp !== 13)) {
+        throw new Error(`&${name}; is not a character XML can carry`);
+      }
+      return String.fromCodePoint(cp);
+    });
   }
 
   // The renderers below write their pieces into one array (out), joined once at the
@@ -595,9 +671,9 @@ class FhirXmlBase {
    * @param {number} level - Indentation level
    * @returns {string} XML string
    */
-  static renderElement(name, value, level) {
+  static renderElement(name, value, level, ext = undefined) {
     const out = [];
-    this._emitElement(out, name, value, level);
+    this._emitElement(out, name, value, level, ext);
     return out.join('');
   }
 
@@ -624,41 +700,82 @@ class FhirXmlBase {
   static renderElementsInOrder(obj, level, elementOrder) {
     const out = [];
 
-    // Process elements in order
-    for (const key of elementOrder) {
-      if (Object.hasOwn(obj, key) && key !== 'resourceType') {
-        this._emitElement(out, key, obj[key], level);
-      }
-    }
-
-    // Process any remaining elements not in the order list
-    for (const key of Object.keys(obj)) {
-      if (!elementOrder.includes(key) && key !== 'resourceType' && !key.startsWith('_')) {
-        this._emitElement(out, key, obj[key], level);
-      }
-    }
-
+    this._emitInOrder(out, obj, level, elementOrder);
     return out.join('');
   }
 
   /**
-   * renderElement, into out
+   * renderElementsInOrder, into out: the elements in the order given, then any others; each
+   * primitive with its _ properties (id, extensions), and one with only those
    * @private
    */
-  static _emitElement(out, name, value, level) {
-    if (value === null || value === undefined) {
+  static _emitInOrder(out, obj, level, elementOrder) {
+    for (const key of elementOrder) {
+      if (key !== 'resourceType' && (Object.hasOwn(obj, key) || Object.hasOwn(obj, '_' + key))) {
+        this._emitElement(out, key, obj[key], level, obj['_' + key]);
+      }
+    }
+    for (const key of Object.keys(obj)) {
+      const base = key.charCodeAt(0) === 95 /* _ */ ? key.substring(1) : key;
+      if (key === 'resourceType' || elementOrder.includes(base) || (base !== key && Object.hasOwn(obj, base))) {
+        continue;
+      }
+      this._emitElement(out, base, obj[base], level, obj['_' + base]);
+    }
+  }
+
+  /**
+   * renderElement, into out
+   * @param {Array} out
+   * @param {string} name
+   * @param {*} value
+   * @param {number} level
+   * @param {Object|Array} [ext] - a primitive's _ property: its id and extensions (a list of
+   *   them, in step with the values, for a list of primitives)
+   * @private
+   */
+  static _emitElement(out, name, value, level, ext = undefined) {
+    if ((value === null || value === undefined) && (ext === null || ext === undefined)) {
       return;
     }
     this.checkElementName(name);
 
-    if (Array.isArray(value)) {
-      if (deferred && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+    if (Array.isArray(value) || Array.isArray(ext)) {
+      const values = Array.isArray(value) ? value : [];
+      const exts = Array.isArray(ext) ? ext : [];
+      if (!exts.length && deferred && values.length > 0 && typeof values[0] === 'object' && values[0] !== null) {
         out.push('\u0000' + deferred.length + '\u0000');
-        deferred.push({ name, value, level });
+        deferred.push({ name, value: values, level });
         return;
       }
-      for (const item of value) {
-        this._emitElement(out, name, item, level);
+      const n = Math.max(values.length, exts.length);
+      for (let i = 0; i < n; i++) {
+        this._emitElement(out, name, values[i], level, exts[i]);
+      }
+    } else if (name === 'div' && typeof value === 'string') {
+      // the narrative: XHTML, as XML
+      out.push(this.indent(level), this.narrativeXml(value), '\n');
+    } else if (RESOURCE_HOLDERS.has(name) && value && typeof value === 'object' && typeof value.resourceType === 'string') {
+      this._emitResource(out, name, value, level);
+    } else if ((value === null || value === undefined || typeof value !== 'object') && ext && typeof ext === 'object') {
+      // a primitive with an id or extensions (or only those)
+      const ind = this.indent(level);
+      out.push(ind, '<', name);
+      if (ext.id !== undefined && ext.id !== null) {
+        out.push(' id="', this.escapeXml(ext.id), '"');
+      }
+      if (value !== null && value !== undefined) {
+        out.push(' value="', typeof value === 'string' ? this.escapeXml(value) : String(value), '"');
+      }
+      const exts = Array.isArray(ext.extension) ? ext.extension : [];
+      if (!exts.length) {
+        out.push('/>\n');
+      } else {
+        out.push('>\n');
+        for (const x of exts) {
+          this._emitElement(out, 'extension', x, level + 1);
+        }
+        out.push(ind, '</', name, '>\n');
       }
     } else if (typeof value === 'object') {
       const ind = this.indent(level);
@@ -679,7 +796,7 @@ class FhirXmlBase {
   }
 
   /**
-   * renderObject, into out
+   * renderObject, into out (a primitive with its _ property, and one with only that)
    * @private
    */
   static _emitObject(out, obj, level, skipKeys) {
@@ -687,15 +804,54 @@ class FhirXmlBase {
       if (!Object.hasOwn(obj, key)) {
         continue;
       }
-      // Skip primitive extension keys (handled separately)
+      let base = key;
       if (key.charCodeAt(0) === 95 /* _ */) {
+        // a primitive's id and extensions: written with its value, or on their own
+        base = key.substring(1);
+        if (Object.hasOwn(obj, base)) {
+          continue;
+        }
+      }
+      if (skipKeys.length > 0 && skipKeys.includes(base)) {
         continue;
       }
-      if (skipKeys.length > 0 && skipKeys.includes(key)) {
-        continue;
-      }
-      this._emitElement(out, key, obj[key], level);
+      this._emitElement(out, base, obj[base], level, obj['_' + base]);
     }
+  }
+
+  /**
+   * A resource inside a resource (contained): in an element named for its type
+   * @private
+   */
+  static _emitResource(out, name, resource, level) {
+    const type = resource.resourceType;
+    this.checkElementName(type);
+    const ind = this.indent(level);
+    out.push(ind, '<', name, '>\n', this.indent(level + 1), '<', type, '>\n');
+    // the order the resource's own class uses, where it has one (loaded here: it extends this one)
+    const order = require('./bundle-xml').BundleXML.getElementOrderForResource(type);
+    this._emitInOrder(out, resource, level + 2, order);
+    out.push(this.indent(level + 1), '</', type, '>\n', ind, '</', name, '>\n');
+  }
+
+  /**
+   * The narrative's XHTML, for XML: checked that it is well-formed (by the reader here), with
+   * the XHTML namespace
+   * @param {string} div
+   * @returns {string}
+   */
+  static narrativeXml(div) {
+    let root;
+    try {
+      root = new FhirXmlParser(div).parse();
+    } catch (e) {
+      throw new Error(`Cannot serialise this narrative as XML: it is not well-formed XHTML (${e.message})`);
+    }
+    if (root.name !== 'div') {
+      throw new Error('Cannot serialise this narrative as XML: it is not a div');
+    }
+    const text = div.trim();
+    return root.attributes.xmlns ? text : text.replace(/^<div/, '<div xmlns="http://www.w3.org/1999/xhtml"');
   }
 
   /**
@@ -905,14 +1061,25 @@ class FhirXmlBase {
         }
         // as _emitObject
         for (const key in item) {
-          if (!Object.hasOwn(item, key) || key.charCodeAt(0) === 95 /* _ */ || (skipKeys.length > 0 && skipKeys.includes(key))) {
+          if (!Object.hasOwn(item, key)) {
             continue;
           }
-          const value = item[key];
-          if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
-            await this._emitArrayAsync(out, key, value, level + 1, clock);
+          let base = key;
+          if (key.charCodeAt(0) === 95 /* _ */) {
+            base = key.substring(1);
+            if (Object.hasOwn(item, base)) {
+              continue;
+            }
+          }
+          if (skipKeys.length > 0 && skipKeys.includes(base)) {
+            continue;
+          }
+          const value = item[base];
+          const ext = item['_' + base];
+          if (ext === undefined && Array.isArray(value) && value.length > 0 && typeof value[0] === 'object' && value[0] !== null) {
+            await this._emitArrayAsync(out, base, value, level + 1, clock);
           } else {
-            this._emitElement(out, key, value, level + 1);
+            this._emitElement(out, base, value, level + 1, ext);
           }
         }
         out.push(ind, '</', name, '>\n');
@@ -1107,6 +1274,7 @@ class FhirXmlParser {
     if (this.#atEnd() || this.xml[this.pos] !== '<') {
       this.#fail("Expected '<'");
     }
+    const start = this.pos;
     this.pos++;
 
     const name = this.#parseName('element name');
@@ -1114,14 +1282,19 @@ class FhirXmlParser {
 
     if (this.#startsWith('/>')) {
       this.pos += 2;
-      return { name, attributes, children: [] };
+      return name === 'div' ? { name, attributes, children: [], raw: this.xml.substring(start, this.pos) } : { name, attributes, children: [] };
     }
     if (this.#atEnd() || this.xml[this.pos] !== '>') {
       this.#fail(`Expected '>' or '/>' to close the start tag of <${name}>`);
     }
     this.pos++;
 
-    return { name, attributes, children: this.#parseChildren(name) };
+    const children = this.#parseChildren(name);
+    if (name === 'div') {
+      // the narrative: its XHTML as it is, text and all (the one place FHIR XML has text)
+      return { name, attributes, children, raw: this.xml.substring(start, this.pos) };
+    }
+    return { name, attributes, children };
   }
 
   /**

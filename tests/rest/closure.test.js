@@ -215,18 +215,23 @@ describe.each(engines())('closures: a version 3 database is brought up to date (
         contained: [{ resourceType: 'Condition', id: 'c', subject: { reference: '#' }, code: { coding: [{ system: SYS, code: 'Encounter' }] } }],
         hasMember: [{ reference: '#c' }] }));
     expect(r.status).toBe(201);
-    // back to version 3: no ParamConcepts (nor version 5's value set tables), one closure for everything
+    // back to version 3: no ParamConcepts (nor what versions 5 to 8 added), one closure for everything
     await t.ep.db.write(async (q) => {
+      await q.exec('DROP TABLE PackageLoads');
       await q.exec('DROP TABLE ValueSets');
       await q.exec('DROP TABLE ValueSetMembers');
       await q.exec('DROP TABLE ParamConcepts');
+      await q.exec('DROP TABLE ObservationValues');
+      await q.exec('DROP TABLE ObservationCodes');
+      await q.exec('DROP TABLE AsyncJobs');
+      await q.exec('DROP TABLE JobFiles');
       await q.exec(q.dialect.name === 'sqlite' ? 'DROP INDEX SK_Closures_Param' : 'DROP INDEX SK_Closures_Param ON Closures');
       await q.exec('ALTER TABLE Closures DROP COLUMN TypeKey');
       await q.exec('ALTER TABLE Closures DROP COLUMN ParamKey');
       await q.run("INSERT INTO Closures (Name, Version) VALUES ('fhirsmith-rest-old', '3')");
       await q.run('UPDATE Config SET Value = ? WHERE Name = ?', ['3', 'schemaVersion']);
     });
-    await t.mod.shutdown();
+    await t.stop();
     t = await makeApp(engine, { dir: t.dir, keep: true });
     try {
       const rows = await t.ep.db.read(q => q.all(`SELECT t.Name AS Type, s.Code AS Param, c.Code, pc.InClosure FROM ParamConcepts pc

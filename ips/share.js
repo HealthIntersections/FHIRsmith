@@ -24,6 +24,7 @@
  */
 
 const crypto = require('crypto');
+const fhirJson = require('../library/fhir-json');
 const jose = require('jose');
 const qrcode = require('qrcode-generator');
 const zlib = require('zlib');
@@ -141,7 +142,7 @@ class ShlClient {
   async share(bundle, options) {
     const kind = options.kind === 'vhl' ? 'vhl' : 'shl';
     const days = Number.isInteger(options.days) && options.days > 0 ? options.days : this.days;
-    const json = JSON.stringify(bundle);
+    const json = fhirJson.stringify(bundle);
     const keyBytes = crypto.randomBytes(32);
     const jwe = await new jose.CompactEncrypt(new TextEncoder().encode(json))
       .setProtectedHeader({ alg: 'dir', enc: 'A256GCM', cty: FHIR_JSON })

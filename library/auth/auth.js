@@ -45,6 +45,34 @@ const SESSION_COOKIE = 'fhirsmith.sid';
 // requests a minute from one address that bring a login or a token (auth.requestsPerMinute)
 const DEFAULT_REQUESTS_PER_MINUTE = 1000;
 
+// ---- login for expensive operations (auth.loginForExpensive) ----
+//
+// A few things cost the server a lot to make, and web crawlers were asking for them thousands
+// of times an hour (npm.fhir.org, 2026-11: one on 78,000 rotating addresses, which no limit per
+// address can stop). With auth.loginForExpensive on, they need someone logged in: a session, or
+// an API token - any account, no role. Everything else stays open. What they are, as the person
+// asked to log in is told ({n}: auth.anonymousMaxRows); the modules check for them (tx, xig).
+// /auth/why-login explains it to people
+const LOGIN_FOR = {
+  'xml': 'an answer in XML from the terminology API',
+  'search-page': 'search results past the first page',
+  'show-all': 'every code of a large code system or value set (Show all)',
+  'expansion-rows': 'more than {n} rows of a value set expansion',
+  'xig-page': 'a filtered XIG list past its first page',
+  // (auth.loginForOldTools, auth.loginForOtherClients: who the client is, not what it asks for)
+  'old-tool': 'answers from the terminology API for {old}',
+  'other-client': 'answers from the terminology API for software other than the FHIR validator and IG Publisher'
+};
+// which setting turns each on
+const EXPENSIVE = ['xml', 'search-page', 'show-all', 'expansion-rows', 'xig-page'];
+const DEFAULT_ANONYMOUS_MAX_ROWS = 1000;
+const WHY_LOGIN = '/auth/why-login';
+
+/** Text for an XML attribute */
+function xmlAttr(text) {
+  return String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&apos;' })[c]);
+}
+
 /**
  * The token a request carries, if any: Authorization: Bearer, Api-Key, X-API-Key, or Basic
  * with the token as the password (for clients that can only do Basic, like curl -u)
@@ -736,8 +764,9 @@ class Auth {
     }
     const { plural } = require('../daily-report');
     const s = this.store.loginStats(since, now);
+    const refusals = this.refusalReport({ since, now });
     if (s.users === 0) {
-      return '';
+      return refusals;
     }
     const how = c => [[c.password, 'with a password'], [c.github, 'with GitHub'], [c.google, 'with Google']].filter(([n]) => n > 0).map(([n, w]) => `${n} ${w}`);
     const total = c => c.password + c.github + c.google;
@@ -770,7 +799,160 @@ class Auth {
     if (s.sessions !== null) {
       sentences.push(`${plural(s.sessions, 'session')} ${s.sessions === 1 ? 'is' : 'are'} logged in now.`);
     }
+    if (refusals) {
+      sentences.push(refusals);
+    }
     return sentences.join(' ');
+  }
+
+  // ---- login for expensive operations (auth.loginForExpensive: see LOGIN_FOR) ----
+
+  /** Do the expensive operations need a login? (auth.loginForExpensive; off by default) */
+  loginForExpensive() {
+    return this.initialized && this.config.loginForExpensive === true;
+  }
+
+  /** The most rows of an expansion someone not logged in is shown (auth.anonymousMaxRows) */
+  anonymousMaxRows() {
+    const n = Number(this.config.anonymousMaxRows);
+    return Number.isInteger(n) && n > 0 ? n : DEFAULT_ANONYMOUS_MAX_ROWS;
+  }
+
+  /**
+   * Is someone logged in for this request: a session, or an API token (any account: no role is
+   * needed), or this server itself? Looked up only when the request brings one, so an anonymous
+   * request costs nothing
+   * @returns {Promise<boolean>}
+   */
+  async loggedIn(req) {
+    if (!this.initialized || !(this.bringsCredentials(req) || req.headers[INTERNAL_HEADER])) {
+      return false;
+    }
+    return !!(await this.principal(req));
+  }
+
+  /**
+   * Must this request log in for something expensive? Always false while
+   * auth.loginForExpensive is off
+   * @returns {Promise<boolean>}
+   */
+  async mustLogIn(req) {
+    return this.loginForExpensive() && !(await this.loggedIn(req));
+  }
+
+  /**
+   * Must an old version of the FHIR validator or IG Publisher log in (auth.loginForOldTools)? false,
+   * true (one that doesn't say its version), or a version (that, or older than it: see
+   * library/client-identity.js)
+   * @returns {false|true|string}
+   */
+  loginForOldTools() {
+    if (!this.initialized) {
+      return false;
+    }
+    const v = this.config.loginForOldTools;
+    if (v === true) {
+      return true;
+    }
+    return typeof v === 'string' && /^\d+\.\d+(\.\d+)?$/.test(v) ? v : false;
+  }
+
+  /** Must software other than the FHIR validator and IG Publisher log in (auth.loginForOtherClients)? */
+  loginForOtherClients() {
+    return this.initialized && this.config.loginForOtherClients === true;
+  }
+
+  /** The kinds of request (keys of LOGIN_FOR) that need a login on this server, as configured */
+  loginKinds() {
+    return [...(this.loginForExpensive() ? EXPENSIVE : []), ...(this.loginForOldTools() ? ['old-tool'] : []),
+      ...(this.loginForOtherClients() ? ['other-client'] : [])];
+  }
+
+  /** What a kind of request (a key of LOGIN_FOR) is, as the person asked to log in is told */
+  describeLoginFor(kind) {
+    const old = this.loginForOldTools();
+    const tools = typeof old === 'string'
+      ? `a version of the FHIR validator or IG Publisher before ${old} (or one that doesn't say which version it is)`
+      : 'a version of the FHIR validator or IG Publisher that doesn\'t say which version it is';
+    return (LOGIN_FOR[kind] || 'this').replace('{n}', this.anonymousMaxRows().toLocaleString('en-US')).replace('{old}', tools);
+  }
+
+  /** Why a kind of request needs a login, in a sentence */
+  whyLoginFor(kind) {
+    if (kind === 'old-tool') {
+      return 'Versions of the validator and IG Publisher that say which version they are (current ones do) need no token.';
+    }
+    if (kind === 'other-client') {
+      return 'Without a login, this server answers only the FHIR validator and IG Publisher.';
+    }
+    return 'This costs the server a lot to make, and web crawlers were asking for it thousands of times an hour.';
+  }
+
+  /** The page that says what needs a login, and why */
+  whyLoginUrl(req) {
+    const base = this.publicUrl(req);
+    return base ? base + WHY_LOGIN : WHY_LOGIN;
+  }
+
+  /**
+   * Tell the client it must log in for this: 401, counted for the daily report. A person gets a
+   * page that says why, with the ways to log in; software gets the same in what it reads
+   * @param {import('express').Request} req
+   * @param {import('express').Response} res
+   * @param {string} kind - a key of LOGIN_FOR
+   * @param {object} [options]
+   * @param {'html'|'fhir-xml'|'fhir-json'|'json'} [options.as] how to answer (html)
+   * @param {string} [options.back] for a person: what they can see without logging in (the first page)
+   * @param {string} [options.hint] for software: a sentence more (e.g. that the same in JSON needs no login)
+   */
+  refuseAnonymous(req, res, kind, { as = 'html', back = null, hint = '' } = {}) {
+    if (this.store) {
+      this.store.noteRefusal(kind, req.ip || (req.socket && req.socket.remoteAddress));
+    }
+    const what = this.describeLoginFor(kind);
+    res.status(401);
+    res.setHeader('WWW-Authenticate', 'Bearer');
+    res.setHeader('X-Robots-Tag', 'noindex');
+    res.setHeader('Cache-Control', 'no-store');
+    if (as === 'html') {
+      return require('./pages').sendLoginNeeded(this, req, res, what, back);
+    }
+    const how = `Any account will do; how to get a token: ${this.whyLoginUrl(req)}`;
+    let text;
+    if (kind === 'old-tool') {
+      text = `This server needs an API token (Authorization: Bearer {token}) from ${this.describeLoginFor('old-tool').replace(/^answers from the terminology API for /, '')}. ` +
+        `Upgrade: versions that say which version they are (current ones do) need no token. Or log in. ${how}`;
+    } else if (kind === 'other-client') {
+      text = 'This server answers software other than the FHIR validator and IG Publisher only with an API token (Authorization: Bearer {token}). ' + how;
+    } else {
+      text = `To get ${what} from this server, log in: send an API token (Authorization: Bearer {token}). ${this.whyLoginFor(kind)} ${how}`;
+    }
+    text += hint ? `. ${hint}` : '';
+    if (as === 'fhir-xml') {
+      res.setHeader('Content-Type', 'application/fhir+xml');
+      return res.send('<?xml version="1.0" encoding="UTF-8"?>\n<OperationOutcome xmlns="http://hl7.org/fhir"><issue>' +
+        `<severity value="error"/><code value="login"/><details><text value="${xmlAttr(text)}"/></details></issue></OperationOutcome>`);
+    }
+    if (as === 'fhir-json') {
+      res.setHeader('Content-Type', 'application/fhir+json');
+      return res.send(JSON.stringify({ resourceType: 'OperationOutcome', issue: [{ severity: 'error', code: 'login', details: { text } }] }));
+    }
+    return res.json({ error: 'login-required', message: text });
+  }
+
+  /**
+   * For the daily report: the requests told to log in, on the day before (each report covers
+   * the whole days since the one before). '' when there were none
+   */
+  refusalReport({ since, now }) {
+    const { plural } = require('../daily-report');
+    const rows = this.store.refusalStats(since, now);
+    const total = rows.reduce((t, r) => t + r.n, 0);
+    if (total === 0) {
+      return this.loginKinds().length > 0 ? 'No requests were told to log in.' : '';
+    }
+    const parts = rows.map(r => `${r.n.toLocaleString('en-US')} for ${this.describeLoginFor(r.kind)} (from ${r.addresses.toLocaleString('en-US')} ${r.addresses === 1 ? 'address' : 'addresses'})`);
+    return `${plural(total, 'request')} told to log in: ${parts.join('; ')}.`;
   }
 
   /** Where logging out goes (auth.afterLogout, a path on this server; default the server's home page) */
@@ -848,4 +1030,4 @@ class Auth {
   }
 }
 
-module.exports = { Auth, Principal, presentedToken, safeReturn, isLocalUrl, redirectBack, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };
+module.exports = { LOGIN_FOR, EXPENSIVE, WHY_LOGIN, Auth, Principal, presentedToken, safeReturn, isLocalUrl, redirectBack, SERVER, ADMINISTRATOR, BY_CONFIGURATION, MIN_PASSWORD, INTERNAL_HEADER, SESSION_COOKIE };

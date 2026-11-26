@@ -12,7 +12,7 @@ const escape = require('escape-html');
 const bcrypt = require('bcrypt');
 const oauth = require('./oauth');
 const { AuthStore, nameProblem } = require('./store');
-const { safeReturn, redirectBack, SERVER, ADMINISTRATOR, MIN_PASSWORD } = require('./auth');
+const { safeReturn, redirectBack, SERVER, ADMINISTRATOR, MIN_PASSWORD, EXPENSIVE } = require('./auth');
 
 const TEMPLATE = 'root';
 // accounts, passwords, GitHub, roles and API tokens, for the people who use the pages
@@ -150,6 +150,7 @@ function buildRouter(auth) {
   // ---- login / logout ----
 
   r.get('/login', session, csrf, h((req, res) => sendLogin(auth, req, res, 200)));
+  r.get('/why-login', h((req, res) => sendWhyLogin(auth, req, res)));
   r.post('/login', sameOrigin, limiter, session, form, csrf, h((req, res) => login(auth, req, res)));
   r.post('/logout', sameOrigin, session, form, csrf, h((req, res) => {
     const back = str(req.body.return);
@@ -313,7 +314,9 @@ function sendLogin(auth, req, res, status, error) {
   if (providers.length > 0) {
     h += '<p>' + providers.map(p => `<a class="btn btn-primary" role="button" style="margin: 0 8px 8px 0; min-width: 200px" href="/auth/${p.key}${q}">Log in with ${p.label}</a>`).join('') + '</p>' +
       `<p class="text-muted"><small>Logging in with ${providers.map(p => p.label).join(' or ')} the first time makes you an account. ` +
-      'It can\'t do anything until the administrator gives it a role.</small></p><hr/>' +
+      (auth.loginKinds().length > 0
+        ? `With it you can see the things on this server that <a href="${WHY_LOGIN_PATH}">need a login</a>, and make API tokens for your software; anything more needs a role, which the administrator gives.`
+        : 'It can\'t do anything until the administrator gives it a role.') + '</small></p><hr/>' +
       '<p>Or log in with the username and password of an account you have been given:</p>';
   }
   h += `<form method="post" action="/auth/login" style="max-width: 420px">${csrfField(res)}` +
@@ -324,6 +327,78 @@ function sendLogin(auth, req, res, status, error) {
     `<a href="/auth/forgot${q}">Forgotten your password?</a></form>`;
   h += `<p class="text-muted"><small><a href="${HELP_URL}">How logging in works</a></small></p>`;
   render(auth, req, res, 'Log in', h, status);
+}
+
+// ---- login for expensive operations (auth.loginForExpensive) ----
+
+const WHY_LOGIN_PATH = '/auth/why-login';
+
+/** The ways to log in, as buttons, coming back to `back` (a path on this server) */
+function loginButtons(auth, back) {
+  const q = back ? `?return=${escape(encodeURIComponent(back))}` : '';
+  const providers = Object.values(oauth.PROVIDERS).filter(p => auth.providers[p.key]);
+  return '<p>' + providers.map(p => `<a class="btn btn-primary" role="button" style="margin: 0 8px 8px 0; min-width: 200px" href="/auth/${p.key}${q}">Log in with ${p.label}</a>`).join('') +
+    `<a class="btn btn-${providers.length ? 'outline-secondary' : 'primary'}" role="button" style="margin: 0 8px 8px 0" href="/auth/login${q}">${providers.length ? 'Other ways to log in' : 'Log in'}</a></p>`;
+}
+
+/**
+ * The page for someone not logged in who asked for something that needs a login (401: the
+ * status is set already, see Auth.refuseAnonymous)
+ * @param {string} what - what they asked for, as a phrase ("search results past the first page")
+ * @param {string|null} back - what they can see without logging in, if there's a page for that
+ */
+function sendLoginNeeded(auth, req, res, what, back) {
+  const ret = req.method === 'GET' ? safeReturn(req.originalUrl, '') : '';
+  const providers = Object.values(oauth.PROVIDERS).filter(p => auth.providers[p.key]).map(p => p.label);
+  let h = `<p>To see ${escape(what)}, please log in.</p>` +
+    '<p>This costs the server a lot to make, and web crawlers were asking for it thousands of times an hour, so it is ' +
+    'for people who are logged in. Everything else here stays open to anyone.</p>' +
+    loginButtons(auth, ret) +
+    (providers.length
+      ? `<p class="text-muted"><small>Any ${escape(providers.join(' or '))} account will do. The first time, it makes you an account here; nothing else is needed.</small></p>`
+      : '') +
+    (back ? `<p><a href="${escape(back)}">Back to what you can see without logging in</a></p>` : '') +
+    `<p class="text-muted"><small><a href="${WHY_LOGIN_PATH}">What needs a login, and why</a></small></p>`;
+  render(auth, req, res, 'Please log in', h, 401);
+}
+
+/** /auth/why-login: what needs a login, why, and how software logs in */
+function sendWhyLogin(auth, req, res) {
+  const providers = Object.values(oauth.PROVIDERS).filter(p => auth.providers[p.key]).map(p => p.label);
+  const kinds = auth.loginKinds();
+  const item = k => `<li>${escape(auth.describeLoginFor(k).replace(/^./, c => c.toUpperCase()))}</li>`;
+  let h = '<p>Almost everything on this server is open to anyone, without logging in. ';
+  if (kinds.length === 0) {
+    h += 'This server can ask for a login for a few things that cost it a lot to make (web crawlers were asking for them ' +
+      'thousands of times an hour), but doesn\'t at the moment.</p>';
+  } else {
+    h += 'These need you to be logged in:</p><ul>' + kinds.map(item).join('') + '</ul>';
+    if (kinds.some(k => EXPENSIVE.includes(k))) {
+      h += '<p>Most of these cost the server a lot to make, and web crawlers were asking for them thousands of times an hour, ' +
+        'from tens of thousands of addresses, slowing the server down for everyone. The first page of everything and every resource page stay open.</p>';
+    }
+    if (kinds.includes('old-tool')) {
+      h += '<p>The FHIR validator and IG Publisher say which version they are from version 7.0.7 of the FHIR core library ' +
+        '(the validator 7.0.7, and IG Publisher releases built on it): upgrade, and they need no login. ' +
+        '(A build from source doesn\'t know its version: log in.)</p>';
+    }
+    if (kinds.includes('other-client')) {
+      h += '<p>Other software uses the terminology API with an API token. Web pages stay open.</p>';
+    } else if (kinds.includes('xml')) {
+      h += '<p>Everything in JSON from the terminology API stays open.</p>';
+    }
+  }
+  h += '<p>Package downloads and the package API never need a login.</p>';
+  h += '<h4>Logging in</h4><p>' + (providers.length
+    ? `Any ${escape(providers.join(' or '))} account will do: the first time, logging in makes you an account here. No role or approval is needed.`
+    : 'Log in with the account the administrator has given you.') + '</p>' + loginButtons(auth, '/auth/account');
+  h += '<h4>Software: API tokens</h4>' +
+    '<p>Software logs in with an API token. Log in, open <a href="/auth/account">your account</a>, and under <i>API tokens</i> make a new one (copy it: it is shown only once). ' +
+    'Send it as <code>Authorization: Bearer {token}</code>. A client with a token gets a bigger client side cache (<code>$cache-control</code>) on the terminology server.</p>' +
+    '<p>The FHIR IG Publisher and validator read it from <code>fhir-settings.json</code>:</p>' +
+    `<pre>"servers": [\n  { "url": "${escape(auth.publicUrl(req) || 'https://tx.fhir.org')}", "type": "fhir", "authenticationType": "token", "token": "fhs_..." }\n]</pre>` +
+    '<p class="text-muted"><small>Treat a token as a password: it acts as your account. Revoke it on your account page if it gets out.</small></p>';
+  render(auth, req, res, 'Why log in?', h);
 }
 
 /** The providers whose identity is linked to this user row: [{key, label, handle}] */
@@ -958,4 +1033,4 @@ async function adminLink(auth, req, res) {
   res.redirect(`/auth/admin/users/${u.id}`);
 }
 
-module.exports = { buildRouter, sendError, render, describeRole };
+module.exports = { sendLoginNeeded, sendWhyLogin, buildRouter, sendError, render, describeRole };

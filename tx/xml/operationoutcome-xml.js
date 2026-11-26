@@ -49,7 +49,7 @@ class OperationOutcomeXML extends FhirXmlBase {
         if (key === 'issue') {
           xml += this._renderIssues(obj.issue, level);
         } else {
-          xml += this.renderElement(key, obj[key], level);
+          xml += this.renderElement(key, obj[key], level, obj['_' + key]);
         }
       }
     }
@@ -57,7 +57,7 @@ class OperationOutcomeXML extends FhirXmlBase {
     // Process any remaining elements
     for (const key of Object.keys(obj)) {
       if (!this._elementOrder.includes(key) && key !== 'resourceType' && !key.startsWith('_')) {
-        xml += this.renderElement(key, obj[key], level);
+        xml += this.renderElement(key, obj[key], level, obj['_' + key]);
       }
     }
 
@@ -80,14 +80,14 @@ class OperationOutcomeXML extends FhirXmlBase {
       // Render issue elements in correct order
       for (const key of this._issueElementOrder) {
         if (Object.hasOwn(issue, key)) {
-          xml += this.renderElement(key, issue[key], level + 1);
+          xml += this.renderElement(key, issue[key], level + 1, issue['_' + key]);
         }
       }
 
       // Render any remaining elements
       for (const key of Object.keys(issue)) {
         if (!this._issueElementOrder.includes(key) && !key.startsWith('_')) {
-          xml += this.renderElement(key, issue[key], level + 1);
+          xml += this.renderElement(key, issue[key], level + 1, issue['_' + key]);
         }
       }
 

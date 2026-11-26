@@ -14,6 +14,9 @@ const {editionName} = require("../sct/editions");
 // Defined here (the base worker) so both the worker and cache-control share one
 // source of truth without a circular require. Express lower-cases header names.
 const CACHE_ID_HEADER = 'x-cache-id';
+const auth = require('../../library/auth');
+// the cache limit issues, to which a client not logged in is told it could have a bigger cache
+const LIMIT_ISSUES = new Set(['CACHE_ID_DISCARDED_TOO_BIG', 'CACHE_REQUEST_TOO_BIG', 'CACHE_START_TOO_BIG']);
 
 /**
  * Custom error for terminology setup issues
@@ -854,8 +857,10 @@ class TerminologyWorker {
    * @param {Object[]} resources
    */
   addToClientCache(cacheId, resources) {
+    const cache = this.opContext.resourceCache;
     try {
-      this.opContext.resourceCache.add(cacheId, resources);
+      // a client logged in may have a bigger cache (cacheMaxConceptsLoggedIn: see tx.js checkLogin)
+      cache.withConceptLimit(this.opContext.cacheMaxConcepts, () => cache.add(cacheId, resources));
     } catch (e) {
       throw this.translateCacheIssue(e);
     }
@@ -870,6 +875,13 @@ class TerminologyWorker {
   translateCacheIssue(e) {
     if (e && e.msgId && e.msgParams) {
       e.message = this.i18n.translate(e.msgId, this.opContext.langs, e.msgParams);
+      // a client not logged in that could have a bigger cache with a login is told so
+      const bigger = this.opContext.cacheMaxConceptsLoggedIn;
+      const usual = this.opContext.resourceCache ? this.opContext.resourceCache.maxConceptsPerCache : Infinity;
+      if (!this.opContext.loggedIn && bigger > usual && LIMIT_ISSUES.has(e.msgId)) {
+        e.message += '. ' + this.i18n.translate('CACHE_LOGIN_FOR_MORE', this.opContext.langs,
+          [bigger === Infinity ? 'any number of' : bigger.toLocaleString('en-US'), auth.whyLoginUrl(null)]);
+      }
     }
     return e;
   }

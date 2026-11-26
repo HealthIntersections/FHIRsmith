@@ -195,19 +195,24 @@ describe.each(engines())('full-text: a version 1 database is brought up to date 
     const r = await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON)
       .send(body({ resourceType: 'Patient', text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml">Platypus</div>' } }));
     const id = r.body.id;
-    // back to version 1: no full-text table (nor what versions 3 to 5 added)
+    // back to version 1: no full-text table (nor what versions 3 to 7 added)
     await t.ep.db.write(async (q) => {
       await q.exec('DROP TABLE TextIndex');
       await q.exec('DROP TABLE Contained');
+      await q.exec('DROP TABLE PackageLoads');
       await q.exec('DROP TABLE ValueSets');
       await q.exec('DROP TABLE ValueSetMembers');
       await q.exec('DROP TABLE ParamConcepts');
+      await q.exec('DROP TABLE ObservationValues');
+      await q.exec('DROP TABLE ObservationCodes');
+      await q.exec('DROP TABLE AsyncJobs');
+      await q.exec('DROP TABLE JobFiles');
       await q.exec(q.dialect.name === 'sqlite' ? 'DROP INDEX SK_Closures_Param' : 'DROP INDEX SK_Closures_Param ON Closures');
       await q.exec('ALTER TABLE Closures DROP COLUMN TypeKey');
       await q.exec('ALTER TABLE Closures DROP COLUMN ParamKey');
       await q.run('UPDATE Config SET Value = ? WHERE Name = ?', ['1', 'schemaVersion']);
     });
-    await t.mod.shutdown();
+    await t.stop();
     t = await makeApp(engine, { dir: t.dir, keep: true });
     try {
       const v = await t.ep.db.read(q => q.get('SELECT Value FROM Config WHERE Name = ?', ['schemaVersion']));

@@ -49,9 +49,11 @@ Not in the spec, deliberately:
 
 * Operational pages: `/packages/stats`, `/packages/log` (the last crawler run),
   `/packages/status`.
-* `POST /packages/crawl`, which runs a full crawl on demand. It needs an API token of a
-  user with the packages "crawl" role ([library/auth](../library/auth/README.md)), as
-  `Authorization: Bearer` or in the `x-crawl-token` header.
+* `POST /packages/crawl`, which starts a full crawl now. It is the *Start a crawl* button on
+  `/packages/log`, for the server's administrators, logged in
+  ([library/auth](../library/auth/README.md)): a form post, with the session and its CSRF
+  token. The crawl runs in the background and the post goes back to the log page; while a
+  crawl is running, another isn't started.
 
 ### Keeping the spec honest
 
@@ -92,7 +94,7 @@ In the server config, under `modules.packages`:
 | `mirrorPath` | Directory where the crawler saves a copy of each tarball, as `{id}-{version}.tgz`. A scoped id `@scope/name` is saved as `$scope$name`. |
 | `bucketPath` | Optional. If set, downloads redirect to `{bucketPath}/{file}` and tarball URLs point there, instead of being served from the database. The file names are the mirror's, so the bucket is expected to be a copy of the mirror. A redirected download is counted as one sent from here. (Downloads are counted in memory and written to the database every 30 seconds, and when the server stops, through a connection of their own, so the counts shown can be up to 30 seconds behind.) |
 | `baseUrl` | Optional. The public base URL used when building package URLs. Defaults to the request's host. |
-| (`crawlToken`) | No longer used: `POST /packages/crawl` is for users with the packages "crawl" role, with an API token. The scheduled crawler is unaffected. |
+| (`crawlToken`) | No longer used: an administrator, logged in, starts a crawl on `/packages/log`. The scheduled crawler is unaffected. |
 | `crawler.enabled` | Run the crawler at startup and on the schedule. |
 | `crawler.schedule` | Cron expression for crawls. |
 | `crawler.maxFeedMB` | The largest feed (JSON or RSS) the crawler will read, as downloaded. Default 50; the largest real feed, Simplifier's, is 5 MB. |

@@ -81,6 +81,14 @@ describe('renderInclude: how many codes are listed', () => {
     expect(batches[0].codes).toHaveLength(1200);
   });
 
+  test('with no limit, it lets other work run as it goes (a turn when one is due, at every row)', async () => {
+    const { renderer } = setup();
+    renderer.includeCodeLimit = null;
+    const spy = jest.spyOn(renderer, 'yieldIfDue');
+    expect(rows(await render(renderer, include(1200)))).toBe(1200);
+    expect(spy.mock.calls.length).toBeGreaterThanOrEqual(1200);
+  });
+
   test('at 500 codes, nothing is cut', async () => {
     const { renderer } = setup();
     const html = await render(renderer, include(500));

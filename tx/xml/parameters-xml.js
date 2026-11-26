@@ -56,7 +56,7 @@ class ParametersXML extends FhirXmlBase {
         if (key === 'parameter') {
           xml += this._renderParameterArray(obj.parameter, level, fhirVersion);
         } else {
-          xml += this.renderElement(key, obj[key], level);
+          xml += this.renderElement(key, obj[key], level, obj['_' + key]);
         }
       }
     }
@@ -64,7 +64,7 @@ class ParametersXML extends FhirXmlBase {
     // Process any remaining elements
     for (const key of Object.keys(obj)) {
       if (!this._elementOrder.includes(key) && key !== 'resourceType' && !key.startsWith('_')) {
-        xml += this.renderElement(key, obj[key], level);
+        xml += this.renderElement(key, obj[key], level, obj['_' + key]);
       }
     }
 
@@ -105,7 +105,7 @@ class ParametersXML extends FhirXmlBase {
     // Handle value[x] - find the value property
     for (const [key, value] of Object.entries(param)) {
       if (key.startsWith('value')) {
-        xml += this.renderElement(key, value, level);
+        xml += this.renderElement(key, value, level, param['_' + key]);
         break;
       }
     }
@@ -191,11 +191,8 @@ class ParametersXML extends FhirXmlBase {
     if (resourceType) {
       this.checkElementName(resourceType);
       xml += `${this.indent(level)}<${resourceType} xmlns="${this.getNamespace()}">\n`;
-      for (const [key, value] of Object.entries(resource)) {
-        if (key !== 'resourceType') {
-          xml += this.renderElement(key, value, level + 1);
-        }
-      }
+      // (each primitive with its _ property)
+      xml += this.renderObject(resource, level + 1, ['resourceType']);
       xml += `${this.indent(level)}</${resourceType}>\n`;
     }
     return xml;

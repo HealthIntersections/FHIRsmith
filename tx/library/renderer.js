@@ -72,6 +72,8 @@ class Renderer {
     this.conceptLimit = MAX_RENDERED_CONCEPTS;
     /** Where the whole code system can be had (as JSON) when its table is cut short; null for no link. */
     this.fullContentHref = null;
+    /** The text of that link (its page, when shown in a list of search results; "(log in)" when it needs one) */
+    this.fullContentLabel = 'as JSON';
     this._lastYield = performance.now();
   }
 
@@ -782,6 +784,8 @@ class Renderer {
         const shown = limit != null && inc.concept.length > limit ? inc.concept.slice(0, limit) : inc.concept;
         const links = await this.resolveIncludeCodes(inc, shown);
         for (let i = 0; i < shown.length; i++) {
+          // with ?_showAll=true there can be tens of thousands (2026-11-24: 4.4 s on tx.fhir.org)
+          await this.yieldIfDue();
           const c = shown[i];
           const link = links[i];
           const li = ul.li();
@@ -802,7 +806,7 @@ class Renderer {
           li.i().tx(`\u2026 and ${more.toLocaleString('en-US')} more code${more === 1 ? '' : 's'}.`);
           if (this.showAllCodesHref) {
             li.tx(" ");
-            li.ah(this.showAllCodesHref).tx("Show all");
+            li.ah(this.showAllCodesHref).tx(this.showAllLabel || "Show all");
           }
         }
       } else {
@@ -1017,7 +1021,7 @@ class Renderer {
       p.tx(' ');
       if (this.fullContentHref) {
         p.tx('The whole code system can be had ');
-        p.ah(this.fullContentHref).tx('as JSON');
+        p.ah(this.fullContentHref).tx(this.fullContentLabel || 'as JSON');
         p.tx('.');
       } else {
         p.tx('The whole code system can be had as JSON.');
@@ -1749,6 +1753,7 @@ class Renderer {
   }
 
   async addExpansionRow(tbl, contains, level, columnInfo) {
+    await this.yieldIfDue();
     const tr = tbl.tr();
 
     // Apply styling for abstract or inactive concepts

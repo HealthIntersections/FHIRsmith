@@ -190,6 +190,41 @@ describe('resolveCodes', () => {
     expect(results.map((r) => r && r.description)).toEqual(['Alabama', null, 'Arizona']);
   });
 
+  test('codes a code system has in memory are located letting other work run', async () => {
+    // locate() with no I/O: its awaits resolve at once, so without a real turn of the event
+    // loop now and then, 2,000 codes are one unbroken piece of compute (4.4 s on tx.fhir.org,
+    // for ?_showAll=true on a VSAC value set of LOINC codes)
+    const factory = fakeFactory();
+    const build = factory.build;
+    factory.build = async (...args) => {
+      const csp = await build(...args);
+      const locate = csp.locate;
+      csp.locate = async (code) => {
+        const until = performance.now() + 0.1;
+        while (performance.now() < until) {
+          // busy, as a large in-memory lookup and its display are
+        }
+        return locate(code);
+      };
+      return csp;
+    };
+    const provider = providerWith({ [SYSTEM]: factory });
+    let turns = 0;
+    let ticking = true;
+    const tick = () => {
+      if (ticking) {
+        turns++;
+        setImmediate(tick);
+      }
+    };
+    setImmediate(tick);
+    const results = await provider.resolveCodes(newContext(), SYSTEM, null, many(2000));
+    ticking = false;
+    expect(results).toHaveLength(2000);
+    // 200 ms of compute, with a turn at least every 25 ms
+    expect(turns).toBeGreaterThanOrEqual(4);
+  });
+
   test('no codes, no build', async () => {
     const factory = fakeFactory();
     const provider = providerWith({ [SYSTEM]: factory });

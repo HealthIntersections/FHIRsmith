@@ -14,6 +14,7 @@
  */
 
 const commonmark = require('commonmark');
+const fhirJson = require('../library/fhir-json');
 
 const LOINC = 'http://loinc.org';
 const PATIENT_NOTES = '51855-5';
@@ -66,7 +67,7 @@ function withoutNotes(sections) {
  * @returns {Object} a copy
  */
 function removePatientNotes(bundle) {
-  const doc = structuredClone(bundle);
+  const doc = fhirJson.clone(bundle);
   const comp = compositionOf(doc);
   if (comp && Array.isArray(comp.section)) {
     comp.section = withoutNotes(comp.section);
@@ -94,7 +95,7 @@ function patientReference(bundle, comp) {
  * @returns {Object} a copy
  */
 function addPatientComments(bundle, markdown) {
-  const doc = structuredClone(bundle);
+  const doc = fhirJson.clone(bundle);
   const comp = compositionOf(doc);
   if (!comp) {
     throw new Error('The document has no Composition to add the patient\'s comments to');

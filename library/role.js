@@ -18,11 +18,55 @@
  *   database, no $closure or syndication store (those requests go to the master), the VSAC
  *   provider only reads what the master's sync wrote, and the rest module's endpoints wait
  *   for the master's schema migrations and leave its jobs to the master.
+ * - jobs: the rest module only, for its background jobs and queues (rest/queue/runner.js):
+ *   search cleanup, the closure, package loads, value set membership, reindexing, and async
+ *   requests. The launcher starts one when the rest module is enabled, unless
+ *   server.cluster.jobsProcess is false (then the master runs them). It gets no requests
+ *   from the launcher; a terminology server that is a path on this server is reached through
+ *   the launcher's port (FHIRSMITH_FRONT_DOOR), since it doesn't run the tx module.
  *
  * @module library/role
  */
 
-const ROLES = ['master', 'tx-worker'];
+const ROLES = ['master', 'tx-worker', 'jobs'];
+
+// the environment variable the launcher gives the jobs process: the URL of its own port
+const FRONT_DOOR_ENV = 'FHIRSMITH_FRONT_DOOR';
+
+/**
+ * Whether the cluster has a jobs process (--role=jobs): when the rest module is enabled,
+ * unless server.cluster.jobsProcess is false.
+ * @param {Object} config
+ */
+function jobsProcess(config) {
+  const rest = config.modules && config.modules.rest;
+  const option = config.server && config.server.cluster && config.server.cluster.jobsProcess;
+  if (option !== undefined && option !== null && typeof option !== 'boolean') {
+    throw new Error('server.cluster.jobsProcess must be true or false');
+  }
+  return Boolean(rest && rest.enabled) && option !== false;
+}
+
+/**
+ * Whether this process runs the rest module's jobs and queues: with no role, yes; the jobs
+ * process, yes; the master, when there is no jobs process; a tx-worker, never.
+ * @param {Object|null} role - from parseRole
+ * @param {Object} config
+ */
+function runsRestJobs(role, config) {
+  if (!role) {
+    return true;
+  }
+  if (role.role === 'jobs') {
+    return true;
+  }
+  return role.role === 'master' && !jobsProcess(config);
+}
+
+/** What to call a process with this role, in titles */
+function roleLabel(role) {
+  return role.role === 'master' ? 'Master' : role.role === 'jobs' ? 'Jobs' : 'Worker';
+}
 
 // the modules a worker can run (server.cluster.workerModules): those whose state is all in
 // files or databases every process can share. The tx module is always one of them
@@ -128,12 +172,12 @@ function parseRole(argv = [], env = {}) {
   const role = flags.role || env.FHIRSMITH_ROLE || null;
   if (!role) {
     if (flags['instance-code'] !== undefined || flags.port !== undefined) {
-      throw new Error('--instance-code and --port are only used with --role (master or tx-worker)');
+      throw new Error('--instance-code and --port are only used with --role (master, tx-worker or jobs)');
     }
     return null;
   }
   if (!ROLES.includes(role)) {
-    throw new Error(`Unknown role '${role}': use master or tx-worker`);
+    throw new Error(`Unknown role '${role}': use master, tx-worker or jobs`);
   }
   let port = null;
   if (flags.port !== undefined) {
@@ -156,9 +200,12 @@ function applyRole(config, role) {
   if (!tx || !tx.enabled) {
     throw new Error(`--role=${role.role} needs the tx module enabled in config.json`);
   }
-  if (role.role === 'tx-worker' && !role.instanceCode) {
+  if (role.role !== 'master' && !role.instanceCode) {
     // the config's code is the master's: every process needs its own
-    throw new Error('A tx-worker needs its own instance code: --instance-code or FHIRSMITH_INSTANCE_CODE');
+    throw new Error(`A ${role.role === 'jobs' ? 'jobs process' : role.role} needs its own instance code: --instance-code or FHIRSMITH_INSTANCE_CODE`);
+  }
+  if (role.role === 'jobs' && !(config.modules.rest && config.modules.rest.enabled)) {
+    throw new Error('--role=jobs runs the rest module\'s jobs: the rest module must be enabled in config.json');
   }
   tx.instanceCode = role.instanceCode || tx.instanceCode;
   if (!tx.instanceCode) {
@@ -200,8 +247,8 @@ function applyRole(config, role) {
     const interval = stats.intervalMinutes > 0 ? stats.intervalMinutes * 60 : 600;
     config.stats = { ...stats, sampleSeconds: Math.min(ROLE_SAMPLE_SECONDS, interval) };
   }
-  const keep = workerModules(config);
-  if (role.role === 'tx-worker') {
+  const keep = role.role === 'jobs' ? ['rest'] : workerModules(config);
+  if (role.role === 'tx-worker' || role.role === 'jobs') {
     for (const [name, mod] of Object.entries(config.modules)) {
       if (!keep.includes(name) && mod) {
         mod.enabled = false;
@@ -217,10 +264,13 @@ function applyRole(config, role) {
 
 function describeRole(role, config) {
   const code = config.modules.tx.instanceCode;
+  if (role.role === 'jobs') {
+    return `Role: jobs (instance code ${code}): the rest module's background jobs and queues, no requests`;
+  }
   return role.role === 'master'
-    ? `Role: master (instance code ${code}): all modules, background jobs, $closure`
+    ? `Role: master (instance code ${code}): all modules, background jobs${jobsProcess(config) ? ' (but the rest module\'s, in the jobs process)' : ''}, $closure`
     : `Role: tx-worker (instance code ${code}): the ${workerModules(config).join(' and ')} module${workerModules(config).length > 1 ? 's' : ''} only, no background jobs`;
 }
 
-module.exports = { parseRole, applyRole, describeRole, workerModules, WORKER_MODULES, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
+module.exports = { parseRole, applyRole, describeRole, workerModules, jobsProcess, runsRestJobs, roleLabel, FRONT_DOOR_ENV, WORKER_MODULES, checkInstanceCode, bindAddress, connectAddress, DEFAULT_BIND_ADDRESS,
   DEFAULT_SHARED_CACHE_MAX_MB, ROLE_TRIM_ALLOCATOR, ROLE_SAMPLE_SECONDS, READY, ROLES };

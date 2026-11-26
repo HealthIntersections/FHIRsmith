@@ -17,6 +17,7 @@
 const { badRequest, notFound, gone, preconditionFailed, unprocessable, FhirError } = require('../library/errors');
 const { ifMatchVersion, etagVersion, parseQuery } = require('../request');
 const { applyPatch, PatchError } = require('../library/json-patch');
+const { applyFhirPathPatch } = require('../library/fhirpath-patch');
 const { ID_RE } = require('../store');
 
 /** The headers for a version: ETag, Last-Modified */
@@ -158,7 +159,7 @@ async function create(ep, freq, ctx) {
       type: freq.type, id: null, resource: body, ifMatch: null, mustCreate: true, userId: ep.userId(freq),
       reservation: ctx.reservation, reserved: ctx.reserved, deferChecks: ctx.deferChecks
     });
-    await ep.auditWrite(q, freq, 'create', 201, `${freq.type}/${r.id}/_history/${r.versionId}`, r.versionKey);
+    await ep.recordWrite(q, freq, 'create', 201, `${freq.type}/${r.id}/_history/${r.versionId}`, r.versionKey, ctx);
     return { r };
   });
   if (result.existing) {
@@ -182,7 +183,7 @@ async function update(ep, freq, ctx) {
       type: freq.type, id: freq.id, resource, ifMatch: ifMatchVersion(freq), createOnUpdate: ep.settings.createOnUpdate,
       versionAware: settings.versionAware, userId: ep.userId(freq), reservation: ctx.reservation, reserved: ctx.reserved, deferChecks: ctx.deferChecks
     });
-    await ep.auditWrite(q, freq, out.created ? 'create' : 'update', out.created ? 201 : 200, `${freq.type}/${out.id}/_history/${out.versionId}`, out.versionKey);
+    await ep.recordWrite(q, freq, out.created ? 'create' : 'update', out.created ? 201 : 200, `${freq.type}/${out.id}/_history/${out.versionId}`, out.versionKey, ctx);
     return out;
   });
   return writeResult(ep, freq, freq.type, r, r.created ? 201 : 200);
@@ -224,21 +225,26 @@ async function conditionalUpdate(ep, freq, ctx) {
       out = await ep.store.put(q, { type: freq.type, id: null, resource: body, mustCreate: true, userId: ep.userId(freq),
         reservation: ctx.reservation, reserved: ctx.reserved, deferChecks: ctx.deferChecks });
     }
-    await ep.auditWrite(q, freq, out.created ? 'create' : 'update', out.created ? 201 : 200, `${freq.type}/${out.id}/_history/${out.versionId}`, out.versionKey);
+    await ep.recordWrite(q, freq, out.created ? 'create' : 'update', out.created ? 201 : 200, `${freq.type}/${out.id}/_history/${out.versionId}`, out.versionKey, ctx);
     return out;
   });
   return writeResult(ep, freq, freq.type, r, r.created ? 201 : 200);
 }
 
-function patchDocument(freq) {
+/**
+ * Applies the request's patch to a resource: a JSON Patch (an array of operations), or a
+ * FHIRPath Patch (a Parameters resource, in JSON or XML)
+ */
+function applyRequestPatch(ep, freq, resource) {
   const p = freq.body;
   if (Array.isArray(p)) {
-    return p;
+    return applyPatch(resource, p);
   }
   if (p && p.resourceType === 'Parameters') {
-    throw new FhirError(415, 'not-supported', 'FHIRPath Patch is not supported yet: use JSON Patch (application/json-patch+json)');
+    const d = ep.definitions;
+    return applyFhirPathPatch(resource, p, { model: d.model, options: d.fhirpathOptions, xml: ep.xmlModel() });
   }
-  throw badRequest('The body must be a JSON Patch (an array of operations)');
+  throw badRequest('The body must be a JSON Patch (an array of operations) or a FHIRPath Patch (a Parameters resource)');
 }
 
 async function patchOne(ep, q, freq, ctx, type, id, settings) {
@@ -252,7 +258,7 @@ async function patchOne(ep, q, freq, ctx, type, id, settings) {
   await ep.checkCompartments(q, ctx.access, cur.resourceKey);
   let patched;
   try {
-    patched = applyPatch(cur.resource, patchDocument(freq));
+    patched = applyRequestPatch(ep, freq, cur.resource);
   } catch (e) {
     if (e instanceof PatchError) {
       throw unprocessable(`The patch can't be applied: ${e.message}`);
@@ -266,7 +272,7 @@ async function patchOne(ep, q, freq, ctx, type, id, settings) {
     type, id, resource: patched, ifMatch: ifMatchVersion(freq), versionAware: settings.versionAware, userId: ep.userId(freq),
     reserved: ctx.reserved, deferChecks: ctx.deferChecks
   });
-  await ep.auditWrite(q, freq, 'patch', 200, `${type}/${id}/_history/${out.versionId}`, out.versionKey);
+  await ep.recordWrite(q, freq, 'patch', 200, `${type}/${id}/_history/${out.versionId}`, out.versionKey, ctx);
   return out;
 }
 
@@ -311,7 +317,7 @@ async function remove(ep, freq, ctx) {
     }
     const out = await ep.store.put(q, { type: freq.type, id: freq.id, resource: null, ifMatch: ifMatchVersion(freq), userId: ep.userId(freq) });
     if (!out.unchanged) {
-      await ep.auditWrite(q, freq, 'delete', 200, `${freq.type}/${freq.id}/_history/${out.versionId}`, out.versionKey);
+      await ep.recordWrite(q, freq, 'delete', 200, `${freq.type}/${freq.id}/_history/${out.versionId}`, out.versionKey, ctx);
     }
     return out;
   });
@@ -336,7 +342,7 @@ async function conditionalDelete(ep, freq, ctx) {
     const found = await ep.store.byKeys(q, keys);
     for (const e of found) {
       const out = await ep.store.put(q, { type: freq.type, id: e.id, resource: null, ifMatch: null, userId: ep.userId(freq) });
-      await ep.auditWrite(q, freq, 'delete', 200, `${freq.type}/${e.id}/_history/${out.versionId}`, out.versionKey);
+      await ep.recordWrite(q, freq, 'delete', 200, `${freq.type}/${e.id}/_history/${out.versionId}`, out.versionKey, ctx);
     }
     return found.length;
   });

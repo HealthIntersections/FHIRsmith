@@ -13,9 +13,11 @@
  * nginx's default). It is not built to face clients itself. It:
  *
  *  - starts the master (node server.js --role=master), waits until it is ready (it says so
- *    on its IPC channel once it listens), then starts the workers (--role=tx-worker) one
- *    after another, each once the one before is ready, each with its own instance code and
- *    port; exits 1 if the master exits maxStartFailures times without ever being ready
+ *    on its IPC channel once it listens), then the rest module's jobs process (--role=jobs,
+ *    when the rest module is enabled and server.cluster.jobsProcess isn't false; it gets no
+ *    requests) and the workers (--role=tx-worker) one after another, each once the one
+ *    before is ready, each with its own instance code and port; exits 1 if the master exits
+ *    maxStartFailures times without ever being ready
  *  - routes: a request with X-Cache-Id to the process that issued it (by the id's prefix);
  *    $closure, the syndication feed, the source info pages and everything that isn't a tx
  *    endpoint to the master; any other tx request to the tx process with the fewest
@@ -53,7 +55,10 @@
 const http = require('http');
 const path = require('path');
 const { spawn } = require('child_process');
-const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY, workerModules } = require('./library/role');
+const { checkInstanceCode, bindAddress, connectAddress, ROLE_TRIM_ALLOCATOR, READY, workerModules, jobsProcess, FRONT_DOOR_ENV } = require('./library/role');
+
+// the jobs process's instance code (library/role.js): it issues no cache-ids, so gets no requests
+const JOBS_CODE = 'j1';
 const { ClusterMetrics, METRIC, SNAPSHOT } = require('./library/cluster-metrics');
 const { PendingCounts, COUNTS, COUNTS_INTERVAL_MS } = require('./library/cluster-counts');
 const { CacheFanout, ASK: CACHES_ASK, DONE: CACHES_DONE } = require('./library/cluster-caches');
@@ -165,12 +170,15 @@ function loadSettings(argv, env, config, cpu = {}) {
   const workerDecision = defaultWorkers({ ...cpu, cores: cluster.cores ?? cpu.cores, rule: cluster.workerRule });
   const workers = Number(workersGiven ?? workerDecision.workers);
   const internalPort = Number(flags['internal-port'] || cluster.internalPort || port + 1);
-  // the master is on internalPort, worker n on internalPort + n
-  if (!Number.isInteger(internalPort) || internalPort < 1 || internalPort + workers > 65535) {
-    throw new Error(`the internal ports (--internal-port or server.cluster.internalPort ${internalPort}, to + ${workers} for the workers) must be port numbers`);
+  // the rest module's jobs process, after the workers (server.cluster.jobsProcess)
+  const jobs = jobsProcess(config);
+  const last = internalPort + workers + (jobs ? 1 : 0);
+  // the master is on internalPort, worker n on internalPort + n, the jobs process after them
+  if (!Number.isInteger(internalPort) || internalPort < 1 || last > 65535) {
+    throw new Error(`the internal ports (--internal-port or server.cluster.internalPort ${internalPort}, to + ${last - internalPort} for the workers${jobs ? ' and the jobs process' : ''}) must be port numbers`);
   }
-  if (port >= internalPort && port <= internalPort + workers) {
-    throw new Error(`the public port ${port} is one of the internal ports ${internalPort}-${internalPort + workers} (the master's, and one per worker): ` +
+  if (port >= internalPort && port <= last) {
+    throw new Error(`the public port ${port} is one of the internal ports ${internalPort}-${last} (the master's, and one per worker${jobs ? ', and the jobs process\'s' : ''}): ` +
       'choose server.cluster.internalPort (--internal-port) outside it');
   }
   const masterCode = checkInstanceCode(tx.instanceCode || 'm0', 'modules.tx.instanceCode');
@@ -184,6 +192,15 @@ function loadSettings(argv, env, config, cpu = {}) {
       throw new Error(`modules.tx.instanceCode '${masterCode}' is also the code of a worker: choose another`);
     }
     procs.push({ name: 'worker ' + code, role: 'tx-worker', code, host, port: internalPort + i, servesTx: true });
+  }
+  if (jobs) {
+    if (JOBS_CODE === masterCode) {
+      throw new Error(`modules.tx.instanceCode '${masterCode}' is also the code of the jobs process: choose another`);
+    }
+    // started straight after the master (second in the list), with the launcher's own port
+    // to reach a terminology server that is a path on this server
+    procs.splice(1, 0, { name: 'jobs', role: 'jobs', code: JOBS_CODE, host, port: last, servesTx: false,
+      env: { [FRONT_DOOR_ENV]: `http://127.0.0.1:${port}` } });
   }
   // with the shared cache any process can answer any cache-id (cluster.md, "Options")
   const sharedCache = cluster.sharedCache === true;
@@ -686,7 +703,7 @@ function createLauncher(settings) {
       proc.readyMemory = null;
       proc.statusFigures = null;
       metrics.state(proc.code, 'starting');
-      const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: process.env });
+      const child = spawn(cmd, args, { stdio: ['inherit', 'inherit', 'inherit', 'ipc'], env: proc.env ? { ...process.env, ...proc.env } : process.env });
       proc.child = child;
       child.on('message', message => {
         if (proc.child === child && message && message.type === METRIC && metrics.record(proc.code, message)) {
@@ -1176,7 +1193,9 @@ function createLauncher(settings) {
       server.listen(settings.port, resolve);
     });
     sizeWorkers(master);
-    log(`listening on port ${settings.port}; starting ${procs.length - 1} worker(s)`);
+    const others = procs.filter(p => p !== master);
+    log(`listening on port ${settings.port}; starting ${others.filter(p => p.role === 'tx-worker').length} worker(s)` +
+      (others.some(p => p.role === 'jobs') ? ' and the jobs process' : ''));
     log(`limits: maxOutstanding ${maxOutstanding}, queueSeconds ${queueMs / 1000}, ownerQueueSeconds ${ownerQueueMs / 1000}, cooldownSeconds ${cooldownMs / 1000}, upstreamTimeoutSeconds ${upstreamTimeoutMs / 1000}, writeTimeoutSeconds ${writeTimeoutMs / 1000}, ` +
       `fastLaneExtra ${fastLaneExtra}, fastLaneMaxBytes ${fastLaneMaxBytes}, normalMinSlots ${normalMinSlots}, memoryHeadroomGB ${headroom / 2 ** 30}, drainSeconds ${settings.drainMs / 1000}, ` +
       `trimAllocator ${trimAllocator}, statusSeconds ${statusMs / 1000}, recycleSeconds ${recycleMs / 1000}` + (recycleMs > 0 ? ` (a tx-worker ${memory.describe} that long, with no request at work, is restarted)` : ' (never)'));
@@ -1214,7 +1233,7 @@ function createLauncher(settings) {
     const workers = procs.filter(p => p.role === 'tx-worker');
     const decided = (fitText) => {
       if (settings.workerDecision) {
-        log(describeDecision(settings.workerDecision, procs.length - 1, fitText, !settings.workersDefault));
+        log(describeDecision(settings.workerDecision, procs.filter(p => p.role === 'tx-worker').length, fitText, !settings.workersDefault));
       }
     };
     const perProcess = memory.sample([master]).own.get(master) || 0;
@@ -1238,7 +1257,7 @@ function createLauncher(settings) {
         metrics.series.delete(p.code);
       }
     }
-    const starting = procs.length - 1;
+    const starting = procs.filter(p => p.role === 'tx-worker').length;
     decided(`memory fits ${Math.max(0, fits)}`);
     if (fits < 1) {
       log(`WARNING memory: ${line}: even 1 worker leaves too little room; starting ${starting}: raise the limit, or run a single server`);

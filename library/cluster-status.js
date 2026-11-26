@@ -128,7 +128,7 @@ function buildSnapshot({ now, intervalMs, procs, launcher, guard, cgroup, shared
     const fresh = f && age !== null && age <= staleMs;
     return {
       code: p.code, role: p.role,
-      label: `${p.role === 'master' ? 'Master' : 'Worker'} ${p.code}`,
+      label: `${p.role === 'master' ? 'Master' : p.role === 'jobs' ? 'Jobs' : 'Worker'} ${p.code}`,
       status: p.status, restarts: p.restarts || 0,
       uptimeMs: p.startedAt ? now - p.startedAt : null,
       anon: p.memory ? p.memory.anon : null,
@@ -137,11 +137,14 @@ function buildSnapshot({ now, intervalMs, procs, launcher, guard, cgroup, shared
       requests: f ? f.requests ?? null : null,
       heapUsed: f ? f.heapUsed ?? null : null,
       heapLimit: f ? f.heapLimit ?? null : null,
-      clientCaches: f ? f.clientCaches ?? null : null,
-      clientConcepts: f ? f.clientConcepts ?? null : null,
-      expansionItems: f ? f.expansionItems ?? null : null,
+      // (the jobs process runs no tx module: its caches are not a figure, rather than none)
+      clientCaches: f && p.role !== 'jobs' ? f.clientCaches ?? null : null,
+      clientConcepts: f && p.role !== 'jobs' ? f.clientConcepts ?? null : null,
+      expansionItems: f && p.role !== 'jobs' ? f.expansionItems ?? null : null,
       inFlight: f ? f.inFlight ?? null : null,
-      refusing: f ? f.refusing ?? null : null
+      refusing: f ? f.refusing ?? null : null,
+      // the rest module's background work, from the process that runs it (rest/queue/status.js)
+      jobs: f && fresh ? f.jobs ?? null : null
     };
   });
   const fresh = processes.filter(p => p.fresh);
@@ -358,6 +361,98 @@ function processView(own, { heading = 'Server', meta = ['this process'] } = {}) 
   };
 }
 
+// how long the oldest queued async request can wait before it's a problem
+const ASYNC_WAIT_PROBLEM_MS = 5 * 60 * 1000;
+
+function ms(v) {
+  if (v === null || v === undefined) return '—';
+  return v < 1000 ? `${Math.round(v)} ms` : v < 60000 ? `${(v / 1000).toFixed(1)} s` : duration(v);
+}
+
+/**
+ * The rest module's background work (the queue runner, rest/queue/runner.js), from the
+ * process that runs it: tiles for the queues (how much waits, how long the oldest has waited,
+ * how long work waited to be started after it was queued, and how long it took), and a row
+ * per task. Null when no process sent any.
+ * @param {Object[]} sources - [{label (the process), jobs: [{path, tasks, queues}]}]
+ * @param {Object} [opts] - now
+ */
+function jobsView(sources, { now = Date.now() } = {}) {
+  const all = sources.flatMap(s => (s.jobs || []).map(e => ({ ...e, source: s.label })));
+  if (!all.length) {
+    return null;
+  }
+  const queues = all.map(e => e.queues).filter(Boolean);
+  const sum = (f) => queues.reduce((a, q) => a + (f(q) || 0), 0);
+  const most = (f) => queues.reduce((a, q) => (Number.isFinite(f(q)) && (a === null || f(q) > a) ? f(q) : a), null);
+  // the waits and times of every endpoint's async requests together: their counts, the
+  // averages weighted by them, the largest p95 and max
+  const merged = (key) => {
+    const list = queues.map(q => q.async && q.async[key]).filter(Boolean);
+    if (!list.length) return null;
+    const count = list.reduce((a, s) => a + s.count, 0);
+    return { count, avg: list.reduce((a, s) => a + s.avg * s.count, 0) / count, p95: Math.max(...list.map(s => s.p95)), max: Math.max(...list.map(s => s.max)) };
+  };
+  const waited = merged('waited');
+  const took = merged('took');
+  const windowMs = queues.length ? queues[0].windowMs : null;
+  const span = windowMs ? (windowMs >= 3600000 ? `${Math.round(windowMs / 3600000)} h` : `${Math.round(windowMs / 60000)} min`) : '';
+  const oldest = most(q => q.async && q.async.oldestWaitingMs);
+  const reindexing = queues.filter(q => q.reindex && q.reindex.active);
+  const tiles = [
+    { label: 'Async queued', value: n(sum(q => q.async && q.async.queued)), sub: `${n(sum(q => q.async && q.async.running))} running` +
+      (oldest !== null ? ` · oldest waiting ${ms(oldest)}` : '') },
+    { label: `Async wait to start (last ${span})`, value: waited ? ms(waited.avg) : '—', sub: waited ? `avg of ${n(waited.count)} · p95 ${ms(waited.p95)} · max ${ms(waited.max)}` : 'none started' },
+    { label: `Async run time (last ${span})`, value: took ? ms(took.avg) : '—', sub: took ? `avg of ${n(took.count)} · max ${ms(took.max)}` : 'none finished' },
+    { label: 'Async failed', value: n(sum(q => q.async && q.async.failed)), sub: 'last 24 h' },
+    { label: 'Package loads', value: n(sum(q => q.packages && q.packages.queued)), unit: 'queued', sub: (() => {
+      const last = most(q => q.packages && q.packages.lastWaitedMs);
+      return `${n(sum(q => q.packages && q.packages.running))} loading` + (last !== null ? ` · last waited ${ms(last)}` : '');
+    })() },
+    { label: 'Reindexing', value: reindexing.length ? `${Math.round(100 * Math.min(...reindexing.map(q => q.reindex.done)))}%` : 'idle',
+      sub: reindexing.length ? `${reindexing.length} endpoint${reindexing.length === 1 ? '' : 's'}` : null }
+  ];
+  const rows = all.flatMap(e => e.tasks.map(t => ({
+    cells: [{ text: e.path }, { text: t.name }, { pills: [t.running ? { text: 'running', quiet: false } : t.failing ? { text: 'failing', quiet: false } : { text: 'idle', quiet: true }] },
+      { text: ms(t.everyMs), num: true }, { text: n(t.runs), num: true },
+      { text: t.lastAt ? `${duration(now - t.lastAt)} ago` : 'not yet', num: true }, { text: ms(t.lastMs), num: true },
+      { text: n(t.failures), num: true }, { text: t.lastError ? `${t.lastError}${t.lastErrorAt ? ` (${duration(now - t.lastErrorAt)} ago)` : ''}` : '' }]
+  })));
+  const measured = queues.map(q => q.measuredAt).filter(Number.isFinite);
+  return {
+    heading: 'Rest background jobs',
+    meta: [[...new Set(all.map(e => e.source))].join(', '), measured.length ? `queues measured ${ago(now - Math.min(...measured))}${ago(now - Math.min(...measured)) === 'now' ? '' : ' ago'}` : 'queues not measured yet'],
+    tiles,
+    memory: null,
+    table: { columns: [{ label: 'Endpoint' }, { label: 'Task' }, { label: 'State' }, { label: 'Every', num: true }, { label: 'Runs', num: true },
+      { label: 'Last run', num: true }, { label: 'Took', num: true }, { label: 'Failures', num: true }, { label: 'Last error' }], rows },
+    footnotes: ['Wait to start: from when a request was queued to when the jobs process started it. Run time: from then to when it finished.']
+  };
+}
+
+/**
+ * The background work's problems, for the status line: a task whose last run failed, and an
+ * async request that has waited ASYNC_WAIT_PROBLEM_MS or more to be started
+ * @param {Object[]} sources - as for jobsView
+ */
+function jobProblems(sources, { now = Date.now() } = {}) {
+  const list = [];
+  for (const s of sources) {
+    for (const e of s.jobs || []) {
+      for (const t of e.tasks || []) {
+        if (t.failing) {
+          list.push(`Rest ${e.path}: ${t.name} failed${t.lastErrorAt ? ` ${duration(now - t.lastErrorAt)} ago` : ''}: ${t.lastError}`);
+        }
+      }
+      const wait = e.queues && e.queues.async ? e.queues.async.oldestWaitingMs : null;
+      if (Number.isFinite(wait) && wait >= ASYNC_WAIT_PROBLEM_MS) {
+        list.push(`Rest ${e.path}: an async request has waited ${duration(wait)} to be started (${n(e.queues.async.queued)} queued)`);
+      }
+    }
+  }
+  return list;
+}
+
 /**
  * The storage tiles below the graphs: closure tables, logs and disk, where there are any.
  * @param {Object} s - heading, closure (closureStats() or null), logs ({files, bytes, kept}
@@ -465,4 +560,4 @@ function processSummary(own, { now = Date.now() } = {}) {
   };
 }
 
-module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };
+module.exports = { ownFigures, connectStatus, buildSnapshot, clusterView, processView, storageView, jobsView, jobProblems, ASYNC_WAIT_PROBLEM_MS, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS, STATUS_INTERVAL_MS, STALE_INTERVALS };

@@ -48,7 +48,12 @@ const ENDPOINT_DEFAULTS = {
   anonymous: 'none',
   customSearchParameters: false,
   // the most matches a conditional delete deletes (1: only a single match)
-  conditionalDeleteMax: 1
+  conditionalDeleteMax: 1,
+  // async requests (Prefer: respond-async; queue/async.js): whether they are taken, how long
+  // a result is kept, and how many one user can have queued or running at once
+  asyncRequests: true,
+  asyncKeepHours: 24,
+  asyncMaxPerUser: 5
 };
 
 const TYPE_DEFAULTS = {

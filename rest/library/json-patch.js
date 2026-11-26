@@ -10,6 +10,8 @@
  * @module rest/library/json-patch
  */
 
+const fhirJson = require('../../library/fhir-json');
+
 class PatchError extends Error {}
 
 function parsePointer(p) {
@@ -66,7 +68,8 @@ function getValue(doc, path) {
   return parent[last];
 }
 
-function add(doc, path, value) {
+/** written: how a number value was written (library/fhir-json), to keep */
+function add(doc, path, value, written) {
   const tokens = parsePointer(path);
   if (tokens.length === 0) {
     return value;
@@ -76,8 +79,14 @@ function add(doc, path, value) {
   if (Array.isArray(parent)) {
     if (last === '-') {
       parent.push(value);
+      if (written) {
+        fhirJson.remember(parent, parent.length - 1, written);
+      }
     } else if (isIndex(last) && Number(last) <= parent.length) {
       parent.splice(Number(last), 0, value);
+      if (written) {
+        fhirJson.remember(parent, Number(last), written);
+      }
     } else {
       throw new PatchError(`${path}: index ${last} is out of range`);
     }
@@ -86,6 +95,9 @@ function add(doc, path, value) {
       throw new PatchError(`${path}: not allowed`);
     }
     parent[last] = value;
+    if (written) {
+      fhirJson.remember(parent, last, written);
+    }
   }
   return doc;
 }
@@ -140,18 +152,18 @@ function applyPatch(document, patch) {
   if (!Array.isArray(patch)) {
     throw new PatchError('A JSON Patch is an array of operations');
   }
-  let doc = JSON.parse(JSON.stringify(document));
+  let doc = fhirJson.clone(document);
   for (const op of patch) {
     if (!op || typeof op !== 'object' || typeof op.op !== 'string' || typeof op.path !== 'string') {
       throw new PatchError('Each operation needs op and path');
     }
-    const clone = (v) => v === undefined ? v : JSON.parse(JSON.stringify(v));
+    const clone = (v) => v === undefined ? v : fhirJson.clone(v);
     switch (op.op) {
       case 'add':
         if (!('value' in op)) {
           throw new PatchError(`add ${op.path}: no value`);
         }
-        doc = add(doc, op.path, clone(op.value));
+        doc = add(doc, op.path, clone(op.value), fhirJson.writtenAs(op, 'value'));
         break;
       case 'remove':
         remove(doc, op.path);
@@ -165,7 +177,7 @@ function applyPatch(document, patch) {
         } else {
           getValue(doc, op.path);
           remove(doc, op.path);
-          doc = add(doc, op.path, clone(op.value));
+          doc = add(doc, op.path, clone(op.value), fhirJson.writtenAs(op, 'value'));
         }
         break;
       case 'move': {

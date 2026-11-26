@@ -191,7 +191,11 @@ const TOP = obj({
     loginAttemptsPerWindow: count(),
     requestsPerMinute: positive(),
     afterLogout: str({ pattern: /^\/(?![/\\])\S*$/, patternText: 'a path on this server, starting with /' }),
-    bcryptCost: int({ min: 4, max: 15 })
+    bcryptCost: int({ min: 4, max: 15 }),
+    loginForExpensive: bool(),
+    anonymousMaxRows: int({ min: 1 }),
+    loginForOldTools: either(bool(), str({ pattern: /^\d+\.\d+(\.\d+)?$/, patternText: 'a version, such as "7.0.8"' })),
+    loginForOtherClients: bool()
   }),
   // the key store (library/keystore)
   keystore: obj({
@@ -232,7 +236,7 @@ const MODULES = {
     validator: validatorSpec
   }),
   vcl: obj({ enabled: bool() }),
-  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: obsolete('is no longer used: the server\'s administrators start an update - on /xig/stats, logged in, or with an API token (POST /xig/update)'), connections: int({ min: 1 }), baseUrl: str({ nonEmpty: true }) }),
+  xig: obj({ enabled: bool(), autoUpdate: bool(), updateToken: obsolete('is no longer used: the server\'s administrators start an update - on /xig/stats, logged in, or with an API token (POST /xig/update)'), connections: int({ min: 1 }), baseUrl: str({ nonEmpty: true }), listCacheMB: num({ min: 0 }) }),
   packages: obj({
     enabled: bool(),
     database: str({ nonEmpty: true, required: true }),
@@ -240,7 +244,7 @@ const MODULES = {
     mirrorPath: str(),
     bucketPath: str(),
     masterUrl: str({ nonEmpty: true }),
-    crawlToken: obsolete('is no longer used: /packages/crawl is for users with the packages "crawl" role, with an API token'),
+    crawlToken: obsolete('is no longer used: an administrator, logged in, starts a crawl on /packages/log'),
     localFeedDirs: arr(str({ nonEmpty: true })),
     allowPrivateAddresses: bool(),
     crawler: obj({
@@ -335,6 +339,7 @@ const MODULES = {
     cacheTimeout: positive(),
     cacheMaxConcepts: count(),
     cacheMaxTotalConcepts: count(),
+    cacheMaxConceptsLoggedIn: count(),
     usageTrackerMaxCodes: count(),
     usageTrackerMaxCodeLength: count(),
     languageTagCacheSize: count(),
@@ -359,6 +364,7 @@ const MODULES = {
     expansionCacheMemoryThreshold: num({ min: 0 }),
     expansionCacheMaxCodes: count(),
     xmlCacheMB: num({ min: 0 }),
+    xmlConverter: str({ values: ['legacy', 'model', 'compare'] }),
     // the caches page's actions (/caches) are for the server's administrators
     adminPassword: obsolete('is no longer used: the server\'s administrators, logged in, empty the caches'),
     loincConnections: int({ min: 0 }),
@@ -1132,7 +1138,8 @@ function runCheck(argv, env = process.env, options = {}) {
         const workers = settings.procs.filter(p => p.role === 'tx-worker');
         report.note('cluster', `the launcher listens on port ${settings.port}; the master on ${settings.procs[0].host}:${settings.procs[0].port}` +
           (workers.length ? `, ${workers.length} tx-worker${workers.length === 1 ? '' : 's'} on ${workers[0].port}-${workers[workers.length - 1].port}` : ', no tx-workers') +
-          (settings.workersDefault ? ` (the ${settings.workerDecision.rule} rule: ${settings.workerDecision.formula}; fewer if memory is short once they load)` : ''));
+          (settings.workersDefault ? ` (the ${settings.workerDecision.rule} rule: ${settings.workerDecision.formula}; fewer if memory is short once they load)` : '') +
+          (settings.procs.some(p => p.role === 'jobs') ? `; the rest module's jobs process on ${settings.procs.find(p => p.role === 'jobs').port}` : ''));
         for (const p of settings.procs) {
           try {
             applyRole(structuredClone(config), { role: p.role, instanceCode: p.code });
