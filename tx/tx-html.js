@@ -29,6 +29,12 @@ const txHtmlLog = Logger.getInstance().child({ module: 'tx-html' });
 
 const TEMPLATE_PATH = path.join(__dirname, 'html', 'tx-template.html');
 
+// A resource shown in a list of search results shows at most this many of its codes (a code
+// system's concepts, a value set's codes on each include, a concept map's elements), with a link
+// to its own page: a search for "icd-10" listed six whole code systems, a thousand concepts each,
+// a 2 MB page (tx-dev.fhir.org, 2026-11)
+const MAX_CODES_IN_BUNDLE = 20;
+
 // Search parameters for the search form
 const SEARCH_PARAMS = [
   { name: 'url', type: 'text', label: 'URL' },
@@ -751,11 +757,15 @@ class TxHtmlRenderer {
       this.renderer.showAllCodesHref = null;
       return;
     }
-    this.renderer.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
     if (inBundle) {
-      this.renderer.showAllCodesHref = json.id
-        ? `${this.path}/ValueSet/${encodeURIComponent(json.id)}?_format=html&${SHOW_ALL_PARAM}=true` : null;
-    } else if (req?.method === 'GET' && req.originalUrl) {
+      // a few, and the value set's own page (open to anyone) for more
+      this.renderer.includeCodeLimit = MAX_CODES_IN_BUNDLE;
+      this.renderer.showAllCodesHref = json.id ? `${this.path}/ValueSet/${encodeURIComponent(json.id)}?_format=html` : null;
+      this.renderer.showAllLabel = 'See them on its page';
+      return;
+    }
+    this.renderer.includeCodeLimit = MAX_RENDERED_INCLUDE_CODES;
+    if (req?.method === 'GET' && req.originalUrl) {
       const url = new URL(req.originalUrl, 'http://localhost');
       url.searchParams.set(SHOW_ALL_PARAM, 'true');
       this.renderer.showAllCodesHref = url.pathname + url.search;
@@ -1292,12 +1302,19 @@ class TxHtmlRenderer {
    * Render CodeSystem resource
    */
   async renderCodeSystem(json, inBundle, _fmt, op, sourcePackage) {
-    // the concept table stops at MAX_RENDERED_CONCEPTS: the whole code system is a link away, as JSON
-    this.renderer.fullContentHref = json.id
-      ? `${this.path}/CodeSystem/${encodeURIComponent(json.id)}?_format=json` : null;
     if (inBundle) {
+      // in a list of search results: a few concepts, and its own page for more
+      this.renderer.conceptLimit = MAX_CODES_IN_BUNDLE;
+      this.renderer.fullContentHref = json.id ? `${this.path}/CodeSystem/${encodeURIComponent(json.id)}?_format=html` : null;
+      this.renderer.fullContentLabel = 'on its page';
       return await this.renderResourceWithNarrative(json, await this.renderer.renderCodeSystem(json));
     } else {
+      // the concept table stops at MAX_RENDERED_CONCEPTS: the whole code system is a link away, as
+      // JSON (for someone not logged in, through the login page: see wholeResourceLink)
+      this.renderer.conceptLimit = MAX_RENDERED_CONCEPTS;
+      const whole = this.wholeResourceLink(json, 'json', 'as JSON');
+      this.renderer.fullContentHref = whole ? whole.href : null;
+      this.renderer.fullContentLabel = whole ? whole.label : 'as JSON';
       let html = `<ul class="nav nav-tabs">`;
       html += this.tab(!_fmt || _fmt == 'html', json.resourceType, json.resourceType, 'html', json.id);
       html += this.tab(_fmt && _fmt == 'html/json', 'JSON', json.resourceType, 'html/json', json.id);
@@ -1500,7 +1517,15 @@ class TxHtmlRenderer {
    */
   // eslint-disable-next-line no-unused-vars
   async renderConceptMap(json, inBundle, _fmt, op) {
-    if (inBundle || op) {
+    if (inBundle) {
+      // in a list of search results: a few elements, and its own page for more
+      const capped = capResourceCodes(json, MAX_CODES_IN_BUNDLE);
+      const more = capped.shown === capped.total || !json.id ? '' :
+        `<p><i>This shows the first ${capped.shown.toLocaleString('en-US')} of the ${capped.total.toLocaleString('en-US')} elements.</i> ` +
+        `The whole concept map is <a href="${escape(`${this.path}/ConceptMap/${encodeURIComponent(json.id)}?_format=html`)}">on its page</a>.</p>`;
+      return more + await this.renderResourceWithNarrative(json, await this.renderer.renderConceptMap(capped.resource));
+    }
+    if (op) {
       return await this.renderResourceWithNarrative(json, await this.renderer.renderConceptMap(json));
     } else {
       let html = `<ul class="nav nav-tabs">`;
@@ -2176,10 +2201,24 @@ class TxHtmlRenderer {
     if (capped.shown === capped.total) {
       return '';
     }
-    const href = json.id && json.resourceType
-      ? `${this.path}/${encodeURIComponent(json.resourceType)}/${encodeURIComponent(json.id)}?_format=${format}` : null;
+    const whole = this.wholeResourceLink(json, format, `as ${name}`);
     return `<p><i>This shows the first ${capped.shown.toLocaleString('en-US')} of the ${capped.total.toLocaleString('en-US')} codes.</i> ` +
-      (href ? `The whole ${escape(json.resourceType)} can be had <a href="${escape(href)}">as ${name}</a>.` : `The whole resource can be had as ${name}.`) + '</p>';
+      (whole ? `The whole ${escape(json.resourceType)} can be had <a href="${escape(whole.href)}">${escape(whole.label)}</a>.` : `The whole resource can be had as ${name}.`) + '</p>';
+  }
+
+  /**
+   * The link to the whole of a large resource, in JSON or XML, from the page that shows only
+   * part of it: {href, label}, or null when it has no id. For someone not logged in when
+   * auth.loginForExpensive is on, it goes through the login page ("(log in)"): the whole of a
+   * large code system is what the page is cut short to keep from crawlers. (The API itself still
+   * answers JSON to anyone; XML needs a login anyway)
+   */
+  wholeResourceLink(json, format, label) {
+    if (!json.id || !json.resourceType) {
+      return null;
+    }
+    const href = `${this.path}/${encodeURIComponent(json.resourceType)}/${encodeURIComponent(json.id)}?_format=${format}`;
+    return this.loginUrlFor ? { href: this.loginUrlFor(href), label: `${label} (log in)` } : { href, label };
   }
 
   convertResourceToXml(res) {

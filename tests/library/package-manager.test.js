@@ -304,7 +304,7 @@ const runTests = shouldRunSlowTests();
                 const packageDir = path.join(CACHE_FOLDER, result);
                 const files = await fs.readdir(path.join(packageDir, 'package'));
                 expect(files).toContain('package.json');
-            }, 30000);
+            }, 90000); // packages2.fhir.org, and the CDN it redirects to: a request may be tried twice
 
             test('should throw on duplicate fetch of same package', async () => {
                 const packageManager = new PackageManager(SERVERS, CACHE_FOLDER);
@@ -313,14 +313,14 @@ const runTests = shouldRunSlowTests();
                 await expect(
                     packageManager.fetchUrl(url)
                 ).rejects.toThrow(/already exists in cache/);
-            }, 30000);
+            }, 90000); // packages2.fhir.org, and the CDN it redirects to: a request may be tried twice
 
             test('should throw on invalid URL', async () => {
                 const packageManager = new PackageManager(SERVERS, CACHE_FOLDER);
                 await expect(
                     packageManager.fetchUrl('https://invalid.example.com/nonexistent/package.tgz')
                 ).rejects.toThrow();
-            }, 30000);
+            }, 90000); // packages2.fhir.org, and the CDN it redirects to: a request may be tried twice
         });
 
     });

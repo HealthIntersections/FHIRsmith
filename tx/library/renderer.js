@@ -72,6 +72,8 @@ class Renderer {
     this.conceptLimit = MAX_RENDERED_CONCEPTS;
     /** Where the whole code system can be had (as JSON) when its table is cut short; null for no link. */
     this.fullContentHref = null;
+    /** The text of that link (its page, when shown in a list of search results; "(log in)" when it needs one) */
+    this.fullContentLabel = 'as JSON';
     this._lastYield = performance.now();
   }
 
@@ -1019,7 +1021,7 @@ class Renderer {
       p.tx(' ');
       if (this.fullContentHref) {
         p.tx('The whole code system can be had ');
-        p.ah(this.fullContentHref).tx('as JSON');
+        p.ah(this.fullContentHref).tx(this.fullContentLabel || 'as JSON');
         p.tx('.');
       } else {
         p.tx('The whole code system can be had as JSON.');
