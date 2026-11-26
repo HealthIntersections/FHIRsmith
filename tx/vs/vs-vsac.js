@@ -21,6 +21,9 @@ const VSAC_PENDING_PROGRESS_KEY = 'vsac_pending_progress';
 // The longest delay a Node timer accepts; a longer one fires after 1 ms.
 const MAX_TIMER_MS = 2 ** 31 - 1;
 
+// how long scanAllValueSets goes before it lets other work run (a real turn of the event loop)
+const SCAN_YIELD_MS = 25;
+
 // A follower (cluster.md) compares its generation with the database's at most this often,
 // when a request uses the value sets
 const GENERATION_CHECK_MS = 1000;
@@ -1133,13 +1136,34 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
     return await this.database.listAllValueSets();
   }
 
+  /**
+   * Changes when the value sets scanAllValueSets reads may have changed: the database's
+   * generation (a sync moves it, in a cluster) and when the last sync began. For what is worked
+   * out from a scan and kept (the problems page)
+   * @returns {Promise<string>}
+   */
+  async scanSignature() {
+    if (this._followerHasNoDatabase()) {
+      return 'none';
+    }
+    let generation;
+    try {
+      generation = await this.database.getGeneration();
+    } catch (e) {
+      generation = 'unknown';
+    }
+    return `${generation}|${this.lastRefresh ? this.lastRefresh.getTime() : ''}`;
+  }
+
   async scanAllValueSets(fn) {
     if (this._followerHasNoDatabase()) {
       return;
     }
-    // the latest version of each url, once (read in batches)
+    // the latest version of each url, once (read in batches), on a connection of the scan's
+    // own; each value set is made from its row as the scan comes to it, letting other work run
+    // every SCAN_YIELD_MS
     const versions = new Map();
-    for (const row of await this.database.listVersions(null)) {
+    for (const row of await this.database.listVersionsForScan()) {
       let map = versions.get(row.url);
       if (!map) {
         map = new Map();
@@ -1148,11 +1172,17 @@ class VSACValueSetProvider extends AbstractValueSetProvider {
       this.database.addToMap(map, row.id, row.url, row.version, row);
     }
     const urls = [...versions.keys()].sort();
+    let lastYield = performance.now();
     for (let i = 0; i < urls.length; i += 500) {
       const batch = urls.slice(i, i + 500).map(url => ({ url, row: this._findVersion(versions.get(url), url) }));
-      const valueSets = await this.database.loadValueSets(batch.map(b => b.row.id), this.sourcePackage());
+      const rows = await this.database.readRowsForScan(batch.map(b => b.row.id));
       for (const b of batch) {
-        let vs = valueSets.get(b.row.id);
+        if (performance.now() - lastYield >= SCAN_YIELD_MS) {
+          await new Promise(resolve => setImmediate(resolve));
+          lastYield = performance.now();
+        }
+        const row = rows.get(b.row.id);
+        let vs = row ? this.database.valueSetFromRow(row, this.sourcePackage()) : null;
         if (vs) {
           this._prepare(vs);
         } else {

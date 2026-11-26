@@ -98,7 +98,7 @@
       <tbody>
       {%- for r in view.table.rows %}
         <tr>{% for c in r.cells %}<td{% if c.num %} class="fs-num"{% endif %}>
-          {%- if forloop.first %}<span class="fs-status-swatch{% if r.swatch.striped %} fs-status-striped{% endif %}" style="background-color:{{ r.swatch.color }}"></span>{% endif -%}
+          {%- if forloop.first and r.swatch %}<span class="fs-status-swatch{% if r.swatch.striped %} fs-status-striped{% endif %}" style="background-color:{{ r.swatch.color }}"></span>{% endif -%}
           {%- if c.pills %}{% for p in c.pills %}<span class="fs-status-pill{% if p.quiet %} fs-quiet{% endif %}">{{ p.text | escape }}</span>{% endfor %}{% else %}{{ c.text | escape }}{% endif -%}
         </td>{% endfor %}</tr>
       {%- endfor %}

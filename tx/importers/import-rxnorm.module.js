@@ -44,7 +44,7 @@ class RxNormModule extends BaseTerminologyModule {
       .description('Import RxNorm data from source directory')
       .option('-s, --source <directory>', 'Source directory containing RRF files')
       .option('-d, --dest <file>', 'Destination SQLite database')
-      .option('-v, --version <version>', 'RxNorm version identifier')
+      .option('-v, --version <version>', 'RxNorm version (MMDDYYYY, e.g. 10052026); default: from the source path')
       .option('-y, --yes', 'Skip confirmations')
       .option('--no-indexes', 'Skip index creation for faster import')
       .option('--no-stems', 'Skip the text index (text filters won\'t work) for faster import')
@@ -117,17 +117,10 @@ class RxNormModule extends BaseTerminologyModule {
   }
 
   detectVersionFromPath(sourcePath) {
-    // Try to extract version from path like "RxNorm_full_08042025"
-    const pathMatch = sourcePath.match(/RxNorm_full_(\d{8})/);
-    if (pathMatch) {
-      const dateStr = pathMatch[1];
-      // Convert MMDDYYYY to YYYY-MM-DD format
-      const month = dateStr.substring(0, 2);
-      const day = dateStr.substring(2, 4);
-      const year = dateStr.substring(4, 8);
-      return `RXNORM-${year}-${month}-${day}`;
-    }
-    return 'RXNORM-UNKNOWN';
+    // RxNorm names its releases RxNorm_full_MMDDYYYY, and the provider reports
+    // the version in that form (MMDDYYYY - see RxNormServices.describeVersion)
+    const pathMatch = sourcePath.match(/RxNorm_full_(\d{8})/i);
+    return pathMatch ? pathMatch[1] : null;
   }
 
   async confirmImport(config) {
@@ -534,6 +527,7 @@ class RxNormImporter {
       await this.loadRXNCONSO(db);
       await this.loadRXNREL(db);
       await this.loadRXNSTY(db);
+      await this.saveVersion(db);
 
       if (this.options.createStems) {
         // the text index, from what's now in RXNCONSO (rxnorm-text-index.js)
@@ -545,6 +539,16 @@ class RxNormImporter {
     } finally {
       await this.closeDatabase(db);
     }
+  }
+
+  async saveVersion(db) {
+    if (!this.version) {
+      if (this.options.verbose) terminal.warn('No RxNorm version given or found in the source path; the server will take it from the file name');
+      return;
+    }
+    await new Promise((resolve, reject) => {
+      db.run('INSERT INTO RXNVer (version) VALUES (?)', [this.version], (err) => err ? reject(err) : resolve());
+    });
   }
 
   async checkFiles() {
@@ -571,6 +575,10 @@ class RxNormImporter {
       'DROP TABLE IF EXISTS RXNATOMARCHIVE',
       'DROP TABLE IF EXISTS RXNCUI',
       'DROP TABLE IF EXISTS RXNSAB',
+      'DROP TABLE IF EXISTS RXNVer',
+
+      // the release this database was built from (MMDDYYYY); the provider reads it
+      `CREATE TABLE RXNVer (version TEXT)`,
 
       // Create RXNCONSO table
       `CREATE TABLE RXNCONSO (

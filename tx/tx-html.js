@@ -344,6 +344,9 @@ class TxHtmlRenderer {
   languages;
   i18n;
   path;
+  // for someone not logged in when auth.loginForExpensive is on: path -> the login page that
+  // comes back to it, for the links past what they may see (tx.js sets it); else null
+  loginUrlFor = null;
 
   constructor(renderer, liquid, languages, i18n, path) {
     this.renderer = renderer;
@@ -758,6 +761,13 @@ class TxHtmlRenderer {
       this.renderer.showAllCodesHref = url.pathname + url.search;
     } else {
       this.renderer.showAllCodesHref = null;
+    }
+    // someone not logged in (auth.loginForExpensive): Show all needs a login first
+    if (this.loginUrlFor && this.renderer.showAllCodesHref) {
+      this.renderer.showAllCodesHref = this.loginUrlFor(this.renderer.showAllCodesHref);
+      this.renderer.showAllLabel = 'Show all (log in)';
+    } else {
+      this.renderer.showAllLabel = 'Show all';
     }
   }
 
@@ -2002,12 +2012,20 @@ class TxHtmlRenderer {
       const link = links.find(l => l.relation === rel);
       if (link) {
         const isDisabled = rel === 'self';
-        const label = rel.charAt(0).toUpperCase() + rel.slice(1);
+        let label = rel.charAt(0).toUpperCase() + rel.slice(1);
+        let href = link.url;
+        // someone not logged in sees only the first page (auth.loginForExpensive): the links
+        // past it go to the login page, which comes back to them
+        if (this.loginUrlFor && (rel === 'next' || rel === 'last' || rel === 'previous')) {
+          const url = new URL(link.url, 'http://localhost');
+          href = this.loginUrlFor(url.pathname + url.search);
+          label += ' (log in)';
+        }
 
         if (isDisabled) {
           html += `<li class="page-item active"><span class="page-link">${escape(label)}</span></li>`;
         } else {
-          html += `<li class="page-item"><a class="page-link" href="${escape(link.url)}">${escape(label)}</a></li>`;
+          html += `<li class="page-item"><a class="page-link" href="${escape(href)}">${escape(label)}</a></li>`;
         }
       }
     }

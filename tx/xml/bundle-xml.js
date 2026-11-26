@@ -103,7 +103,7 @@ class BundleXML extends FhirXmlBase {
         content += this.renderMeta(json.meta, 1);
       } else {
         // Generic element handling
-        content += this.renderElement(key, json[key], 1);
+        content += this.renderElement(key, json[key], 1, json['_' + key]);
       }
     }
 

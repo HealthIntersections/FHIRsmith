@@ -85,7 +85,18 @@
     // failed logins (and password link requests) allowed per IP per 15 minutes
     "loginAttemptsPerWindow": 20,
     // requests a minute per IP that bring a login or an API token (anonymous ones aren't counted)
-    "requestsPerMinute": 1000
+    "requestsPerMinute": 1000,
+    // the expensive things need someone logged in (any account): XML from the terminology API,
+    // search results past the first page, Show all, big expansions in the web pages, a filtered
+    // XIG list past its first page (library/auth/README.md, "Login for expensive operations")
+    "loginForExpensive": false,
+    // with it, the most rows of an expansion someone not logged in is shown
+    "anonymousMaxRows": 1000,
+    // the terminology API needs a token from old versions of the FHIR validator and IG Publisher:
+    // true, those that don't say their version; or a version ("7.0.8"), those and any older
+    "loginForOldTools": false,
+    // ... and from any other software
+    "loginForOtherClients": false
   },
   // The key store (library/keystore/README.md): public keys anyone can see at /keys (and as a
   // JWKS), and the key pairs the server holds for users and for itself, to sign with when a
@@ -192,8 +203,7 @@
       // time; the crawler writes through another). 0: everything through the one. Optional; 4
       "readConnections": 4,
       "mirrorPath": "/absolute/path/to/mirror",
-      // POST /packages/crawl, which triggers a full registry crawl on demand, is for users with
-      // the packages "crawl" role, with an API token (Authorization: Bearer, or x-crawl-token).
+      // a crawl on demand is started by the server's administrators, logged in, on /packages/log.
       // The scheduled crawler below is unaffected either way.
       "crawler": {
         "enabled": true,
@@ -341,6 +351,8 @@
       // which apply when a limit is left out or null; 0 = no limit. Logged at startup ("Limits: ...")
       // concepts one client side cache may hold; more is refused with 422 too-costly
       "cacheMaxConcepts": 250000,
+      // ... for a client logged in (an API token): never less than cacheMaxConcepts
+      "cacheMaxConceptsLoggedIn": 250000,
       // concepts an endpoint's client side caches hold between them; the least recently used
       // caches are dropped (their cache-id then gets a 404 cache-id-unknown)
       "cacheMaxTotalConcepts": 1000000,
@@ -413,6 +425,10 @@
       // most XML and JSON, in MB, kept per process for large resources (0: none; default 256).
       // Counted in characters: text outside Latin-1 takes two bytes each, so up to twice this
       // "xmlCacheMB": 256,
+      // how XML is written and read: "model" (the converter driven by the core
+      // StructureDefinitions, shared with the rest module), "legacy" (the classes in tx/xml) or
+      // "compare" (legacy, logging where the converter differs). Optional; this is the default
+      // "xmlConverter": "model",
       // how many connections to the LOINC database the requests share (each runs one query at
       // a time); 0: each request opens its own. Optional; this is the default
       // "loincConnections": 4,

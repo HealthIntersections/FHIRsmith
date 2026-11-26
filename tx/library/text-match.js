@@ -115,12 +115,38 @@ function words(text) {
   return fold(text).match(WORD_RE) || [];
 }
 
+// The same words are stemmed over and over (each description of each concept a filter matches,
+// as the matches are ranked), and a stemmer works through a string of regular expressions for
+// each: on tx.fhir.org (2026-11-25) ranking the SNOMED CT matches for "Penicillin" held the
+// event loop for 2.5 s, mostly in the Porter stemmer. So stems are kept, up to STEM_CACHE_MAX
+// words a language (then the language's are dropped, and kept again from there)
+const STEM_CACHE_MAX = 50000;
+const stemCaches = new Map(); // language -> Map(word -> stem)
+
 /**
  * The stem of a (folded) word in a language
  */
 function stem(word, lang) {
+  const language = languageOf(lang);
+  let cache = stemCaches.get(language);
+  if (!cache) {
+    cache = new Map();
+    stemCaches.set(language, cache);
+  }
+  let result = cache.get(word);
+  if (result === undefined) {
+    result = stemWord(word, language);
+    if (cache.size >= STEM_CACHE_MAX) {
+      cache.clear();
+    }
+    cache.set(word, result);
+  }
+  return result;
+}
+
+function stemWord(word, language) {
   try {
-    return stemmerFor(lang).stem(word) || word;
+    return stemmerFor(language).stem(word) || word;
   } catch (e) {
     return word; // a stemmer that can't cope with a word in another script
   }

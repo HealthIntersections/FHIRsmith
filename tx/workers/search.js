@@ -43,6 +43,10 @@ class SearchWorker extends TerminologyWorker {
   ];
 
   // Summary elements for _summary=true (marked elements per resource type)
+  // a page of search results in the web pages (an API client gets 1000 at a time); someone not
+  // logged in sees only the first, of this size, when auth.loginForExpensive is on
+  static HTML_PAGE_SIZE = 20;
+
   static SUMMARY_ELEMENTS = {
     CodeSystem: ['meta', 'url', 'version', 'name', 'title', 'status', 'experimental', 'date', 'publisher', 'description', 'jurisdiction', 'content'],
     ValueSet: ['meta', 'url', 'version', 'name', 'title', 'status', 'experimental', 'date', 'publisher', 'description', 'jurisdiction'],
@@ -91,7 +95,7 @@ class SearchWorker extends TerminologyWorker {
       // (20), while API clients (json/xml) get big ones (1000) - they just want
       // the data, and small pages make crawlers (e.g. the tx registry) painfully
       // slow. An explicit _count always wins, subject to the caps.
-      const defaultCount = acceptsHtml(req) ? 20 : 1000;
+      const defaultCount = acceptsHtml(req) ? SearchWorker.HTML_PAGE_SIZE : 1000;
       const count = summary === 'count' ? 0 : Math.min(elements ? 2000 : 200, params._count && Utilities.isInteger(params._count) ? parseInt(params._count) : defaultCount);
       const sort = params._sort || "id";
 
