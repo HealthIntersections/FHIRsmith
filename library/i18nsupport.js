@@ -2,7 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const { getProperties } = require("properties-file");
 const {validateParameter} = require("./utilities");
-const {LanguageDefinitions} = require("./languages");
+const {LanguageDefinitions, Languages} = require("./languages");
 
 /**
  * Internationalization support for loading Java properties files
@@ -21,13 +21,20 @@ class I18nSupport {
    * Load all available message bundles from the translations directory
    */
   async load() {
-    await this._loadResourceBundle(this.bundles, 'Messages');
-    await this._loadResourceBundle(this.phrases, 'rendering-phrases');
+    this.loadSync();
   }
 
-  async _loadResourceBundle(bundles, name) {
+  /**
+   * load(), for code that can't wait (the files are read synchronously either way)
+   */
+  loadSync() {
+    this._loadResourceBundle(this.bundles, 'Messages');
+    this._loadResourceBundle(this.phrases, 'rendering-phrases');
+  }
+
+  _loadResourceBundle(bundles, name) {
     // Load default Messages.properties first
-    await this._loadBundle(bundles, 'en', name+'.properties');
+    this._loadBundle(bundles, 'en', name+'.properties');
 
     // Scan for Messages_*.properties files
     try {
@@ -42,7 +49,7 @@ class I18nSupport {
           .substring((name + '_').length, file.length - '.properties'.length)
           .replace(/_/g, '-');
 
-        await this._loadBundle(bundles, langCode, file);
+        this._loadBundle(bundles, langCode, file);
       }
     } catch (error) {
       throw new Error(`Failed to scan translations directory: ${error.message}`);
@@ -52,7 +59,7 @@ class I18nSupport {
   /**
    * Load a specific message bundle file
    */
-  async _loadBundle(bundles, langCode, filename) {
+  _loadBundle(bundles, langCode, filename) {
     try {
       const filePath = path.join(this.translationsPath, filename);
       const content = fs.readFileSync(filePath, 'utf8');
@@ -275,7 +282,37 @@ function englishMessage(messageId, parameters = []) {
   return I18nSupport.prototype._substituteParameters(message.trim(), parameters).replaceAll("''", "'");
 }
 
+let shared = null;
+
+/**
+ * A message from translations/Messages*.properties in the request's language (its
+ * Accept-Language header; English when it has none, or the message isn't translated), for
+ * code with no I18nSupport of its own to hand. The bundles are loaded on the first use.
+ * @param {string} [acceptLanguage] - the request's Accept-Language header
+ * @param {string} messageId
+ * @param {Array} [parameters]
+ */
+function requestMessage(acceptLanguage, messageId, parameters = []) {
+  if (!shared) {
+    const i18n = new I18nSupport(path.join(__dirname, '..', 'translations'), new LanguageDefinitions());
+    i18n.loadSync();
+    shared = i18n;
+  }
+  // (the tags are only broken into parts, not checked against the registry: a tag this can't
+  // read leaves the message in English)
+  let languages = null;
+  if (typeof acceptLanguage === 'string' && acceptLanguage.trim()) {
+    try {
+      languages = Languages.fromAcceptLanguage(acceptLanguage, null, false);
+    } catch {
+      languages = null;
+    }
+  }
+  return shared.translate(messageId, languages, parameters);
+}
+
 module.exports = {
   I18nSupport,
-  englishMessage
+  englishMessage,
+  requestMessage
 };
