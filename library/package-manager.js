@@ -634,16 +634,27 @@ class PackageManager {
      */
     async fetchFromServer(server, packageId, version) {
         const url = `${server}/${packageId}/${version}`;
+        const get = () => axios.get(url, {
+            headers: {
+                'Accept': 'application/tar+gzip'
+            },
+            responseType: 'arraybuffer',
+            maxRedirects: 5
+        });
 
         try {
-            const response = await axios.get(url, {
-                headers: {
-                    'Accept': 'application/tar+gzip'
-                },
-                responseType: 'arraybuffer',
-                maxRedirects: 5
-            });
-
+            let response;
+            try {
+                response = await get();
+            } catch (error) {
+                // a failure on the way (DNS - EAI_AGAIN for packages-cdn.fhir.org on CI -, a dropped
+                // connection, a 5xx) is tried once more after a second, as fetchFromUrlSpecific does
+                if (!PackageManager.isTransientFetchError(error)) {
+                    throw error;
+                }
+                await new Promise(resolve => setTimeout(resolve, CIBuildClient.FETCH_RETRY_MS));
+                response = await get();
+            }
             return Buffer.from(response.data);
         } catch (error) {
             if (error.response?.status === 404) {
@@ -651,6 +662,19 @@ class PackageManager {
             }
             throw new Error(`HTTP ${error.response?.status || 'error'} from ${server}: ${error.message}`);
         }
+    }
+
+    /**
+     * Whether an axios error is one worth trying again: no answer at all (DNS, connection refused
+     * or reset, timeout), or a 5xx. A 4xx is an answer, and won't change
+     * @param {Error} error - axios error
+     * @returns {boolean}
+     */
+    static isTransientFetchError(error) {
+        if (error.response) {
+            return error.response.status >= 500;
+        }
+        return !!error.request || !!error.code;
     }
 
     /**

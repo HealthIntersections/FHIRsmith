@@ -4,7 +4,9 @@
 // running while the download was under way, and named the wrong URL when it went off
 
 const http = require('http');
-const { CIBuildClient } = require('../../library/package-manager');
+const { CIBuildClient, PackageManager } = require('../../library/package-manager');
+const os = require('os');
+const path = require('path');
 
 describe('fetching a package from a URL', () => {
   let server;
@@ -101,5 +103,46 @@ describe('fetching a package from a URL', () => {
     await expect(new CIBuildClient().fetchFromUrlSpecific(`${base}/packages/missing`)).rejects.toThrow('HTTP 404');
     expect(hits['/packages/missing']).toBe(1);
     await expect(new CIBuildClient().fetchFromUrlSpecific(`${base}/packages/loop`)).rejects.toThrow('more than 5 redirects');
+  });
+
+  // the package servers path (PackageManager.fetchFromServer, axios): on CI
+  // "getaddrinfo EAI_AGAIN packages-cdn.fhir.org" failed a test now and again
+  routes['/srv/flaky/1.0.0'] = (req, res, n) => {
+    if (n === 1) {
+      res.statusCode = 503;
+      res.end();
+      return;
+    }
+    res.writeHead(200);
+    res.end('package');
+  };
+  routes['/srv/drops/1.0.0'] = (req, res, n) => {
+    if (n === 1) {
+      req.socket.destroy();
+      return;
+    }
+    res.writeHead(200);
+    res.end('package');
+  };
+  routes['/srv/gone/1.0.0'] = (req, res) => {
+    res.statusCode = 404;
+    res.end();
+  };
+
+  const packageManager = () => new PackageManager([`${base}/srv`], path.join(os.tmpdir(), 'fhirsmith-package-fetch-test'));
+
+  test('a package server\'s 5xx or dropped connection is tried once more; a 404 isn\'t', async () => {
+    expect((await packageManager().fetchFromServer(`${base}/srv`, 'flaky', '1.0.0')).toString()).toBe('package');
+    expect(hits['/srv/flaky/1.0.0']).toBe(2);
+    expect((await packageManager().fetchFromServer(`${base}/srv`, 'drops', '1.0.0')).toString()).toBe('package');
+    expect(hits['/srv/drops/1.0.0']).toBe(2);
+    await expect(packageManager().fetchFromServer(`${base}/srv`, 'gone', '1.0.0')).rejects.toThrow('not found');
+    expect(hits['/srv/gone/1.0.0']).toBe(1);
+  });
+
+  test('a name that doesn\'t resolve is tried once more', () => {
+    expect(PackageManager.isTransientFetchError(Object.assign(new Error('getaddrinfo EAI_AGAIN packages-cdn.fhir.org'), { code: 'EAI_AGAIN' }))).toBe(true);
+    expect(PackageManager.isTransientFetchError(Object.assign(new Error('x'), { response: { status: 403 } }))).toBe(false);
+    expect(PackageManager.isTransientFetchError(Object.assign(new Error('x'), { response: { status: 502 } }))).toBe(true);
   });
 });
