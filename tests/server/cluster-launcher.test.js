@@ -324,6 +324,27 @@ describe('routing rules', () => {
     expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneMinBytes: -1 } } })).toThrow(/heavyLaneMinBytes must be a whole number/);
     expect(() => loadSettings([], {}, { ...config, server: { cluster: { heavyLaneProcesses: 'one' } } })).toThrow(/heavyLaneProcesses must be a whole number/);
   });
+
+  test('with the rest module, a jobs process: started after the master, on the port after the workers, never routed to', () => {
+    const config = { server: { port: 20000, cluster: { workers: 2 } },
+      modules: { tx: { enabled: true, instanceCode: 'main', endpoints: [{ path: '/r4/' }] }, rest: { enabled: true, endpoints: [] } } };
+    const s = loadSettings([], {}, config);
+    expect(s.procs.map(p => [p.code, p.role, p.port, p.servesTx])).toEqual([
+      ['main', 'master', 20001, true], ['j1', 'jobs', 20004, false], ['tx1', 'tx-worker', 20002, true], ['tx2', 'tx-worker', 20003, true]]);
+    // it reaches a terminology server on this server through the launcher's port
+    expect(s.procs[1].env).toEqual({ FHIRSMITH_FRONT_DOOR: 'http://127.0.0.1:20000' });
+    // no request goes to it: the master's paths go to the master, tx ones to the tx processes
+    for (const url of ['/', '/r4/metadata', '/r4/ValueSet/$expand']) {
+      const target = pickTarget(classify(url, {}, s.txPaths), s.procs.map(p => ({ ...p, ready: true, outstanding: 0 })));
+      expect(target.role).not.toBe('jobs');
+    }
+    // server.cluster.jobsProcess false: none (the master runs the jobs)
+    expect(loadSettings([], {}, { ...config, server: { cluster: { workers: 2, jobsProcess: false } } }).procs.map(p => p.role)).toEqual(['master', 'tx-worker', 'tx-worker']);
+    expect(() => loadSettings([], {}, { ...config, server: { cluster: { jobsProcess: 'yes' } } })).toThrow(/jobsProcess must be true or false/);
+    // its port counts among the internal ones
+    expect(() => loadSettings([], {}, { ...config, server: { port: 20003, cluster: { internalPort: 20000, workers: 2 } } })).toThrow(/public port 20003 is one of the internal ports 20000-20003/);
+    expect(() => loadSettings([], {}, { ...config, modules: { ...config.modules, tx: { ...config.modules.tx, instanceCode: 'j1' } } })).toThrow(/also the code of the jobs process/);
+  });
 });
 
 describe('the launcher, with fake processes', () => {

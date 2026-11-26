@@ -235,15 +235,37 @@ describe('UCUM Library Tests', () => {
         expect(result.asDecimal()).toBe('1609'); // Due to precision in UCUM
       });
 
-      test('should throw error for temperature conversions with offset (Issue 22)', () => {
-        // Temperature conversions with offset should throw exceptions
-        expect(() => {
-          ucumService.convert(new Decimal('100', 15), 'Cel', 'K');
-        }).toThrow(UcumException);
+      test('temperatures on scales with an offset from zero (Issue 22)', () => {
+        const conv = (v, a, b) => Number(ucumService.convert(new Decimal(v, 15), a, b).asDecimal());
+        expect(conv('100', 'Cel', 'K')).toBeCloseTo(373.15, 10);
+        expect(conv('100', '[degF]', 'Cel')).toBeCloseTo(37.7777777778, 9);
+        expect(conv('-40', 'Cel', '[degF]')).toBeCloseTo(-40, 10);
+        expect(conv('373.15', 'K', 'Cel')).toBeCloseTo(100, 10);
+        expect(conv('80', '[degRe]', 'Cel')).toBeCloseTo(100, 10);
+        expect(conv('0', 'K', '[degF]')).toBeCloseTo(-459.67, 10);
+        expect(conv('37', 'Cel', 'Cel')).toBe(37);
+        // as part of a larger unit, the offset can't be applied to a value
+        expect(() => ucumService.convert(new Decimal('1', 15), 'Cel/h', 'K/h')).toThrow(UcumException);
+        expect(() => ucumService.convert(new Decimal('1', 15), 'Cel', 'm')).toThrow(UcumException);
+      });
 
-        expect(() => {
-          ucumService.convert(new Decimal('100', 15), '[degF]', 'Cel');
-        }).toThrow(UcumException);
+      test('temperatures with an offset in canonical form, and their units', () => {
+        const canon = (v, c) => {
+          const p = ucumService.getCanonicalForm(new Pair(new Decimal(v), c));
+          return [Number(p.getValue().asDecimal()), p.getCode()];
+        };
+        const [c, cu] = canon('37', 'Cel');
+        expect(cu).toBe('K');
+        expect(c).toBeCloseTo(310.15, 10);
+        const [f, fu] = canon('98.6', '[degF]');
+        expect(fu).toBe('K');
+        expect(f).toBeCloseTo(310.15, 10);
+        expect(ucumService.getCanonicalForm(new Pair(null, 'Cel')).getCode()).toBe('K');
+        expect(ucumService.getCanonicalUnits('Cel')).toBe('K');
+        expect(ucumService.getCanonicalUnits('[degF]')).toBe('K');
+        expect(ucumService.isComparable('Cel', '[degF]')).toBe(true);
+        expect(ucumService.isComparable('Cel', 'kg')).toBe(false);
+        expect(() => ucumService.getCanonicalForm(new Pair(new Decimal('1'), 'Cel/h'))).toThrow(UcumException);
       });
 
       test('should throw error for Ga conversion (Issue 13)', () => {
@@ -372,8 +394,6 @@ describe('UCUM Library Tests', () => {
       test('should get canonical forms for common units', () => {
         const testUnits = commonUnits.filter(cu =>
           cu.unit !== 'dB' && // Skip dB as it has special handling
-          cu.unit !== 'Cel' && // Skip temperature units
-          cu.unit !== '[degF]' &&
           cu.unit !== '[pH]'
         );
 
@@ -391,8 +411,6 @@ describe('UCUM Library Tests', () => {
         const ONE = new Decimal('1', 15);
         const testUnits = commonUnits.filter(cu =>
           cu.unit !== 'dB' && // Skip problematic units
-          cu.unit !== 'Cel' &&
-          cu.unit !== '[degF]' &&
           cu.unit !== '[pH]'
         );
 

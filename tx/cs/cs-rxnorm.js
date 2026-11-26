@@ -962,27 +962,43 @@ class RxNormTypeServicesFactory extends CodeSystemFactoryProvider {
     return current;
   }
 
+  /**
+   * The RxNorm version (MMDDYYYY) from a database file name: the digits after the last '_',
+   * less any '-suffix' and the extension. Accepts MMDDYYYY (rxnorm_03022026.db) and
+   * YYYYMMDD (rxnorm_20261005-a.cache). Returns '??' if there's no date there.
+   */
+  static versionFromFileName(fileName) {
+    let d = require('path').basename(fileName || '');
+    if (d.includes('.')) {
+      d = d.substring(0, d.indexOf('.'));
+    }
+    if (d.includes('_')) {
+      d = d.substring(d.lastIndexOf('_') + 1);
+    }
+    if (d.includes('-')) {
+      d = d.substring(0, d.indexOf('-'));
+    }
+    if (!/^\d{8}$/.test(d)) {
+      return '??';
+    }
+    const validMonth = (m) => m >= 1 && m <= 12;
+    if (validMonth(parseInt(d.substring(0, 2), 10))) {
+      return d; // MMDDYYYY
+    }
+    if (validMonth(parseInt(d.substring(4, 6), 10))) {
+      return d.substring(4, 6) + d.substring(6, 8) + d.substring(0, 4); // YYYYMMDD
+    }
+    return '??';
+  }
+
   async #readVersion(db) {
     return new Promise((resolve, reject) => {
       db.get('SELECT version FROM RXNVer', guarded(reject, (err, row) => {
         if (err || !row) {
-          // Fallback: try to extract version from database path
-          const dbDetails = this.dbPath;
-          let version = '??';
-
-          if (dbDetails.includes('.db')) {
-            let d = dbDetails.substring(0, dbDetails.indexOf('.db'));
-            if (d.includes('_')) {
-              d = d.substring(d.lastIndexOf('_') + 1);
-            }
-            if (d.includes('-')) {
-              d = d.substring(0, d.lastIndexOf('-'));
-            }
-            if (/^\d+$/.test(d)) {
-              version = d;
-            }
-          }
-          resolve(version);
+          // Fallback: no RXNVer table (the importer didn't write one before Nov 2026),
+          // so take the release date from the file name, e.g. rxnorm_03022026.db or
+          // rxnorm_20261005-a.cache. The version is MMDDYYYY, as RxNorm names its releases.
+          resolve(RxNormTypeServicesFactory.versionFromFileName(this.dbPath));
         } else {
           resolve(row.version.toString());
         }

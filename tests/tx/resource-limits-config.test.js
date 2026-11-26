@@ -14,6 +14,7 @@ const { LibraryFilterMemos } = require('../../tx/library/filter-memo');
 
 const DEFAULTS = {
   cacheMaxConcepts: ResourceCache.MAX_CONCEPTS_PER_CACHE,
+  cacheMaxConceptsLoggedIn: ResourceCache.MAX_CONCEPTS_PER_CACHE,
   cacheMaxTotalConcepts: ResourceCache.MAX_TOTAL_CONCEPTS,
   usageTrackerMaxCodes: ConceptUsageTracker.MAX_CODES,
   usageTrackerMaxCodeLength: ConceptUsageTracker.MAX_CODE_LENGTH,
@@ -25,15 +26,22 @@ describe('TXModule.resourceLimits', () => {
   test('left out or null = the default', () => {
     expect(TXModule.resourceLimits({})).toEqual(DEFAULTS);
     expect(TXModule.resourceLimits({ cacheMaxConcepts: null, languageTagCacheSize: undefined })).toEqual(DEFAULTS);
-    expect(DEFAULTS).toEqual({ cacheMaxConcepts: 250000, cacheMaxTotalConcepts: 1000000,
+    expect(DEFAULTS).toEqual({ cacheMaxConcepts: 250000, cacheMaxConceptsLoggedIn: 250000, cacheMaxTotalConcepts: 1000000,
       usageTrackerMaxCodes: 1000000, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000, filterMemoMaxConcepts: 10000000 });
   });
 
   test('set values are used; 0 = no limit; anything not a number = the default', () => {
     expect(TXModule.resourceLimits({ cacheMaxConcepts: 7, cacheMaxTotalConcepts: 0, usageTrackerMaxCodes: '3',
       usageTrackerMaxCodeLength: 'lots', languageTagCacheSize: -1, filterMemoMaxConcepts: 0 })).toEqual({ cacheMaxConcepts: 7,
-      cacheMaxTotalConcepts: Infinity, usageTrackerMaxCodes: 3, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000,
+      cacheMaxConceptsLoggedIn: 7, cacheMaxTotalConcepts: Infinity, usageTrackerMaxCodes: 3, usageTrackerMaxCodeLength: 100, languageTagCacheSize: 1000,
       filterMemoMaxConcepts: Infinity });
+  });
+
+  test('a client logged in may have a bigger cache, never a smaller one', () => {
+    expect(TXModule.resourceLimits({ cacheMaxConceptsLoggedIn: 500000 }).cacheMaxConceptsLoggedIn).toBe(500000);
+    expect(TXModule.resourceLimits({ cacheMaxConcepts: 100, cacheMaxConceptsLoggedIn: 50 }).cacheMaxConceptsLoggedIn).toBe(100);
+    expect(TXModule.resourceLimits({ cacheMaxConceptsLoggedIn: 0 }).cacheMaxConceptsLoggedIn).toBe(Infinity);
+    expect(TXModule.resourceLimits({ cacheMaxConcepts: 0 }).cacheMaxConceptsLoggedIn).toBe(Infinity);
   });
 
   test('no limit really is none', () => {
@@ -74,7 +82,7 @@ describe('the tx module applies the configured limits, and logs them', () => {
 
   test('one startup line gives them all', () => {
     expect(logged.filter(m => m.includes('Limits: '))).toEqual([expect.stringContaining(
-      'Limits: operationTimeLimit=20s, cacheTimeout=30min, cacheMaxConcepts=7, cacheMaxTotalConcepts=unlimited, ' +
+      'Limits: operationTimeLimit=20s, cacheTimeout=30min, cacheMaxConcepts=7, cacheMaxConceptsLoggedIn=7, cacheMaxTotalConcepts=unlimited, ' +
       'usageTrackerMaxCodes=3, usageTrackerMaxCodeLength=unlimited, languageTagCacheSize=5')]);
   });
 });

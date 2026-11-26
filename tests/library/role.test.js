@@ -1,4 +1,4 @@
-const { parseRole, applyRole, bindAddress, connectAddress } = require('../../library/role');
+const { parseRole, applyRole, describeRole, jobsProcess, runsRestJobs, bindAddress, connectAddress } = require('../../library/role');
 
 const baseConfig = () => ({
   server: { port: 3000, memory: { rejectFraction: 0.8 } },
@@ -75,6 +75,30 @@ describe('applyRole', () => {
     expect(config.stats).toEqual({ intervalMinutes: 5, sampleSeconds: 60, enabled: false });
     expect(config.npmAudit.enabled).toBe(false);
     expect(config.dailyReport.enabled).toBe(false);
+  });
+
+  test('jobs: the rest module only, no requests, its own instance code; the master leaves it the rest module\'s jobs', () => {
+    const withRest = () => ({ ...baseConfig(), modules: { ...baseConfig().modules, rest: { enabled: true, endpoints: [] } } });
+    const config = applyRole(withRest(), { role: 'jobs', instanceCode: 'j1' });
+    expect(config.modules.rest.enabled).toBe(true);
+    expect(config.modules.tx.enabled).toBe(false);
+    expect(config.modules.packages.enabled).toBe(false);
+    expect(config.modules.tx.instanceCode).toBe('j1');
+    expect(config.stats.enabled).toBe(false);
+    expect(() => applyRole(baseConfig(), { role: 'jobs', instanceCode: 'j1' })).toThrow(/the rest module must be enabled/);
+    expect(() => applyRole(withRest(), { role: 'jobs', instanceCode: null })).toThrow(/A jobs process needs its own instance code/);
+    expect(parseRole(['--role=jobs', '--instance-code=j1'], {})).toEqual({ role: 'jobs', instanceCode: 'j1', port: null });
+    // who runs the rest module's jobs: one process, never a tx-worker
+    expect(jobsProcess(withRest())).toBe(true);
+    expect(jobsProcess(baseConfig())).toBe(false);
+    expect(runsRestJobs(null, withRest())).toBe(true);
+    expect(runsRestJobs({ role: 'jobs' }, withRest())).toBe(true);
+    expect(runsRestJobs({ role: 'master' }, withRest())).toBe(false);
+    expect(runsRestJobs({ role: 'tx-worker' }, withRest())).toBe(false);
+    const noJobs = withRest();
+    noJobs.server = { ...(noJobs.server || {}), cluster: { jobsProcess: false } };
+    expect(runsRestJobs({ role: 'master' }, noJobs)).toBe(true);
+    expect(describeRole({ role: 'master' }, applyRole(withRest(), { role: 'master', instanceCode: null }))).toMatch(/in the jobs process/);
   });
 
   test('with a role the graphs sample at most every minute, unless stats.sampleSeconds says otherwise', () => {

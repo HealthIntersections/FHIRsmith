@@ -99,7 +99,7 @@ describe('the composer', () => {
     expect(m.patient).toEqual({ family: 'Smith', given: 'Jane A', gender: 'female', birthDate: '1970-05-06', identifier: 'MRN1', identifierSystem: 'urn:oid:1.2.3', phone: '123', email: 'j@x.org', address: '1 Collins St, Melbourne' });
     expect(m.document).toEqual({ title: 'My summary', date: '2026-10-22', authorType: 'Practitioner', author: 'Dr Jones', custodian: 'Acme' });
     expect(Object.keys(m.sections)).toEqual(['problems', 'allergies', 'medications', 'immunizations', 'procedures', 'devices', 'results', 'vitals', 'pastProblems', 'pregnancy', 'social', 'planOfCare', 'directives', 'alerts']);
-    expect(m.sections.problems.rows[0]).toEqual({ code: { system: SCT, code: '38341003', display: 'Hypertension', text: '' }, clinicalStatus: 'active', verificationStatus: 'confirmed', severity: { system: SCT, code: '6736007', display: 'Moderate', text: '' }, onset: '2015', bodySite: { system: '', code: '', display: '', text: 'arm' }, note: 'a note' });
+    expect(m.sections.problems.rows[0]).toEqual({ code: { system: SCT, code: '38341003', display: 'Hypertension', text: '' }, clinicalStatus: 'active', verificationStatus: 'confirmed', severity: { system: SCT, code: '6736007', display: 'Moderate', text: '' }, onset: '2015', bodySite: { system: '', code: '', display: '', text: 'arm' }, note: 'a note', recordedDate: expect.stringMatching(/^\d{4}-\d\d-\d\dT/) });
     expect(m.sections.allergies.rows[0].reactions).toEqual([{ manifestation: [{ system: SCT, code: '271807003', display: 'Rash', text: '' }], severity: 'moderate', onset: '2010-01-01' }]);
     expect(m.sections.medications.rows[0]).toMatchObject({ medication: { code: '108774000' }, status: 'active', start: '2015-03', reason: [{ text: 'cancer' }], dosage: '1 tablet daily', route: { code: '26643006' } });
     expect(m.sections.devices.rows[0]).toEqual({ device: 'Pacemaker', deviceType: 'cardiac', status: 'active', start: '2020' });
@@ -230,6 +230,23 @@ describe('choices and paragraphs', () => {
     // one of them is fine
     delete model.sections.results.rows[0].valueText;
     expect((await build(model, { now: new Date('2026-10-22T10:00:00Z') })).bundle).not.toBeNull();
+  });
+
+  test('a problem has a recordedDate: the one the form stamped, else the time it is built; one that isn\'t a dateTime is refused', async () => {
+    const model = fullModel();
+    let out = await build(model);
+    const recorded = out.bundle.entry.map(e => e.resource).find(r => r.resourceType === 'Condition').recordedDate;
+    expect(recorded).toMatch(/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d+)?Z$/);
+    model.sections.problems.rows[0].recordedDate = '2026-11-24T10:00:00.000Z';
+    out = await build(model);
+    expect(out.bundle.entry.map(e => e.resource).find(r => r.resourceType === 'Condition').recordedDate).toBe('2026-11-24T10:00:00.000Z');
+    expect(modelOf(out.bundle).sections.problems.rows[0].recordedDate).toBe('2026-11-24T10:00:00.000Z');
+    model.sections.problems.rows[0].recordedDate = 'yesterday';
+    out = await build(model);
+    expect(out.bundle).toBeNull();
+    expect(out.problems.join('; ')).toMatch(/Recorded is not valid/);
+    // the form doesn't show it
+    expect(SECTIONS.find(x => x.key === 'problems').fields.find(f => f.name === 'recordedDate')).toMatchObject({ hidden: true, stamp: true, type: 'datetime' });
   });
 
   test('paragraphs survive a round trip', () => {

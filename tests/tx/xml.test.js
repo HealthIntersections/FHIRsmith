@@ -39,10 +39,13 @@ describe('FhirXmlBase', () => {
         .toThrow(/U\+000B at offset 2/);
     });
 
-    test('should keep the whitespace XML does allow', () => {
+    test('should keep the whitespace XML does allow, as character references', () => {
+      // escapeXml makes attribute values, where an XML reader would turn a literal tab or
+      // line end into a space (and \r into \n): written as references, they survive
       const tab = String.fromCharCode(9), lf = String.fromCharCode(10), cr = String.fromCharCode(13);
       expect(FhirXmlBase.escapeXml('a' + tab + 'b' + lf + 'c' + cr + 'd'))
-        .toBe('a' + tab + 'b' + lf + 'c' + cr + 'd');
+        .toBe('a&#9;b&#10;c&#13;d');
+      expect(FhirXmlBase.unescapeXml('a&#9;b&#10;c&#13;d')).toBe('a' + tab + 'b' + lf + 'c' + cr + 'd');
       // DEL is legal in XML 1.0, unlike the C0 range
       const del = String.fromCharCode(127);
       expect(FhirXmlBase.escapeXml('a' + del + 'b')).toBe('a' + del + 'b');
@@ -54,6 +57,13 @@ describe('FhirXmlBase', () => {
       expect(FhirXmlBase.unescapeXml('a &amp; b')).toBe('a & b');
       expect(FhirXmlBase.unescapeXml('a &quot;b&quot; c')).toBe('a "b" c');
       expect(FhirXmlBase.unescapeXml("a &apos;b&apos; c")).toBe("a 'b' c");
+    });
+
+    test('should unescape character references, in one pass with the entities', () => {
+      expect(FhirXmlBase.unescapeXml('&#x41;&#66;&#x1F600;')).toBe('AB😀');
+      // &amp; once: &amp;#10; is the text &#10;
+      expect(FhirXmlBase.unescapeXml('&amp;#10;')).toBe('&#10;');
+      expect(() => FhirXmlBase.unescapeXml('&#1;')).toThrow(/not a character XML can carry/);
     });
 
     test('should generate correct indentation', () => {
@@ -846,5 +856,71 @@ describe('ConceptMapXML', () => {
       expect(result.group[0].element[0].target).toHaveLength(1);
       expect(result.group[0].element[0].target[0].code).toBe('X');
     });
+  });
+});
+describe('FHIR XML, as other FHIR tools write and read it', () => {
+  const XHTML = 'http://www.w3.org/1999/xhtml';
+
+  test('the narrative is XHTML, not a string in an attribute', () => {
+    const div = `<div xmlns="${XHTML}"><p class="x">Hi &amp; <b>bye</b><br/></p></div>`;
+    const vs = { resourceType: 'ValueSet', id: 'n', text: { status: 'generated', div }, status: 'active' };
+    const xml = ValueSetXML.toXml(vs, 4);
+    expect(xml).toContain(`<text>\n    <status value="generated"/>\n    ${div}\n  </text>`);
+    expect(ValueSetXML.fromXml(xml, 4).text.div).toBe(div);
+    // without the namespace: given it
+    expect(ValueSetXML.toXml({ ...vs, text: { status: 'generated', div: '<div>x</div>' } }, 4)).toContain(`<div xmlns="${XHTML}">x</div>`);
+    expect(() => ValueSetXML.toXml({ ...vs, text: { status: 'generated', div: '<div><p>x</div>' } }, 4)).toThrow(/not well-formed XHTML/);
+    expect(() => ValueSetXML.toXml({ ...vs, text: { status: 'generated', div: '<p>x</p>' } }, 4)).toThrow(/not a div/);
+  });
+
+  test('a narrative from elsewhere, empty or with whitespace and markup', () => {
+    const empty = ValueSetXML.fromXml(`<ValueSet xmlns="http://hl7.org/fhir"><text><status value="empty"/><div xmlns="${XHTML}"/></text></ValueSet>`, 4);
+    expect(empty.text.div).toBe(`<div xmlns="${XHTML}"/>`);
+    const d = `<div xmlns="${XHTML}">\n  <table><tr><td>a &lt; b</td></tr></table>\n</div>`;
+    expect(ValueSetXML.fromXml(`<ValueSet xmlns="http://hl7.org/fhir"><text><status value="generated"/>${d}</text></ValueSet>`, 4).text.div).toBe(d);
+  });
+
+  test('contained resources are in an element named for their type', () => {
+    const vs = { resourceType: 'ValueSet', id: 'c', contained: [{ resourceType: 'CodeSystem', id: 'cs', status: 'active', content: 'complete', concept: [{ code: 'a' }] }],
+      status: 'active', compose: { include: [{ system: '#cs' }] } };
+    const xml = ValueSetXML.toXml(vs, 4);
+    expect(xml).toMatch(/<contained>\s*<CodeSystem>\s*<id value="cs"\/>/);
+    expect(xml).not.toContain('resourceType');
+    expect(ValueSetXML.fromXml(xml, 4)).toEqual(vs);
+  });
+
+  test('a primitive\'s id and extensions (_name), on their own, in lists, and in extensions', () => {
+    const tr = (lang, s) => ({ extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/translation', extension: [{ url: 'lang', valueCode: lang }, { url: 'content', valueString: s }] }] });
+    const cs = {
+      resourceType: 'CodeSystem', id: 'p', status: 'active', content: 'complete',
+      description: 'English', _description: tr('nl', 'Nederlands'),
+      _publisher: { id: 'pub', extension: [{ url: 'http://hl7.org/fhir/StructureDefinition/data-absent-reason', valueCode: 'unknown' }] },
+      concept: [{ code: 'a', display: 'A', extension: [{ url: 'http://x/e', valueString: 'v', _valueString: tr('de', 'W') }] }]
+    };
+    const xml = CodeSystemXML.toXml(cs, 4);
+    expect(xml).toContain('<description value="English">');
+    expect(xml).toContain('<publisher id="pub">');
+    expect(CodeSystemXML.fromXml(xml, 4)).toEqual(cs);
+    // a list of primitives: the extensions in step with the values
+    const p = { resourceType: 'Parameters', parameter: [{ name: 'x', valueString: 'v' }] };
+    expect(ParametersXML.fromXml(ParametersXML.toXml(p, 4), 4)).toEqual(p);
+    const withList = { resourceType: 'ValueSet', status: 'active', compose: { include: [{ valueSet: ['http://a', 'http://b', 'http://c'],
+      _valueSet: [null, { id: 'b', extension: [{ url: 'http://x', valueBoolean: true }] }, null] }] } };
+    const back = ValueSetXML.fromXml(ValueSetXML.toXml(withList, 4), 4);
+    expect(back).toEqual(withList);
+  });
+
+  test('line ends and tabs in values survive', () => {
+    const cs = { resourceType: 'CodeSystem', status: 'active', content: 'complete', description: 'one\ntwo\r\nthree\tfour' };
+    const xml = CodeSystemXML.toXml(cs, 4);
+    expect(xml).toContain('<description value="one&#10;two&#13;&#10;three&#9;four"/>');
+    expect(CodeSystemXML.fromXml(xml, 4).description).toBe(cs.description);
+  });
+
+  test('elements that repeat in some places and not others', () => {
+    const cs = { resourceType: 'CodeSystem', status: 'active', content: 'complete', valueSet: 'http://vs' };
+    expect(CodeSystemXML.fromXml(CodeSystemXML.toXml(cs, 4), 4).valueSet).toBe('http://vs');
+    const vs = { resourceType: 'ValueSet', status: 'active', expansion: { identifier: 'urn:uuid:1', timestamp: '2026-01-01' } };
+    expect(ValueSetXML.fromXml(ValueSetXML.toXml(vs, 4), 4).expansion.identifier).toBe('urn:uuid:1');
   });
 });

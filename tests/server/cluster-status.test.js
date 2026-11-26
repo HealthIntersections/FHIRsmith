@@ -3,7 +3,7 @@
  * and the master's status table.
  */
 const { EventEmitter } = require('events');
-const { connectStatus, buildSnapshot, clusterView, processView, storageView, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
+const { connectStatus, buildSnapshot, clusterView, processView, storageView, jobsView, jobProblems, problems, clusterSummary, processSummary, PALETTE, STATUS, CLUSTER_STATUS } = require('../../library/cluster-status');
 
 const GiB = 2 ** 30;
 const MiB = 2 ** 20;
@@ -338,5 +338,82 @@ describe('the IPC channel', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('the rest module\'s background jobs (jobsView, jobProblems)', () => {
+  const now = 10 * 60 * 60 * 1000;
+  const task = (name, extra = {}) => ({ name, everyMs: 5000, runs: 12, failures: 0, running: null, lastAt: now - 3000, lastMs: 40, failing: false, lastError: null, lastErrorAt: null, ...extra });
+  const queues = (extra = {}) => ({
+    measuredAt: now - 2000, windowMs: 3600000,
+    async: { queued: 2, running: 1, failed: 1, oldestWaitingMs: 4000, waited: { count: 10, avg: 1200, p95: 3000, max: 4500 }, took: { count: 9, avg: 250, p95: 900, max: 1000 }, ...extra },
+    packages: { queued: 0, running: 0, oldestWaitingMs: null, lastWaitedMs: 2500, lastTookMs: 90000 },
+    reindex: { active: false }
+  });
+  const sources = (q = queues(), tasks = [task('closure update'), task('async requests')]) => [{ label: 'Jobs j1', jobs: [{ path: '/r4', tasks, queues: q }] }];
+
+  test('nothing to show: no panel', () => {
+    expect(jobsView([])).toBeNull();
+    expect(jobsView([{ label: 'Master m0', jobs: null }])).toBeNull();
+  });
+
+  test('the queues as tiles, the wait to be started first among the times; a row per task', () => {
+    const v = jobsView(sources(), { now });
+    expect(v.heading).toBe('Rest background jobs');
+    expect(v.meta[0]).toBe('Jobs j1');
+    const tile = (label) => v.tiles.find(t => t.label.startsWith(label));
+    expect(tile('Async queued').value).toBe('2');
+    expect(tile('Async queued').sub).toBe('1 running · oldest waiting 4.0 s');
+    expect(tile('Async wait to start').label).toBe('Async wait to start (last 1 h)');
+    expect(tile('Async wait to start').value).toBe('1.2 s');
+    expect(tile('Async wait to start').sub).toBe('avg of 10 · p95 3.0 s · max 4.5 s');
+    expect(tile('Async run time').value).toBe('250 ms');
+    expect(tile('Async failed').value).toBe('1');
+    expect(tile('Package loads').sub).toBe('0 loading · last waited 2.5 s');
+    expect(tile('Reindexing').value).toBe('idle');
+    expect(v.table.rows.map(r => r.cells[1].text)).toEqual(['closure update', 'async requests']);
+    expect(v.table.rows[0].cells.map(c => (c.pills ? c.pills[0].text : c.text))).toEqual(['/r4', 'closure update', 'idle', '5.0 s', '12', '3s ago', '40 ms', '0', '']);
+  });
+
+  test('two endpoints: counts summed, waits weighted, the worst p95 and max', () => {
+    const two = [{ label: 'Jobs j1', jobs: [{ path: '/r4', tasks: [], queues: queues() },
+      { path: '/r5', tasks: [], queues: queues({ waited: { count: 30, avg: 400, p95: 8000, max: 9000 }, queued: 1, oldestWaitingMs: 9000 }) }] }];
+    const v = jobsView(two, { now });
+    expect(v.tiles[0].value).toBe('3');
+    expect(v.tiles[0].sub).toBe('2 running · oldest waiting 9.0 s');
+    expect(v.tiles[1].value).toBe('600 ms');
+    expect(v.tiles[1].sub).toBe('avg of 40 · p95 8.0 s · max 9.0 s');
+  });
+
+  test('reindexing shows how far it has got; nothing started yet says so', () => {
+    const q = queues({ waited: null, took: null });
+    q.reindex = { active: true, all: true, parameters: 0, done: 0.42 };
+    const v = jobsView(sources(q), { now });
+    expect(v.tiles.find(t => t.label === 'Reindexing').value).toBe('42%');
+    expect(v.tiles[1].value).toBe('—');
+    expect(v.tiles[1].sub).toBe('none started');
+  });
+
+  test('problems: a task whose last run failed, and an async request waiting too long', () => {
+    expect(jobProblems(sources(), { now })).toEqual([]);
+    const failing = [task('closure update', { failing: true, failures: 3, lastError: 'the terminology server didn\'t answer', lastErrorAt: now - 120000 })];
+    expect(jobProblems(sources(queues({ oldestWaitingMs: 6 * 60000 })), { now }).length).toBe(1);
+    const list = jobProblems(sources(queues({ oldestWaitingMs: 6 * 60000 }), failing), { now });
+    expect(list).toEqual(['Rest /r4: closure update failed 2m 0s ago: the terminology server didn\'t answer',
+      'Rest /r4: an async request has waited 6m 0s to be started (2 queued)']);
+    const v = jobsView(sources(queues(), failing), { now });
+    expect(v.table.rows[0].cells[2].pills[0].text).toBe('failing');
+    expect(v.table.rows[0].cells[8].text).toBe('the terminology server didn\'t answer (2m 0s ago)');
+  });
+
+  test('the snapshot carries a process\'s jobs while its figures are fresh; the jobs process has no cache figures', () => {
+    const base = { now, intervalMs: 15000, launcher: { startedAt: now - 1000, requests: 0, memory: null }, guard: { limit: 0 }, cgroup: null };
+    const figures = { time: now - 1000, requests: 0, clientCaches: 0, clientConcepts: 0, expansionItems: 0, jobs: [{ path: '/r4', tasks: [], queues: null }] };
+    const s = buildSnapshot({ ...base, procs: [{ code: 'j1', role: 'jobs', status: 'ready', startedAt: now - 5000, figures, memory: null }] });
+    expect(s.processes[0].label).toBe('Jobs j1');
+    expect(s.processes[0].jobs).toEqual(figures.jobs);
+    expect(s.processes[0].clientCaches).toBeNull();
+    const old = buildSnapshot({ ...base, procs: [{ code: 'j1', role: 'jobs', status: 'ready', startedAt: now - 5000, figures: { ...figures, time: now - 10 * 60000 }, memory: null }] });
+    expect(old.processes[0].jobs).toBeNull();
   });
 });
