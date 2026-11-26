@@ -681,6 +681,19 @@ function checkGuides(list, previous = null) {
       used.add(linkId);
       questions.push({ linkId, text, type, definition, answers, units });
     });
+    // what a guide with answers needs: a resource to make, a yes/no first question (the one that
+    // decides - the only kind there is for now), and, with a yes/no question, a code
+    if (questions.some(q => q.type !== 'display')) {
+      if (!resource) {
+        problems.push(`${at} has questions to answer, so it needs a resource for the answers to make`);
+      }
+      if (questions[0] && questions[0].type !== 'boolean') {
+        problems.push(`${at}'s first question must be a yes/no question: it is the one the answers depend on`);
+      }
+    }
+    if (questions.some(q => q.type === 'boolean') && !code) {
+      problems.push(`${at} has a yes/no question, so it needs a code: what the answer is about`);
+    }
     guides.push({ section, questions, resource, code: resource ? code : null });
   });
   return { guides, problems };
@@ -864,7 +877,7 @@ function editorGuidance(sd) {
       key: g.questions.map(q => q.linkId).join('+'),
       section: g.section,
       sectionTitle: named ? named.title : (g.section.display || `${g.section.system}|${g.section.code}`),
-      questions: g.questions.map(q => ({ linkId: q.linkId, text: q.text, type: q.type, answers: q.answers, units: q.units })),
+      questions: g.questions.map(q => ({ linkId: q.linkId, text: q.text, type: q.type, definition: q.definition, answers: q.answers, units: q.units })),
       resource: g.resource,
       code: g.code
     };

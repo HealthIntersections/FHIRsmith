@@ -29,6 +29,7 @@
  */
 
 const escape = require('escape-html');
+const fhirJson = require('../library/fhir-json');
 const parse5 = require('parse5');
 const { compositionOf, resolveInBundle } = require('./search');
 const { SECTION_ORDER, sectionRank } = require('./terminology');
@@ -100,12 +101,18 @@ function periodText(p) {
   return '';
 }
 
+/** A number as it was written (1.50, not 1.5: library/fhir-json) */
+function asWritten(holder, key) {
+  const t = fhirJson.writtenAs(holder, key);
+  return t !== undefined ? t : String(holder[key]);
+}
+
 function quantityText(q) {
   if (!isObject(q)) {
     return '';
   }
   const unit = str(q.unit) || str(q.code);
-  const v = q.value === undefined || q.value === null ? '' : String(q.value);
+  const v = q.value === undefined || q.value === null ? '' : asWritten(q, 'value');
   return escape([str(q.comparator) + v, unit].filter(Boolean).join(' '));
 }
 
@@ -661,7 +668,7 @@ function bloodPressure(obs) {
     return '';
   }
   const unit = str(sys.valueQuantity.unit) || str(sys.valueQuantity.code) || str(dia.valueQuantity.unit) || str(dia.valueQuantity.code);
-  const n = (q) => (q.value === undefined || q.value === null ? '?' : String(q.value));
+  const n = (q) => (q.value === undefined || q.value === null ? '?' : asWritten(q, 'value'));
   return escape(`${n(sys.valueQuantity)}/${n(dia.valueQuantity)}${unit ? ' ' + unit : ''}`);
 }
 

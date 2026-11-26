@@ -71,7 +71,7 @@ as before.
 | | master | tx-worker |
 |---|---|---|
 | tx module (`/r4`, `/r5` and the other endpoints) | yes (may also serve tx requests) | yes |
-| rest module (its endpoints), with `"workerModules": ["rest"]` | yes, and its background jobs (schema migrations, expired searches, the closure, reindexing) | yes: every request, since all its state is in its databases |
+| rest module (its endpoints), with `"workerModules": ["rest"]` | yes, and its schema migrations; its background jobs and queues only with `jobsProcess` false (otherwise the jobs process runs them: below) | yes: every request, since all its state is in its databases |
 | Every other module (packages, xig, registry, publisher, shl, ips, ...) | yes | no |
 | Logins (`/auth`, [library/auth](library/auth/README.md)) | yes | the users and sessions are in one database every process reads: a login on one is one on all (with `auth.sessionSecret` set) |
 | `$closure` (the closure tables) | yes | no: routed to the master (yes, with [`sharedClosure`](#options)) |
@@ -86,6 +86,17 @@ as before.
 | Log file | `logs/server-<date>.log` | the same file (lines interleave) |
 
 The master loads the terminologies like any tx server: `$closure` needs subsumption.
+
+**The jobs process.** When the rest module is enabled, the launcher also starts a jobs process
+(`--role=jobs`, instance code `j1`, on the internal port after the workers'), straight after the
+master. It runs the rest module only, and does its background work: expired searches, the
+closure, package loads, value set membership, reindexing, and async requests (the queue runner,
+rest/queue/runner.js; subscriptions will go there too). The launcher sends it no requests, so
+that work doesn't hold up a process that serves them. It doesn't run the tx module: a rest
+endpoint's `txServer` that is a path on this server (`/tx/r5`) is reached through the launcher's
+own port, which the launcher gives it as `FHIRSMITH_FRONT_DOOR`. It is restarted like any process
+if it exits, and isn't counted when the launcher sizes the workers to memory (it doesn't load the
+terminologies). `server.cluster.jobsProcess` false leaves the work on the master, as before.
 
 **VSAC.** The master syncs, and when a sync has written its value sets it adds one to a
 generation counter in the VSAC database. A worker remembers the generation its value set list
@@ -294,15 +305,27 @@ The page keeps to the space it had before (it is often on a wall screen). Top to
 * **The problems**, a line each with a ⚠ and a sentence: processes refusing requests, or the
   memory guard's measure at 90% or more of its refusal threshold; a process that isn't ready
   (starting, restarting); figures gone stale; restarts since launch; under 10% of the disk
-  free; a background task whose last run failed; and a serious npm audit finding.
+  free; a background task whose last run failed (the rest module's included); an async request
+  that has waited 5 minutes or more to be started; and a serious npm audit finding.
 * **The graphs** (see [Graphs](#graphs)); their key is under More.
 * **Background tasks**: one line naming those at work, those whose last run failed (each is
   also a problem, with its state) and the idle ones, then a row for each task at work.
 * **One line** for the server's own upkeep: on `/dashboard`, the FHIRsmith release (and whether
   a newer one is out) and npm audit's result; and, in red, low disk space (under 10% free).
   The npm audit advice and findings follow it when there are any.
-* **More** (closed until opened): the graphs' key, the status panel below, Storage, every
-  background task, and on `/dashboard` the data folder.
+* **More** (closed until opened): the graphs' key, the status panel below, Storage, the rest
+  module's background jobs, every background task, and on `/dashboard` the data folder.
+
+**Rest background jobs**, under More, when the rest module is enabled: what the jobs process (or
+the process that runs the jobs) sends with its figures (rest/queue/status.js). Tiles: async
+requests queued and running, and how long the oldest has waited; of those started in the last
+hour, how long they waited to be started after they were queued (average, p95, max: whether the
+jobs process keeps up) and how long they took; failures in the last 24 hours; package loads
+queued, and how long the last waited; and how far reindexing has got. Then a row per endpoint
+per task: its state (idle, running, failing), how often it runs, its runs, when it last ran and
+how long that took, its failures, and its last error. In the process table, the jobs process's
+cache columns are blank, since it runs no tx module. Without the launcher, a server shows its
+own.
 
 The status panel, under More:
 
@@ -550,6 +573,7 @@ both only apply with a role: `node server.js` with no role ignores them.
 | `server.cluster.sharedCacheMaxMB` | 256 | With `sharedCache`: the most client resources (their JSON, in MB) the file holds, every endpoint's caches together. Past it, the caches least recently used are dropped whole, and a request with a dropped cache-id gets `404` `cache-id-unknown` (`CACHE_ID_EVICTED_SIZE`, which names the cap), so the client starts a new cache. 256: the largest IG Publisher cache session in a corpus of 2,817 from builds against tx.fhir.org held 3.5 MB of resources (p99 2.8 MB, median 55 KB), so this is about 70 times the largest; `cacheMaxTotalConcepts` gives one endpoint about 40 times the largest session's concepts, and this is that room for two busy endpoints. The file on disk is larger than what it holds (indexes, and the pages SQLite keeps for reuse). Each process logs the cap as it starts. 0: no cap. |
 | `server.cluster.sharedClosure` | false | Every tx process answers `$closure`, on the one closure database. |
 | `modules.tx.closure.writeRetries` | 10 | With `sharedClosure`: how many times an add is worked out again when another process changed the table first. |
+| `server.cluster.jobsProcess` | true (with the rest module) | Whether the launcher starts a jobs process for the rest module's background jobs and queues (see [What runs where](#what-runs-where)). false: the master runs them. Started by hand, it is `node server.js --role=jobs --instance-code=j1 --port=P`, with `FHIRSMITH_FRONT_DOOR` set to where the tx endpoints are reached, if a rest endpoint's `txServer` is a path. |
 | `server.cluster.workerModules` | `["tx"]` | The modules the workers run besides tx: `"rest"` is the only other one a worker can run. With it, the launcher sends the rest module's endpoints to any process, as it does tx requests. A rest endpoint on SQLite needs every process on this one machine (SQLite's locking is unreliable on network file systems); on MySQL the workers can be anywhere. See [rest/README.md](rest/README.md#clustering). |
 
 ### Shared cache

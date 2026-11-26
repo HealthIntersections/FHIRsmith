@@ -20,6 +20,7 @@
 const Database = require('better-sqlite3');
 const { indexDocument, parseSearch, compositionOf, patientOf, identifierClause } = require('./search');
 const patients = require('./patients');
+const fhirJson = require('../library/fhir-json');
 
 // the most document JSON one search page carries
 const MAX_PAGE_BYTES = 32 * 1024 * 1024;
@@ -609,7 +610,8 @@ class IpsStore {
           stored[k] = v;
         }
       }
-      const json = JSON.stringify(stored);
+      fhirJson.copyNotes(bundle, stored);
+      const json = fhirJson.stringify(stored);
       this.db.prepare('UPDATE documents SET json = ?, size = ? WHERE id = ?').run(json, Buffer.byteLength(json, 'utf8'), id);
       for (const row of indexDocument(stored)) {
         this.stmts.insertIndex.run({ doc_id: id, ...row });
@@ -637,9 +639,9 @@ class IpsStore {
     if (!row || (projectId !== undefined && row.project_id !== projectId)) {
       return null;
     }
-    row.bundle = JSON.parse(row.json);
+    row.bundle = fhirJson.parse(row.json);
     delete row.json;
-    row.analysed = row.analysed_json ? JSON.parse(row.analysed_json) : null;
+    row.analysed = row.analysed_json ? fhirJson.parse(row.analysed_json) : null;
     delete row.analysed_json;
     row.match = row.patient_match ? JSON.parse(row.patient_match) : null;
     delete row.patient_match;
@@ -648,7 +650,7 @@ class IpsStore {
 
   /** Keep the analysed copy of a document (null to drop it). */
   saveAnalysed(id, bundle) {
-    this.stmts.saveAnalysed.run(bundle ? JSON.stringify(bundle) : null, id);
+    this.stmts.saveAnalysed.run(bundle ? fhirJson.stringify(bundle) : null, id);
   }
 
   /** @returns {boolean} whether there was such a document in the project */
@@ -715,7 +717,7 @@ class IpsStore {
     let previous = null;
     if (match) {
       patientId = match.patientId;
-      previous = JSON.parse(this.db.prepare('SELECT json FROM patients WHERE id = ?').get(patientId).json);
+      previous = fhirJson.parse(this.db.prepare('SELECT json FROM patients WHERE id = ?').get(patientId).json);
     } else {
       patientId = Number(this.db.prepare("INSERT INTO patients (project_id, created_ms, updated_ms, json) VALUES (?, ?, ?, '{}')").run(projectId, receivedMs, receivedMs).lastInsertRowid);
       match = { method: 'new', detail: conflicts.length > 0 ? `Not seen before (${conflicts.join('; ')})` : 'Not seen before' };
@@ -730,7 +732,7 @@ class IpsStore {
   savePatient(patientId, resource, updatedMs) {
     const keys = patients.keysOf(resource);
     this.db.prepare('UPDATE patients SET updated_ms = ?, name = ?, birth_date = ?, gender = ?, json = ? WHERE id = ?')
-      .run(updatedMs, patients.displayName(resource) || null, keys.birthDate || null, keys.gender || null, JSON.stringify(resource), patientId);
+      .run(updatedMs, patients.displayName(resource) || null, keys.birthDate || null, keys.gender || null, fhirJson.stringify(resource), patientId);
     this.db.prepare('DELETE FROM patient_keys WHERE patient_id = ?').run(patientId);
     const add = this.db.prepare('INSERT OR IGNORE INTO patient_keys (patient_id, kind, key) VALUES (?, ?, ?)');
     for (const k of keys.identifiers) {
@@ -751,7 +753,7 @@ class IpsStore {
     let resource = null;
     let last = 0;
     for (const d of docs) {
-      const p = patientOf(JSON.parse(d.json));
+      const p = patientOf(fhirJson.parse(d.json));
       if (p) {
         resource = patients.mergePatient(resource, p, patientId, new Date(d.received_ms).toISOString());
         last = d.received_ms;
@@ -768,7 +770,7 @@ class IpsStore {
     }
     this.db.transaction(() => {
       for (const r of rows) {
-        this.matchPatient(r.project_id, r.id, JSON.parse(r.json), r.received_ms);
+        this.matchPatient(r.project_id, r.id, fhirJson.parse(r.json), r.received_ms);
       }
     })();
   }
@@ -778,13 +780,13 @@ class IpsStore {
     return this.db.prepare(`SELECT p.id, p.name, p.birth_date, p.gender, p.created_ms, p.updated_ms, p.json,
         (SELECT COUNT(*) FROM documents d WHERE d.patient_id = p.id) AS documents
       FROM patients p WHERE p.project_id = ? ORDER BY p.updated_ms DESC, p.id DESC`).all(projectId)
-      .map(r => ({ ...r, resource: JSON.parse(r.json) }));
+      .map(r => ({ ...r, resource: fhirJson.parse(r.json) }));
   }
 
   /** One of the project's patients, or null. */
   patient(projectId, patientId) {
     const r = Number.isInteger(patientId) ? this.db.prepare('SELECT * FROM patients WHERE id = ? AND project_id = ?').get(patientId, projectId) : null;
-    return r ? { ...r, resource: JSON.parse(r.json) } : null;
+    return r ? { ...r, resource: fhirJson.parse(r.json) } : null;
   }
 
   /** A patient's documents, the most recently received first: id, received, title, date, how matched. */

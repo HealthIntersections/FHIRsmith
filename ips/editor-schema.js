@@ -100,7 +100,9 @@ const SECTIONS = [
       date('onset', 'Onset', { path: 'onset[x]' }),
       date('abatement', 'Abatement', { path: 'abatement[x]' }),
       code('bodySite', 'Body site', 'ips-body-site', { path: 'bodySite' }),
-      note
+      note,
+      // not shown: the form stamps it when it makes the row, and the build when it is missing
+      { name: 'recordedDate', label: 'Recorded', type: 'datetime', path: 'recordedDate', hidden: true, stamp: true }
     ],
     fixed: { category: [{ coding: [{ system: THO + 'condition-category', code: 'problem-list-item', display: 'Problem List Item' }] }] }
   },

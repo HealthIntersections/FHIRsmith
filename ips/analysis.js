@@ -9,7 +9,8 @@
  * section by section) for the things a reader should know before trusting it - extensions
  * (with their definitions, where they can be found), modifier extensions and implicitRules,
  * records that are inactive, entered in error or of unknown status, narrative or the lack of
- * it, a subject other than the document's or a focus, dates in the future, and for a few
+ * it, a subject other than the document's or a focus, dates in the future, clinical dates after
+ * the record date, and for a few
  * resources, things particular to them (a Patient's links, a Composition that isn't final,
  * a section's emptyReason or author). And for the document as a whole, on the Composition: how
  * it says there's nothing to report (negation) - with a section's emptyReason (the IPS
@@ -31,7 +32,8 @@
  *   modifier   a modifier extension, or implicitRules (maroon)
  *   status     inactive, entered in error, unknown, or missing status (navy)
  *   subject    a subject other than the document's, or a focus (dark green)
- *   attention  a date in the future where one isn't expected, a primitive that has an
+ *   attention  a date in the future where one isn't expected, a clinical date after the
+ *              date the resource was recorded, a primitive that has an
  *              extension instead of a value (a data-absent-reason, say), a Patient's link, a
  *              Composition that isn't final, a document that uses more than one approach
  *              to negation
@@ -42,7 +44,7 @@
  * @module ips/analysis
  */
 
-const { structureTree, flatten, isObject, text } = require('./structure');
+const { structureTree, flatten, isObject, text, recordedOf } = require('./structure');
 const { typeOf } = require('./terminology');
 
 // the resources whose status (or lifecycleStatus) is required, as the element that holds it
@@ -112,8 +114,11 @@ const DATE_TYPES = new Set(['date', 'dateTime', 'instant']);
 
 const DATE_VALUE = /^(\d{4})(?:-(\d\d)(?:-(\d\d)(?:T(\d\d):(\d\d)(?::(\d\d)(?:\.\d+)?)?(Z|[+-]\d\d:\d\d)?)?)?)?$/;
 
-/** The earliest moment a date/dateTime/instant can mean, as ms, or null if it isn't one. */
-function earliest(v) {
+/**
+ * The earliest moment a date/dateTime/instant can mean, as ms, or null if it isn't one. With
+ * local, a value with no time zone is taken as UTC (to compare with another with none).
+ */
+function earliest(v, local = false) {
   const m = DATE_VALUE.exec(v);
   if (!m) {
     return null;
@@ -124,7 +129,7 @@ function earliest(v) {
     return Number.isNaN(t) ? null : t;
   }
   // no time zone: the earliest it could be anywhere (UTC+14)
-  return Date.UTC(+y, mo ? +mo - 1 : 0, d ? +d : 1, h ? +h : 0, mi ? +mi : 0, sec ? +sec : 0) - 14 * 3600000;
+  return Date.UTC(+y, mo ? +mo - 1 : 0, d ? +d : 1, h ? +h : 0, mi ? +mi : 0, sec ? +sec : 0) - (local ? 0 : 14 * 3600000);
 }
 
 /**
@@ -212,6 +217,76 @@ function extensionsIn(node, prefix, skip) {
     }
   });
   return out;
+}
+
+/** Just after the latest moment a date/dateTime/instant can mean (the end of it, exclusive), as ms, or null if it isn't one. local as for earliest. */
+function latest(v, local = false) {
+  const m = DATE_VALUE.exec(v);
+  if (!m) {
+    return null;
+  }
+  const [, y, mo, d, h, mi, sec, tz] = m;
+  const end = !mo ? Date.UTC(+y + 1, 0, 1) : !d ? Date.UTC(+y, +mo, 1) : !h ? Date.UTC(+y, +mo - 1, +d + 1) :
+    Date.UTC(+y, +mo - 1, +d, +h, +mi, sec ? +sec + 1 : 60);
+  if (h && tz) {
+    const offset = tz === 'Z' ? 0 : (tz[0] === '-' ? -1 : 1) * (parseInt(tz.substring(1, 3), 10) * 60 + parseInt(tz.substring(4, 6), 10));
+    return end - offset * 60000;
+  }
+  // no time zone: the latest it could be anywhere (UTC-12, with a margin)
+  return end + (local ? 0 : 14 * 3600000);
+}
+
+// ---- when it happened, and when it was recorded ----
+//
+// What a resource records can't have happened after it was recorded: its clinical dates (the
+// start of a period, or a point in time) should be on or before its record date (structure.js
+// recordedOf). Not for resources about the future (FUTURE_INTENT), and not period ends: an
+// end can be planned. Partial dates and dates with no time zone are given the benefit of the
+// doubt: it's only after if it can't be otherwise - but two dates with no time zone are taken
+// to be in the same one.
+
+// the clinical dates, by element path (an element in an array is looked at in each)
+const CLINICAL_PATHS = [
+  'onsetDateTime', 'onsetPeriod.start', 'abatementDateTime', 'abatementPeriod.start', 'lastOccurrence', 'reaction.onset',
+  'occurrenceDateTime', 'occurrencePeriod.start', 'performedDateTime', 'performedPeriod.start', 'effectiveDateTime', 'effectiveInstant',
+  'effectivePeriod.start', 'whenPrepared', 'whenHandedOver'
+];
+
+/** The values at a path, through arrays, as [path, value]. */
+function valuesAt(node, parts, path, out = []) {
+  if (Array.isArray(node)) {
+    node.forEach((v, i) => valuesAt(v, parts, `${path}[${i}]`, out));
+  } else if (parts.length === 0) {
+    if (typeof node === 'string') {
+      out.push([path, node]);
+    }
+  } else if (isObject(node)) {
+    valuesAt(node[parts[0]], parts.slice(1), `${path}.${parts[0]}`, out);
+  }
+  return out;
+}
+
+/**
+ * The clinical dates in a resource that are after it was recorded, as [path, value], with the
+ * record date ({ path, value }); none if it doesn't say when it was recorded.
+ */
+function afterRecorded(r, prefix) {
+  const rec = recordedOf(r);
+  if (!rec || latest(rec.value) === null) {
+    return { recorded: rec, after: [] };
+  }
+  const zoned = (v) => /T.*(Z|[+-]\d\d:\d\d)$/.test(v);
+  const after = [];
+  for (const p of CLINICAL_PATHS) {
+    for (const [path, v] of valuesAt(r, p.split('.'), prefix)) {
+      const local = !zoned(v) && !zoned(rec.value);
+      const t = earliest(v, local);
+      if (t !== null && t >= latest(rec.value, local)) {
+        after.push([path, v]);
+      }
+    }
+  }
+  return { recorded: rec, after };
 }
 
 /**
@@ -383,6 +458,12 @@ async function analyseResource(node, ctx) {
     }
   }
   await common(findings, r, type || 'Resource', prefix, skip, ctx.options, ctx.cache);
+  if (node.kind !== 'root' && !mayBeFuture(r)) {
+    const { recorded, after } = afterRecorded(r, prefix);
+    for (const [path, v] of after) {
+      findings.push({ kind: 'attention', text: `${path} (${v}) is after the date it was recorded (${prefix}.${recorded.path} = ${recorded.value})` });
+    }
+  }
   return finish(findings, narrativeOf(r));
 }
 
@@ -610,4 +691,4 @@ const analysisStep = {
   }
 };
 
-module.exports = { analyseDocument, analysisStep, extensionsIn, futureDates, mayBeFuture, earliest, STATUS_ELEMENTS, FUTURE_INTENT };
+module.exports = { analyseDocument, analysisStep, extensionsIn, futureDates, mayBeFuture, earliest, latest, afterRecorded, CLINICAL_PATHS, STATUS_ELEMENTS, FUTURE_INTENT };

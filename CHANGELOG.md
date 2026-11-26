@@ -5,6 +5,40 @@ All notable changes to Health Intersections FHIRsmith will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.10] - 2026-mm-dd
+
+### Security
+
+- 
+
+### Added
+
+- auth: login for expensive operations (`auth.loginForExpensive`, off by default). With it on, someone not logged in (a session, or an API token: any account, no role) can't have an answer in XML from the terminology API (JSON is unaffected), search results past the first page, *Show all*, or more than `auth.anonymousMaxRows` (1000) rows of an expansion in the terminology web pages, or a filtered XIG list past its first page. The links that would go there read *(log in)* and go to the login page and back; asking anyway gets a 401 page that says why, or an OperationOutcome (issue code `login`) in XML for the API. `/auth/why-login` explains what needs a login, why (crawlers on tens of thousands of addresses), and how software sends a token (`fhir-settings.json` for the IG Publisher and validator). The daily report counts the requests told to log in, by kind, with how many addresses. Package downloads and the package API never need a login
+- auth: login for old tools, and for other clients (`auth.loginForOldTools`, `auth.loginForOtherClients`, both off by default), for the terminology API. `loginForOldTools`: `true` needs an API token from the FHIR validator and IG Publisher when they don't say which version they are (in their User-Agent, from FHIR core 7.0.7 on: `fhir-core/{version}`), or a version (`"7.0.8"`) from those that are older too; the 401 OperationOutcome says to upgrade or log in. `loginForOtherClients` needs one from any software other than those tools. The web pages are unaffected. Which client is which: `library/client-identity.js`
+- tx: a client logged in (an API token) may have a bigger client side cache: `cacheMaxConceptsLoggedIn` (default `cacheMaxConcepts`). A client not logged in whose cache is too big is told it could have that many with a token (`CACHE_LOGIN_FOR_MORE`, also added to core's Messages.properties)
+
+### Changed
+
+- ips: a clinical profile's page shows each code its rules name (a required entry's, a rule's resources', a category) with its display from the terminology server, after the code (`Code is SNOMED CT|364589006 Birth weight`); a code the server doesn't know is shown as before
+- packages: a crawl on demand is started by the server's administrators, logged in, with *Start a crawl* on `/packages/log` (and the account page lists that page for them). The packages "crawl" role and API tokens for `POST /packages/crawl` (`Authorization: Bearer`, `x-crawl-token`) are gone: a scheduled job that started crawls that way gets the login page; the crawler's own schedule (`crawler.schedule`) is unaffected. The crawl runs in the background, the button goes back to the log page, and while a crawl is running another isn't started (two could overlap before). The home page's and the log page's *Manual Crawl* buttons, which did nothing, are gone
+
+### Fixed
+
+- packages: two files of exactly the same name in a package's example folders (`package/examples`, `package/example`) no longer get the package refused by the crawler, the package manager or the npm projector. Published packages have them (de.basisprofil.r4#0.9.13), and which of the two a reader keeps doesn't matter. Names that differ only in case, and duplicates anywhere else, are still refused, as in org.hl7.fhir.core. The npm registry check still reports all of them: a package being published can't have them
+- xig: a list page stops once its client has gone, instead of running its queries and building the page for no one. On npm.fhir.org a crawler gave up on 1,000-3,000 list pages a minute (nginx's 499) while the server ran them all anyway, queued for a database connection, and the heap they held made garbage collection stop the server for 5-7 s at a time
+- xig: the counts above a list (the total, and by version, authority and realm: about ten queries over the whole table) are kept per filter, as they are the same for every page of the list, up to `xig.listCacheMB` (default 32). Links that change a list's filter go to the first page of the new list instead of keeping the offset, and the filter selects on a list page are built once
+- tx: a SNOMED CT text filter of one word that many concepts match (`Penicillin` on the allergy value set) let other requests run while its matches were ranked, and words are stemmed once (kept, 50,000 words a language) rather than for every description each time: on tx.fhir.org the ranking held the event loop for 2.5 s, most of it in the stemmer, which keeping the stems makes about 35 times faster
+- tx: the problems page (`/{endpoint}/problems.html`) is kept for 15 minutes, or until VSAC's value sets change, instead of reading every value set (18,000 from VSAC) for each view; views that come while it is being made wait for that one. The VSAC scans it and the usage tracker do read on a database connection of their own and make each value set as they come to it, letting other work run: on the connection everything else uses, the main thread waited on its lock while a scan's reads ran, for 3-4 s on tx.fhir.org
+- tx: the HTML page of a value set whose include lists many codes, with `?_showAll=true`, let other requests run while it was made: the codes of a code system held in memory (LOINC, say) were looked up for their links one after another with nothing else getting a turn, and on tx.fhir.org a VSAC value set of LOINC codes held the event loop for 4.4 s. Listing an include's codes and an expansion's rows lets other work run too
+
+### Removed
+
+-
+
+### Tx Conformance Statement
+
+(paste)
+
 ## [1.0.9] - 2026-11-24
 
 ### Added
@@ -30,6 +64,7 @@ FHIRsmith v1.0.8 passed all 5602 HL7 terminology service tests (modes tx.fhir.or
 
 ### Added
 
+- IPS: in the general editor, Apply on a `Condition:problem` guide makes a problem from the answers: the guide's code, active/confirmed for yes or inactive/refuted for no, a recordedDate of now, and the other answers in the fields their definitions name (a date, a choice) - others are skipped. It replaces the row the guide made before, or the section's blank row, or is the next entry, and the guide is marked handled; a guide whose Condition is already in a document that is opened is handled already. Problem rows have a hidden recordedDate, stamped by the form and by the build. A guide with questions to answer must have a resource, a yes/no first question, and a code
 - IPS: the general IPS editor can follow a clinical profile (`?profile=profile-{id}`): the profile's section rules grey out the choices they don't allow (leaving a section out; narrative, with `hasData()` or an entry rule; empty, with an entry rule; any empty reason but nil known, with `isKnown()`), and its guided input is shown at the head of each section - each guide's questions in order with their inputs, dismissable (then greyed out, on one line), with Apply (not done yet) when there is something to answer. Guides for sections the editor doesn't have are shown above the sections. The compose page lists the clinical profiles after the two editors, each opening the general editor following it
 - Cluster: `server.cluster.workerModules` (`["tx"]`): the modules the tx-workers run besides tx. `"rest"` is the only other one a worker can run; with it, the launcher sends the rest module's endpoints to any process, and the workers wait for the master's schema migrations and leave the rest module's background jobs to it
 - Keys: a key store for the whole server (`keystore`, off unless enabled; [library/keystore/README.md](library/keystore/README.md)). `/keys` lists public keys for anyone, and as a JWKS (`/keys/jwks.json`). A logged in user can upload public keys (PEM, a certificate, a JWK or JWKS, an OpenSSH line, DER), claiming a key id or not, and have the server make key pairs for them (EC P-256, EC P-384, RSA, Ed25519; one of each type), whose private keys the server keeps and signs with when a module asks; the administrator makes the system's own key pairs. Private keys are never uploaded (an upload with one is refused) and never given out. Owners revoke their keys, administrators revoke, delete and change key ids. A key is shown only as uploaded or created by its owner's display name. Limits: 10 uploads, then one a day; one key pair a day of each type. Private keys are in a database of their own (`keystore-private.db`, 0600). The daily report has a paragraph on them. Modules sign with `keystore.sign`/`signJws` and check with `verify`/`verifyJws`; there is no endpoint that signs what it is given

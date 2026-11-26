@@ -26,6 +26,7 @@ const http = require('http');
 const { Duplex } = require('stream');
 
 const FHIR_JSON = 'application/fhir+json';
+const fhirJson = require('../library/fhir-json');
 
 /**
  * Send a request into an Express app without a network: a real http.IncomingMessage and
@@ -146,19 +147,23 @@ class TxClient {
    * @param {string} method - GET or POST
    * @param {string} path - relative to the server, e.g. /CodeSystem/$validate-code
    * @param {Object} [options]
-   * @param {Object} [options.query] - query parameters
+   * @param {Object|Array<string[]>} [options.query] - query parameters: an object, or [name,
+   *   value] pairs (a name more than once)
    * @param {Object} [options.body] - a resource (POST)
+   * @param {Object} [options.headers] - more request headers (Accept-Language, say)
    * @returns {Promise<{status: number, resource: Object|null, text: string}>} the parsed
    *   JSON when there is some
    */
   async request(method, path, options = {}) {
-    const qs = options.query ? new URLSearchParams(Object.entries(options.query).filter(([, v]) => v !== undefined && v !== null)).toString() : '';
+    const pairs = Array.isArray(options.query) ? options.query : options.query ? Object.entries(options.query) : [];
+    const qs = new URLSearchParams(pairs.filter(([, v]) => v !== undefined && v !== null)).toString();
     const target = `${this.base}${path}${qs ? '?' + qs : ''}`;
-    const headers = { Accept: FHIR_JSON };
+    const headers = { ...(options.headers || {}), Accept: FHIR_JSON };
     let body;
     if (options.body !== undefined) {
       headers['Content-Type'] = FHIR_JSON;
-      body = JSON.stringify(options.body);
+      // (decimals as they were written: library/fhir-json)
+      body = fhirJson.stringify(options.body);
     }
     let status;
     let text;
@@ -182,7 +187,7 @@ class TxClient {
     let resource = null;
     if (text) {
       try {
-        resource = JSON.parse(text);
+        resource = fhirJson.parse(text);
       } catch {
         resource = null;
       }

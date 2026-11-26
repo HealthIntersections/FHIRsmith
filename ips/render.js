@@ -19,6 +19,7 @@
  */
 
 const escape = require('escape-html');
+const fhirJson = require('../library/fhir-json');
 const parse5 = require('parse5');
 const { checkNarrative } = require('../library/narrative-check');
 const { tokenConfigured } = require('../library/request-token');
@@ -44,7 +45,8 @@ function nationalityFlag(result) {
   return `<img class="ips-flag" src="${src}" alt="${escape(alt)}" title="${escape(title)}"/>`;
 }
 const { dateText } = require('./presenter');
-const { structureTree, flatten } = require('./structure');
+const { structureTree, flatten, recordedOf } = require('./structure');
+const { AGE_STYLE, documentDate, documentAgeMarker, relativeAgeMarker, noDateMarker } = require('./age');
 const scripts = require('./scripts');
 const assets = require('./assets');
 const { LOINC } = require('./editor-schema');
@@ -204,12 +206,14 @@ const STYLE = `
   .ips-ed-modes { margin-bottom: 8px; font-size: 90%; } .ips-ed-mode { margin-right: 16px; font-weight: normal; }
   .ips-ed-mode-off { color: #aaa; }
   .ips-ed-profile { background-color: #f4f0fb; border: 1px solid #ddd3ee; border-radius: 4px; padding: 6px 10px; margin-bottom: 10px; }
-  .ips-ed-guides { margin: 0 0 10px 0; padding-left: 20px; font-size: 92%; }
+  .ips-ed-guides { margin: 0 0 10px 0; padding: 6px 10px 6px 28px; font-size: 92%; background-color: #fffbe6; border: 1px solid #f3e7b3; border-radius: 4px; }
   .ips-ed-guide { margin-bottom: 4px; line-height: 2.1; }
   .ips-ed-guide .ips-ed-g-input { display: inline-block; width: auto; min-width: 4em; max-width: 14em; height: 26px; padding: 1px 4px; margin: 0 4px 0 2px; vertical-align: middle; font-size: 95%; }
   .ips-ed-guide .ips-ed-g-qty { width: 6em; min-width: 0; }
-  .ips-ed-guide-dismiss { margin-right: 6px; font-size: 85%; }
+  .ips-ed-guide-dismiss { margin-right: 6px; padding: 0 6px; font-size: 85%; line-height: 1.6; vertical-align: middle; }
+  .ips-ed-guide-handled { margin-right: 6px; font-size: 85%; color: #3c763d; cursor: pointer; }
   .ips-ed-guide-apply { margin-left: 4px; }
+  .ips-ed-guide-note { color: #a94442; font-size: 90%; }
   .ips-ed-guide-dismissed { color: #999; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .ips-ed-other-guides { margin-bottom: 10px; }
   .ips-ed-row { border: 1px solid #e3e6ea; border-radius: 4px; padding: 6px 10px; margin-bottom: 8px; background: #fff; }
@@ -276,6 +280,9 @@ const STYLE = `
   .ips-tt tr.ips-tt-seen > td { background-color: #EFEFEF; }
   .ips-tt tr.ips-tt-missing > td:last-child { color: #c82333; }
   .ips-tt .ips-tt-when { color: #3a4d5e; margin-left: 6px; }
+  .ips-tt td.ips-tt-age { white-space: nowrap; }
+  .ips-banner-age { margin-left: auto; text-align: right; }
+  .ips-banner-age .ips-banner-age-label { font-size: 85%; color: #444; }${AGE_STYLE}
 </style>
 <script>
   // a form with data-confirm asks first: the message is an attribute (escaped as one), never script
@@ -888,17 +895,59 @@ function nodeDetails(node) {
     .filter(Boolean).join(' ');
 }
 
+/** Whether a node is an entry of a section. */
+function isSectionEntry(node, parent) {
+  return parent?.kind === 'section' && /^entry\[/.test(node.path);
+}
+
+/** When an entry was recorded, as written; '' if it doesn't say. */
+const recordedValue = (r) => recordedOf(r)?.value || '';
+
+/** When (as written) the entries in a section, and in its subsections, were recorded. */
+function sectionDates(section) {
+  const out = [];
+  for (const c of section.children) {
+    if (c.kind === 'section') {
+      out.push(...sectionDates(c));
+    } else if (isSectionEntry(c, section) && c.resource) {
+      out.push(recordedValue(c.resource));
+    }
+  }
+  return out.filter(Boolean);
+}
+
+/**
+ * A node's age (age.js): the document's, from its date to now; a section's, how much older its
+ * newest record is than the document; an entry's, how much older its record is than the document.
+ * It's the age of the record (recordedDate, dateAsserted, issued...), not of what happened (onset...).
+ * Nothing for the rest.
+ */
+function nodeAge(node, parent, docDate, bundle, now) {
+  if (node.kind === 'root') {
+    return documentAgeMarker(bundle, now);
+  }
+  if (node.kind === 'section') {
+    return relativeAgeMarker(sectionDates(node), docDate, 'section');
+  }
+  if (isSectionEntry(node, parent)) {
+    return node.resource ? relativeAgeMarker([recordedValue(node.resource)], docDate, 'entry') : noDateMarker('The entry is not in the document');
+  }
+  return '';
+}
+
 /**
  * The logical structure of a document (structure.js), as a tree table like the FHIR
- * specification's. Columns: the path (where the reference is), the type, the id, and what
- * the resource is and when. A reference that doesn't resolve in the document is shown as
+ * specification's. Columns: the path (where the reference is), the type, the id, what
+ * the resource is and when, and the age (of the document, and of each section and entry
+ * against the document). A reference that doesn't resolve in the document is shown as
  * external; a resource expanded elsewhere is shown again, greyed, saying where, and doesn't expand.
  */
-function renderStructure(bundle) {
+function renderStructure(bundle, now = Date.now()) {
   const top = structureTree(bundle);
   if (!top) {
     return '<p><i>The document has no Composition.</i></p>';
   }
+  const docDate = documentDate(bundle);
 
   // the rows: the lines are drawn as the cell's background, so they carry on through rows
   // that wrap; each level is UNIT px in, and the line to a node's children runs down from
@@ -907,7 +956,7 @@ function renderStructure(bundle) {
   const LINE = '#adb5bd';
   let rows = '';
   let next = 0;
-  function walk(node, depth, parentId, lines, last, hidden) {
+  function walk(node, depth, parentId, lines, last, hidden, parent) {
     const id = next++;
     const bg = [];
     lines.forEach((on, k) => {
@@ -935,18 +984,19 @@ function renderStructure(bundle) {
     const details = nodeDetails(node);
     rows += `<tr data-tt-id="${id}"` + (parentId === null ? '' : ` data-tt-parent="${parentId}"`) + (cls ? ` class="${cls}"` : '') + (hidden ? ' hidden' : '') + '>' +
       `<td class="ips-tt-path"${style}>${toggle}<img src="/assets/images/icon_${node.icon}.png" alt="" width="16" height="16"/> ${escape(node.path)}</td>` +
-      `<td>${escape(node.type)}</td><td${idTitle}>${idCell}</td><td>${details}</td></tr>`;
+      `<td>${escape(node.type)}</td><td${idTitle}>${idCell}</td><td>${details}</td>` +
+      `<td class="ips-tt-age">${nodeAge(node, parent, docDate, bundle, now)}</td></tr>`;
     node.children.forEach((c, i) => {
       const lastChild = i === node.children.length - 1;
-      walk(c, depth + 1, id, depth === 0 ? [] : [...lines, !last], lastChild, hidden || closed);
+      walk(c, depth + 1, id, depth === 0 ? [] : [...lines, !last], lastChild, hidden || closed, node);
     });
   }
-  walk(top, 0, null, [], true, false);
+  walk(top, 0, null, [], true, false, null);
 
   let h = '<div class="ips-tree-tools"><button type="button" class="btn btn-default ips-tt-all" data-open="1">Expand all</button> ' +
     '<button type="button" class="btn btn-default ips-tt-all" data-open="">Collapse all</button></div>';
   h += '<noscript><style>.ips-tt tr[hidden] { display: table-row; } .ips-tt-toggle, .ips-tree-tools { display: none; }</style></noscript>';
-  h += '<table class="table table-condensed ips-tt"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  h += '<table class="table table-condensed ips-tt"><thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th><th>Age</th></tr></thead><tbody>' + rows + '</tbody></table>';
   h += `<script>
 (function () {
   var rows = Array.prototype.slice.call(document.querySelectorAll('.ips-tt tbody tr'));
@@ -2100,7 +2150,7 @@ function profileSystemName(url) {
 const SECTION_CHECK_WORDS = { isKnown: 'must be asked/known', hasData: 'must have supporting entries', sameSubject: 'about the same Patient' };
 
 /** The Section and Entry columns of a required section/entry row. */
-function sectionColumns(shape, titleOf) {
+function sectionColumns(shape, titleOf, codeDisplay) {
   const s = shape.section;
   const named = s.system === LOINC ? profiles.IPS_SECTIONS.find(x => x.code === s.code) : null;
   const section = (named
@@ -2113,9 +2163,52 @@ function sectionColumns(shape, titleOf) {
     const title = typeof titleOf === 'function' ? titleOf(e.valueSet) : null;
     entry = `Code is in <b>${escape(title || e.valueSet)}</b>` + (title ? ` <span class="ips-small">(${escape(e.valueSet)})</span>` : '') + escape(cardSuffix(e));
   } else if (e) {
-    entry = `Code is <b>${escape(`${profileSystemName(e.system)}|${e.code}`)}</b>` + escape(cardSuffix(e));
+    entry = `Code is <b>${escape(`${profileSystemName(e.system)}|${e.code}`)}</b>` + displayOf(codeDisplay, e.system, e.code) + escape(cardSuffix(e));
   }
   return [section, entry];
+}
+
+/**
+ * A code's display, from the terminology server (ctx.codeDisplay, when there is one), to put
+ * after the code: the rules only say system and code, and a code alone says little to a reader.
+ */
+function displayOf(codeDisplay, system, code, version) {
+  const display = typeof codeDisplay === 'function' && system && code ? codeDisplay(system, code, version) : null;
+  return display ? ` <span class="ips-small">${escape(display)}</span>` : '';
+}
+
+/**
+ * The codings a profile's rules name by system and code - a section's entry, a rule's resource
+ * set, a category - for the profile page to look up their displays.
+ * @param {Array<{expression: string}>} constraints
+ * @returns {Array<{system: string, code: string, version?: string}>}
+ */
+function profileCodings(constraints) {
+  const out = [];
+  for (const c of constraints || []) {
+    const expression = c.expression || '';
+    const kind = profiles.kindOf(expression);
+    if (kind === 'section') {
+      const e = profiles.parseShape(expression)?.entry;
+      if (e && e.valueSet === undefined && e.system && e.code) {
+        out.push({ system: e.system, code: e.code });
+      }
+    } else if (kind === 'resource') {
+      const r = profiles.parseResourceShape(expression);
+      if (!r) {
+        continue;
+      }
+      if (r.valueSet === undefined && r.system && r.code) {
+        out.push({ system: r.system, code: r.code });
+      }
+      const m = CATEGORY_TAIL.exec((r.rest || '').trim());
+      if (m) {
+        const { system, code, version } = categoryOf(m);
+        out.push(version !== undefined ? { system, code, version } : { system, code });
+      }
+    }
+  }
+  return out;
 }
 
 /** The resources a rule is about, as a plural: MedicationAdministrations, or Any resource. */
@@ -2131,6 +2224,12 @@ function resourceTypePlural(type) {
 const STR_ARG = "\\s*'((?:[^'\\\\]|\\\\.)*)'\\s*";
 const NAME = '[A-Za-z][A-Za-z0-9_]*';
 const allOf = (body) => new RegExp(`^\\.\\s*(?:${body}|all\\s*\\(\\s*${body}\\s*\\))$`);
+const CATEGORY_TAIL = allOf(`category\\s*\\.\\s*hasCoding\\s*\\(${STR_ARG},${STR_ARG}(?:,${STR_ARG})?\\)`);
+/** The coding a category tail (CATEGORY_TAIL) names. */
+function categoryOf(m) {
+  const [system, code, version] = (m[1] !== undefined ? [m[1], m[2], m[3]] : [m[4], m[5], m[6]]).map(x => x === undefined ? undefined : unescapeArg(x));
+  return { system, code, version };
+}
 const TAILS = [
   [/^\.\s*exists\s*\(\s*\)$/, () => 'Must be present somewhere'],
   [/^\.\s*all\s*\(\s*sameSubject\s*\(\s*\)\s*\)$/, () => 'Patient must match the Document'],
@@ -2139,9 +2238,9 @@ const TAILS = [
     const title = typeof ctx.profileTitle === 'function' ? ctx.profileTitle(url) : null;
     return `Conform to <b>${escape(title || url)}</b>` + (title ? ` <span class="ips-small">(${escape(url)})</span>` : '');
   }],
-  [allOf(`category\\s*\\.\\s*hasCoding\\s*\\(${STR_ARG},${STR_ARG}(?:,${STR_ARG})?\\)`), (m) => {
-    const [system, code, version] = (m[1] !== undefined ? [m[1], m[2], m[3]] : [m[4], m[5], m[6]]).map(x => x === undefined ? undefined : unescapeArg(x));
-    return `Has category <b>${escape(`${profileSystemName(system)}|${code}`)}</b>` + (version !== undefined ? ` <span class="ips-small">(version ${escape(version)})</span>` : '');
+  [CATEGORY_TAIL, (m, ctx) => {
+    const { system, code, version } = categoryOf(m);
+    return `Has category <b>${escape(`${profileSystemName(system)}|${code}`)}</b>` + displayOf(ctx.codeDisplay, system, code, version) + (version !== undefined ? ` <span class="ips-small">(version ${escape(version)})</span>` : '');
   }],
   // an element, or an element's element (no deeper): Must have an x, Must have an x.y
   [new RegExp(`^\\.\\s*(${NAME})\\s*(?:\\.\\s*(${NAME})\\s*)?\\.\\s*exists\\s*\\(\\s*\\)$`), (m) => {
@@ -2163,7 +2262,7 @@ function resourceColumns(rshape, ctx) {
     const title = typeof titleOf === 'function' ? titleOf(rshape.valueSet) : null;
     which = `Code is in <b>${escape(title || rshape.valueSet)}</b>` + (title ? ` <span class="ips-small">(${escape(rshape.valueSet)})</span>` : '');
   } else {
-    which = `Code is <b>${escape(`${profileSystemName(rshape.system)}|${rshape.code}`)}</b>`;
+    which = `Code is <b>${escape(`${profileSystemName(rshape.system)}|${rshape.code}`)}</b>` + displayOf(ctx.codeDisplay, rshape.system, rshape.code);
   }
   const set = `${escape(resourceTypePlural(rshape.type))} where ${which}`;
   const rest = rshape.rest.trim();
@@ -2262,7 +2361,7 @@ function renderProfile(sd, ctx, editor = null) {
     if (kind === 'section') {
       h += `<table class="table table-sm ips-table ips-pf-rule" data-part="${kind}"><tr><th style="width: 40%">Expectation</th><th>Section</th><th>Entry</th>${actionsHead}</tr>`;
       for (const c of these) {
-        const [section, entry] = sectionColumns(profiles.parseShape(c.expression || ''), ctx.valueSetTitle);
+        const [section, entry] = sectionColumns(profiles.parseShape(c.expression || ''), ctx.valueSetTitle, ctx.codeDisplay);
         h += `<tr${rowAttrs(c)}><td>${escape(c.human || '')}</td><td>${section}</td><td>${entry}</td>${actions(c)}</tr>`;
       }
     } else if (kind === 'resource') {
@@ -2788,15 +2887,15 @@ function entryAnchor(entry) {
  */
 function sourceJsonHtml(doc) {
   if (!isObject(doc) || !Array.isArray(doc.entry) || doc.entry.length === 0) {
-    return escape(JSON.stringify(doc, null, 2));
+    return escape(fhirJson.stringify(doc, null, 2));
   }
   // each entry's place is held by a marker string, replaced by the entry - indented to fit - in its span
   const markers = doc.entry.map((e, i) => `\u0000entry${i}\u0000`);
-  const json = escape(JSON.stringify({ ...doc, entry: markers }, null, 2));
+  const json = escape(fhirJson.stringify({ ...doc, entry: markers }, null, 2));
   // (escape() has made the marker's quotes &quot;)
   return json.replace(/^( *)(?:"|&quot;)\\u0000entry(\d+)\\u0000(?:"|&quot;)(,?)$/gm, (m, indent, n, comma) => {
     const entry = doc.entry[Number(n)];
-    const body = escape(JSON.stringify(entry, null, 2)).split('\n').map((l, i) => (i === 0 ? l : indent + l)).join('\n');
+    const body = escape(fhirJson.stringify(entry, null, 2)).split('\n').map((l, i) => (i === 0 ? l : indent + l)).join('\n');
     const anchor = entryAnchor(entry);
     return indent + (anchor ? `<span class="ips-entry" id="${escape(anchor)}">${body}</span>` : body) + comma;
   });
@@ -2989,7 +3088,10 @@ function renderDocument(project, row, view, ctx) {
     h += `<div class="ips-facts">Patient <a href="${purl}/Patient/${row.patient_id}">#${row.patient_id}</a>` +
       (row.match ? `: ${escape(MATCH_WORDS[row.match.method] || row.match.method)}${row.match.method === 'new' && row.match.detail !== 'Not seen before' ? ` - ${escape(row.match.detail.replace(/^Not seen before \((.*)\)$/, '$1'))}` : ''}` : '') + '</div>';
   }
-  h += '</div></div>';
+  h += '</div>';
+  // how old the document is, to the right of who and what
+  h += `<div class="ips-banner-age"><div class="ips-banner-age-label">Document age</div>${documentAgeMarker(row.bundle, Date.now(), true)}</div>`;
+  h += '</div>';
 
   // the steps, then (on a line of their own) what can be done
   h += '<div class="ips-steps">' + stepsHtml(row, ctx, durl) + '</div>';
@@ -3334,5 +3436,5 @@ module.exports = {
   analysisOk,
   renderHome, renderProjects, renderProject, renderSubmit, renderSettings, renderDocument,
   assembledNarrative, renderStructure, renderAnalysis, renderTerminology, renderTranslation, renderGenerated, renderAi, renderPatientComments, PATIENT_COMMENT_MAX, renderValidation, renderNational, renderShare, renderCompose, renderComposeChoice, renderPatientEditor, renderPatients, renderPatient, renderProfileChecks,
-  renderProfiles, renderProfile, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
+  renderProfiles, renderProfile, profileCodings, renderNationalProfiles, renderReports, renderReportDefinition, renderReportEditor, renderProjectReports, renderProjectReport, renderQueue, renderViewerStart, renderView, VIEWS, viewOf
 };
