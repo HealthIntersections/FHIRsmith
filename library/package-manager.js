@@ -17,6 +17,8 @@ const { EntryNames, pathProblem } = require('./package-names');
 
 const DEFAULT_ROOT_URL = 'https://build.fhir.org';
 const DEFAULT_CI_QUERY_INTERVAL = 1000 * 60 * 60; // 1 hour
+// fetching a package: how many redirects a request follows (and see CIBuildClient.FETCH_IDLE_MS)
+const MAX_REDIRECTS = 5;
 
 class CIBuildClient {
     /**
@@ -172,39 +174,83 @@ class CIBuildClient {
     }
 
     /**
-     * Fetch content from URL
+     * Fetch content from URL, following redirects (at most MAX_REDIRECTS). A request that fails
+     * on the way - no answer for FETCH_IDLE_MS, the connection dropped, a 5xx - is tried once
+     * more after a second: on CI, fetching a package from packages2.fhir.org (which redirects to
+     * packages-cdn.fhir.org) failed now and again
      * @param {string} source - URL to fetch
      * @returns {Promise<Buffer>}
      * @private
      */
     async fetchFromUrlSpecific(source) {
+        try {
+            return await this.fetchOnce(source, source, 0);
+        } catch (e) {
+            if (!e.transient) {
+                throw e;
+            }
+            await new Promise(resolve => setTimeout(resolve, CIBuildClient.FETCH_RETRY_MS));
+            return await this.fetchOnce(source, source, 0);
+        }
+    }
+
+    /**
+     * One try of fetchFromUrlSpecific. Each request has its own idle timeout, ended when its
+     * answer is done with: a redirect's response is read to its end and its request let go, so the
+     * timer of the first request (when it was the redirect) can't go off while the next one is
+     * still downloading, and an error names the URL that failed (and the one asked for)
+     * @private
+     */
+    fetchOnce(source, original, redirects) {
         return new Promise((resolve, reject) => {
+            const where = source === original ? source : `${source} (redirected from ${original})`;
+            const fail = (message, transient) => {
+                const err = new Error(message);
+                err.transient = transient;
+                reject(err);
+            };
             const protocol = source.startsWith('https') ? https : http;
 
             const request = protocol.get(source, (response) => {
                 // Handle redirects
                 if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
-                    this.fetchFromUrlSpecific(response.headers.location)
-                      .then(resolve)
-                      .catch(reject);
+                    response.resume(); // read to its end, so the request is finished with
+                    request.setTimeout(0);
+                    if (redirects >= MAX_REDIRECTS) {
+                        fail(`Unable to fetch ${where}: more than ${MAX_REDIRECTS} redirects`, false);
+                        return;
+                    }
+                    let next;
+                    try {
+                        next = new URL(response.headers.location, source).toString();
+                    } catch {
+                        fail(`Unable to fetch ${where}: a redirect to '${response.headers.location}', which is not a URL`, false);
+                        return;
+                    }
+                    this.fetchOnce(next, original, redirects + 1).then(resolve, reject);
                     return;
                 }
 
                 if (response.statusCode !== 200) {
-                    reject(new Error(`Unable to fetch ${source}: HTTP ${response.statusCode}`));
+                    response.resume();
+                    request.setTimeout(0);
+                    fail(`Unable to fetch ${where}: HTTP ${response.statusCode}`, response.statusCode >= 500);
                     return;
                 }
 
                 const chunks = [];
                 response.on('data', (chunk) => chunks.push(chunk));
-                response.on('end', () => resolve(Buffer.concat(chunks)));
-                response.on('error', reject);
+                response.on('end', () => {
+                    request.setTimeout(0);
+                    resolve(Buffer.concat(chunks));
+                });
+                response.on('error', (e) => fail(`Unable to fetch ${where}: ${e.message}`, true));
             });
 
-            request.on('error', (e) => reject(new Error(`Unable to fetch ${source}: ${e.message}`)));
-            request.setTimeout(30000, () => {
+            request.on('error', (e) => fail(`Unable to fetch ${where}: ${e.message}`, true));
+            request.setTimeout(CIBuildClient.FETCH_IDLE_MS, () => {
                 request.destroy();
-                reject(new Error(`Timeout fetching ${source}`));
+                fail(`Timeout fetching ${where}: no answer for ${CIBuildClient.FETCH_IDLE_MS / 1000} seconds`, true);
             });
         });
     }
@@ -350,6 +396,11 @@ class CIBuildClient {
     }
 }
 
+
+// fetching a package: how long a request may wait for any answer, and how long before the one
+// more try a request that failed on the way gets (settable, for the tests)
+CIBuildClient.FETCH_IDLE_MS = 30000;
+CIBuildClient.FETCH_RETRY_MS = 1000;
 
 class PackageManager {
     totalDownloaded = 0;
@@ -1037,4 +1088,4 @@ function normalizeVersionedCanonicals(resource) {
     return resource;
 }
 
-module.exports = { PackageManager, PackageContentLoader, normalizeVersionedCanonicals };
+module.exports = { PackageManager, PackageContentLoader, normalizeVersionedCanonicals, CIBuildClient };
