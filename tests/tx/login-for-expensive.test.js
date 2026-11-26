@@ -113,6 +113,16 @@ describe('tx: login for expensive operations', () => {
     const url = '/tx/r4/ValueSet/big?_format=html';
     const out = await html.render(vs, { method: 'GET', path: '/ValueSet/big', originalUrl: url, query: { _format: 'html' } });
     expect(out).toContain('<a href="/auth/login?return=%2Ftx%2Fr4%2FValueSet%2Fbig%3F_format%3Dhtml%26_showAll%3Dtrue">Show all (log in)</a>');
+    // the whole of a large code system, as JSON, from its page: through the login page too
+    const cs = { resourceType: 'CodeSystem', id: 'big', url: 'http://example.org/cs', status: 'active', content: 'complete',
+      concept: Array.from({ length: 1200 }, (_, i) => ({ code: 'c' + i, display: 'Code ' + i })) };
+    const page = await html.render(cs, { method: 'GET', path: '/CodeSystem/big', originalUrl: '/tx/r4/CodeSystem/big', query: {} });
+    expect(page).toContain('This page shows the first 1,000 of the 1,200 concepts.');
+    expect(page).toContain('<a href="/auth/login?return=%2Ftx%2Fr4%2FCodeSystem%2Fbig%3F_format%3Djson">as JSON (log in)</a>');
+    html.loginUrlFor = null;
+    const open = await html.render(cs, { method: 'GET', path: '/CodeSystem/big', originalUrl: '/tx/r4/CodeSystem/big', query: {} });
+    expect(open).toContain('<a href="/tx/r4/CodeSystem/big?_format=json">as JSON</a>');
+    html.loginUrlFor = url => `/auth/login?return=${encodeURIComponent(url)}`;
     const links = html.renderPaginationLinks({ link: [{ relation: 'self', url: 'http://x/tx/r4/CodeSystem?_offset=0' }, { relation: 'next', url: 'http://x/tx/r4/CodeSystem?_offset=20' }] });
     expect(links).toContain('href="/auth/login?return=%2Ftx%2Fr4%2FCodeSystem%3F_offset%3D20">Next (log in)</a>');
   });
@@ -306,5 +316,33 @@ describe('tx: the registry crawler is never blocked', () => {
     expect(TXModule.isRegistryCrawl(r('GET', '/ValueSet', { _elements: 'version,url', _count: '1000' }))).toBe(true);
     expect(TXModule.isRegistryCrawl(r('POST', '/ValueSet', { _elements: 'url,version' }))).toBe(false);
     expect(TXModule.isRegistryCrawl(r('GET', '/ValueSet', { _elements: 'url,version', name: 'x' }))).toBe(false);
+  });
+});
+
+describe('search results show a few codes of each resource, and a link to its page', () => {
+  const renderer = () => new Renderer({ i18n: { formatPhrase: (id) => id, formatPhrasePlural: (id) => id }, langs: null },
+    { resolveURL: async () => null, resolveCode: async () => null, resolveCodes: async (ctx, s, v, codes) => codes.map(() => null) });
+
+  test('a code system: 20 concepts', async () => {
+    const html = new TxHtmlRenderer(renderer(), null, null, null, '/tx/r4');
+    const cs = { resourceType: 'CodeSystem', id: 'icd', url: 'http://example.org/icd', status: 'active', content: 'complete',
+      concept: Array.from({ length: 5000 }, (_, i) => ({ code: 'c' + i, display: 'Code ' + i })) };
+    const req = { method: 'GET', path: '/CodeSystem', originalUrl: '/tx/r4/CodeSystem?text=icd', query: { text: 'icd' } };
+    const out = await html.render(cs, req, true);
+    expect((out.match(/<code>c\d+<\/code>/g) || []).length).toBe(20);
+    expect(out).toContain('This page shows the first 20 of the 5,000 concepts.');
+    expect(out).toContain('<a href="/tx/r4/CodeSystem/icd?_format=html">on its page</a>');
+    // and its own page still shows a thousand
+    const page = await html.render(cs, { method: 'GET', path: '/CodeSystem/icd', originalUrl: '/tx/r4/CodeSystem/icd', query: {} });
+    expect(page).toContain('This page shows the first 1,000 of the 5,000 concepts.');
+  });
+
+  test('a concept map: 20 elements', async () => {
+    const html = new TxHtmlRenderer(renderer(), null, null, null, '/tx/r4');
+    const cm = { resourceType: 'ConceptMap', id: 'map', url: 'http://example.org/cm', status: 'active',
+      group: [{ source: 'http://a', target: 'http://b', element: Array.from({ length: 300 }, (_, i) => ({ code: 'a' + i, target: [{ code: 'b' + i, relationship: 'equivalent' }] })) }] };
+    const out = await html.render(cm, { method: 'GET', path: '/ConceptMap', originalUrl: '/tx/r4/ConceptMap?name=x', query: {} }, true);
+    expect(out).toContain('This shows the first 20 of the 300 elements.');
+    expect(out).toContain('href="/tx/r4/ConceptMap/map?_format=html">on its page</a>');
   });
 });
