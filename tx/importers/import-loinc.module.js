@@ -31,6 +31,7 @@ class LoincModule extends BaseTerminologyModule {
       overwrite: false,
       createIndexes: true,
       mainOnly: false,
+      languages: [],
       dest: './data/loinc.db'
     };
   }
@@ -50,6 +51,7 @@ class LoincModule extends BaseTerminologyModule {
       .option('-y, --yes', 'Skip confirmations')
       .option('--no-indexes', 'Skip index creation for faster import')
       .option('--main-only', 'Import only main codes (skip language variants)')
+      .option('--languages <codes>', 'Comma-separated language codes to import, e.g. cs,fr,de or cs-CZ,fr-FR')
       .action(async (options) => {
         await this.handleImportCommand({...globalOptions, ...options});
       });
@@ -90,6 +92,7 @@ class LoincModule extends BaseTerminologyModule {
       // LOINC-specific configuration
       config.createIndexes = !options.noIndexes;
       config.mainOnly = options.mainOnly || false;
+      config.languages = parseLanguageSelection(options.languages);
       config.estimatedDuration = this.getEstimatedDuration();
 
       if (!options.version) {
@@ -135,6 +138,7 @@ class LoincModule extends BaseTerminologyModule {
     terminal.log(`  Destination: ${chalk.white(config.dest)}`);
     terminal.log(`  Version: ${chalk.white(config.version)}`);
     terminal.log(`  Main Only: ${chalk.white(config.mainOnly ? 'Yes' : 'No')}`);
+    terminal.log(`  Language Variants: ${chalk.white(config.mainOnly ? 'Skipped (--main-only)' : formatLanguageSelection(config.languages))}`);
     terminal.log(`  Create Indexes: ${chalk.white(config.createIndexes ? 'Yes' : 'No')}`);
     terminal.log(`  Overwrite: ${chalk.white(config.overwrite ? 'Yes' : 'No')}`);
     terminal.log(`  Verbose: ${chalk.white(config.verbose ? 'Yes' : 'No')}`);
@@ -293,7 +297,8 @@ class LoincModule extends BaseTerminologyModule {
       config.version,
       {
         verbose: config.verbose,
-        mainOnly: config.mainOnly
+        mainOnly: config.mainOnly,
+        languages: config.languages
       }
     );
 
@@ -570,6 +575,10 @@ class LoincDataMigratorWithProgress {
         const files = fs.readdirSync(linguisticVariantsDir);
         for (const file of files) {
           if (file.includes('LinguisticVariant.csv') && !file.startsWith('LinguisticVariants.csv')) {
+            const langCode = getLanguageCodeFromVariantFile(file);
+            if (!matchesLanguageSelection(langCode, options.languages)) {
+              continue;
+            }
             const filePath = path.join(linguisticVariantsDir, file);
             totalLines += await this.countLines(filePath);
           }
@@ -664,7 +673,15 @@ class LoincDataMigrator {
       await this.createTables(db, version, options.verbose);
 
       // Discover language variants first
-      const languageVariants = await this.discoverLanguageVariants(sourceDir);
+      const languageVariants = await this.discoverLanguageVariants(sourceDir, options.languages);
+      if (!options.mainOnly && options.languages?.length && options.verbose) {
+        const missingLanguages = options.languages.filter(langCode => {
+          return !languageVariants.some(discoveredLangCode => matchesLanguageSelection(discoveredLangCode, [langCode]));
+        });
+        if (missingLanguages.length > 0) {
+          terminal.warn(`Requested language variant files not found: ${missingLanguages.join(', ')}`);
+        }
+      }
       if (!options.mainOnly) {
         this.stepCount = 12 + languageVariants.length;
       }
@@ -895,7 +912,7 @@ class LoincDataMigrator {
     this.langs.set('en-US', 1);
   }
 
-  async discoverLanguageVariants(sourceDir) {
+  async discoverLanguageVariants(sourceDir, languages = null) {
     const languageVariants = [];
     const linguisticVariantsDir = path.join(sourceDir, 'AccessoryFiles/LinguisticVariants');
 
@@ -903,9 +920,8 @@ class LoincDataMigrator {
       const files = fs.readdirSync(linguisticVariantsDir);
       for (const file of files) {
         if (file.includes('LinguisticVariant.csv') && !file.startsWith('LinguisticVariants.csv')) {
-          const match = file.match(/^([a-z]{2}[A-Z]{2})/);
-          if (match) {
-            const langCode = match[1].substring(0, 2) + '-' + match[1].substring(2);
+          const langCode = getLanguageCodeFromVariantFile(file);
+          if (langCode && matchesLanguageSelection(langCode, languages)) {
             languageVariants.push(langCode);
           }
         }
@@ -936,6 +952,10 @@ class LoincDataMigrator {
       const key = parseInt(items[0]);
       const langCode = items[1] + '-' + items[2];
       const description = items[3];
+
+      if (!matchesLanguageSelection(langCode, options.languages)) {
+        continue;
+      }
 
       db.run('INSERT INTO Languages (LanguageKey, Code, Description) VALUES (?, ?, ?)',
         [key, langCode, description]);
@@ -1499,7 +1519,10 @@ class LoincDataMigrator {
     if (options.verbose) terminal.log(`Processing Language ${langCode}...`);
 
     const langKey = this.langs.get(langCode);
-    if (!langKey) return;
+    if (!langKey) {
+      if (options.verbose) terminal.warn(`Language not declared in LinguisticVariants.csv: ${langCode}`);
+      return;
+    }
 
     const baseCode = langCode.replace('-', '');
     const fileName = `${baseCode}${langKey}LinguisticVariant.csv`;
@@ -1723,6 +1746,79 @@ function descClassType(s) {
     '4': 'Surveys'
   };
   return types[s] || s;
+}
+
+function parseLanguageSelection(value) {
+  if (!value) return [];
+
+  const rawValue = Array.isArray(value) ? value.join(',') : String(value);
+  const trimmedValue = rawValue.trim();
+  if (!trimmedValue || trimmedValue.toLowerCase() === 'all' || trimmedValue === '*') {
+    return [];
+  }
+
+  const languages = [];
+  for (const item of rawValue.split(',')) {
+    const langCode = normalizeLanguageSelection(item);
+    if (!langCode) {
+      throw new Error(`Invalid language code: ${item}. Use values such as cs, fr, or de`);
+    }
+    if (!languages.includes(langCode)) {
+      languages.push(langCode);
+    }
+  }
+
+  return languages;
+}
+
+function formatLanguageSelection(languages) {
+  return languages?.length ? languages.join(', ') : 'All available';
+}
+
+function getLanguageCodeFromVariantFile(fileName) {
+  if (!fileName) return null;
+
+  const baseName = path.basename(fileName);
+  if (!baseName.includes('LinguisticVariant.csv') || baseName.startsWith('LinguisticVariants.csv')) {
+    return null;
+  }
+
+  return normalizeLanguageCode(baseName);
+}
+
+function matchesLanguageSelection(langCode, languages = null) {
+  if (!languages?.length) return true;
+  if (!langCode) return false;
+
+  return languages.some(language => {
+    if (language.length === 2) {
+      return langCode.substring(0, 2) === language;
+    }
+
+    return langCode === language;
+  });
+}
+
+function normalizeLanguageSelection(value) {
+  if (!value) return null;
+
+  const baseName = path.basename(String(value).trim());
+  const languageOnly = baseName.match(/^([a-z]{2})$/i);
+  if (languageOnly) {
+    return languageOnly[1].toLowerCase();
+  }
+
+  return normalizeLanguageCode(baseName);
+}
+
+function normalizeLanguageCode(value) {
+  if (!value) return null;
+
+  const baseName = path.basename(String(value).trim());
+  const match = baseName.match(/^([a-z]{2})[-_]?([a-z]{2})/i);
+  if (!match) return null;
+
+  return `${match[1].toLowerCase()}-${match[2].toUpperCase()}`;
 }
 
 // CSV parsing utility: the fields of one record, unquoted ("" in a quoted field is a quote).

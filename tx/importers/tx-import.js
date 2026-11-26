@@ -19,7 +19,7 @@ class TerminologyImportCLI {
     this.program
       .name('tx-import')
       .description('Medical terminology import tool')
-      .version('1.0.0');
+      .version('1.0.0', '-V, --cli-version', 'output the tx-import CLI version');
 
     // Add global options
     this.program

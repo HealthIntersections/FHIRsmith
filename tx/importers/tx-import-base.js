@@ -130,17 +130,20 @@ class BaseTerminologyModule {
       message: 'Overwrite existing database if it exists?',
       default: smartDefaults.overwrite !== undefined ? smartDefaults.overwrite : false,
       when: (answers) => {
+        if (options.yes) return false;
         const destPath = options.dest || answers.dest;
         return fs.existsSync(destPath);
       }
     });
 
-    questions.push({
-      type: 'confirm',
-      name: 'verbose',
-      message: 'Show verbose progress output?',
-      default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true
-    });
+    if (options.verbose === undefined && !options.yes) {
+      questions.push({
+        type: 'confirm',
+        name: 'verbose',
+        message: 'Show verbose progress output?',
+        default: smartDefaults.verbose !== undefined ? smartDefaults.verbose : true
+      });
+    }
 
     const answers = await inquirer.prompt(questions);
 
