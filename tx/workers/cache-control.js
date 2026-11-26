@@ -138,7 +138,8 @@ class CacheControlWorker extends TerminologyWorker {
     // "<instanceCode>.<...>" when this server has an instance code, else a bare UUID
     let cacheId;
     try {
-      cacheId = cache.start(resources, sealed);
+      // a client logged in may have a bigger cache (cacheMaxConceptsLoggedIn: see tx.js checkLogin)
+      cacheId = cache.withConceptLimit(this.opContext.cacheMaxConcepts, () => cache.start(resources, sealed));
     } catch (e) {
       throw this.translateCacheIssue(e);
     }

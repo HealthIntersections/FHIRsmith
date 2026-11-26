@@ -125,6 +125,15 @@ class AuthStore {
         provider_id TEXT NOT NULL,
         pinned_at   TEXT NOT NULL
       );
+      -- requests told to log in (auth.loginForExpensive), for the daily report: by day (UTC),
+      -- what was asked for, and a hash of the address it came from (only ever counted)
+      CREATE TABLE IF NOT EXISTS refusals (
+        day     TEXT NOT NULL,
+        kind    TEXT NOT NULL,
+        address TEXT NOT NULL,
+        n       INTEGER NOT NULL,
+        PRIMARY KEY (day, kind, address)
+      );
     `);
     // columns added since the table was first made
     const cols = new Set(this.db.prepare('PRAGMA table_info(users)').all().map(c => c.name));
@@ -137,6 +146,7 @@ class AuthStore {
     this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_google ON users(google_id)');
     this.db.pragma('foreign_keys = ON');
     this.pendingUse = new Map(); // token id -> { count, last }
+    this.pendingRefusals = new Map(); // day \t kind \t address -> count
     const p = sql => this.db.prepare(sql);
     this.stmts = {
       userById: p('SELECT * FROM users WHERE id = ?'),
@@ -178,7 +188,10 @@ class AuthStore {
       adminPin: p('SELECT provider_id FROM admin_pins WHERE entry = ?'),
       insertAdminPin: p('INSERT OR IGNORE INTO admin_pins (entry, provider_id, pinned_at) VALUES (?, ?, ?)'),
       adminPins: p('SELECT entry, provider_id, pinned_at FROM admin_pins ORDER BY entry'),
-      dropAdminPin: p('DELETE FROM admin_pins WHERE entry = ?')
+      dropAdminPin: p('DELETE FROM admin_pins WHERE entry = ?'),
+      addRefusals: p('INSERT INTO refusals (day, kind, address, n) VALUES (?, ?, ?, ?) ON CONFLICT (day, kind, address) DO UPDATE SET n = n + excluded.n'),
+      purgeRefusals: p('DELETE FROM refusals WHERE day < ?'),
+      countRefusals: p('SELECT kind, SUM(n) AS n, COUNT(*) AS addresses FROM refusals WHERE day >= ? AND day < ? GROUP BY kind ORDER BY kind')
     };
   }
 
@@ -532,19 +545,51 @@ class AuthStore {
     return { user, tokenId: t.id };
   }
 
-  /** Write the token use counted since the last flush */
+  /** Write the token use, and the requests told to log in, counted since the last flush */
   flush() {
-    if (this.pendingUse.size === 0) {
+    if (this.pendingUse.size === 0 && this.pendingRefusals.size === 0) {
       return 0;
     }
     const entries = [...this.pendingUse.entries()];
     this.pendingUse.clear();
+    const refusals = [...this.pendingRefusals.entries()];
+    this.pendingRefusals.clear();
     this.db.transaction(() => {
       for (const [id, p] of entries) {
         this.stmts.useToken.run(p.count, new Date(p.last).toISOString(), id);
       }
+      for (const [key, n] of refusals) {
+        const [day, kind, address] = key.split('\t');
+        this.stmts.addRefusals.run(day, kind, address, n);
+      }
     })();
     return entries.length;
+  }
+
+  // ---- requests told to log in ----
+
+  /**
+   * Count a request told to log in (written by flush()). The address is kept only as a hash: it
+   * is only ever counted, for how many addresses the refusals came from
+   * @param {string} kind - what was asked for (Auth.LOGIN_FOR)
+   * @param {string} address - the client's address
+   */
+  noteRefusal(kind, address, t0 = Date.now()) {
+    const day = new Date(t0).toISOString().substring(0, 10);
+    const key = `${day}\t${kind}\t${sha256(String(address || '')).substring(0, 16)}`;
+    this.pendingRefusals.set(key, (this.pendingRefusals.get(key) || 0) + 1);
+  }
+
+  /**
+   * The requests told to log in on the whole days (UTC) from the day of since (ms) to the day
+   * before until, by kind: [{kind, n, addresses}] (addresses: how many different ones, counted
+   * per day). A report each day covers the day before, each day once. Older than EVENT_DAYS are
+   * dropped
+   */
+  refusalStats(since, until) {
+    this.flush();
+    this.stmts.purgeRefusals.run(new Date(until - EVENT_DAYS * DAY_MS).toISOString().substring(0, 10));
+    return this.stmts.countRefusals.all(new Date(since).toISOString().substring(0, 10), new Date(until).toISOString().substring(0, 10));
   }
 
   // ---- one-time links that set a password ----

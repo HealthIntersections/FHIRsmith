@@ -39,6 +39,40 @@ describe('duplicate names in a package', () => {
     expect(names.duplicates).toHaveLength(2);
   });
 
+  test('two examples of the same name are fine', async () => {
+    const names = new EntryNames();
+    expect(names.add('package/examples/Example-observation-bmi.json')).toBeNull();
+    expect(names.add('package/examples/Example-observation-bmi.json')).toBeNull();
+    expect(names.add('package/example/x.json')).toBeNull();
+    expect(names.add('./package//example/x.json')).toBeNull();
+    // but not names that differ in case
+    expect(names.add('package/Example/X.json')).toBe('the package has files named package/example/x.json and package/Example/X.json, which are the same file to some systems');
+    expect(names.add('package/examples/sub/x.json')).toBeNull();
+    expect(names.add('package/examples/sub/x.json')).toBeNull();
+    // but not in a folder that only starts with the name of one
+    expect(names.add('package/examples2/x.json')).toBeNull();
+    expect(names.add('package/examples2/x.json')).toBe('the package has more than one file named package/examples2/x.json');
+    expect(names.duplicates).toHaveLength(2);
+
+    // each reader takes them
+    const examples = () => tgz([['package/package.json', pj], ['package/examples/a.json', '{"id":"1"}'], ['package/examples/a.json', '{"id":"2"}']]);
+    const c = Object.create(PackageCrawler.prototype);
+    c.config = {};
+    await c.unpackPackage(examples());
+    const pm = new PackageManager(['http://127.0.0.1:1'], tmp);
+    expect(await pm.extractToCache('ex.names', '1.0.0', examples())).toBe('ex.names#1.0.0');
+    const file = path.join(tmp, 'p.tgz');
+    const watcher = new PackageWatcher(file, { log: { info() {}, warn() {}, error() {} } });
+    watcher.extractDir = path.join(tmp, 'x');
+    fs.writeFileSync(file, examples());
+    watcher.extractTgz();
+    // the npm registry check still reports them: a package being published can't have them
+    expect((await readPackageJson(examples())).duplicates).toEqual(['the package has more than one file named package/examples/a.json']);
+    const strict = new EntryNames({ strict: true });
+    expect(strict.add('package/examples/a.json')).toBeNull();
+    expect(strict.add('package/examples/a.json')).toBe('the package has more than one file named package/examples/a.json');
+  });
+
   test('the crawler refuses them', async () => {
     const c = Object.create(PackageCrawler.prototype);
     c.config = {};

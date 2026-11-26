@@ -1,8 +1,51 @@
 const escape = require('escape-html');
 
+// How long a problems report is kept (scanValueSets). The page reads every value set the
+// server has - 18,000 from VSAC on tx.fhir.org - so it isn't worked out again for each view;
+// it is sooner, if a value set provider says its content has changed (scanSignature)
+const PROBLEMS_CACHE_MS = 15 * 60 * 1000;
+
+// provider -> { signature, at, report: Promise<string> }. A request that comes while the report
+// is being made waits for that one
+const reports = new WeakMap();
+
 class ProblemFinder {
 
+  /**
+   * The report for the problems page: what versions of code systems the value sets ask for that
+   * the server doesn't have, by source. Kept for PROBLEMS_CACHE_MS, or until a value set
+   * provider's scanSignature() changes
+   * @param {Provider} provider
+   * @returns {Promise<string>} HTML
+   */
   async scanValueSets(provider) {
+    const signature = await ProblemFinder.signature(provider);
+    const now = Date.now();
+    const kept = reports.get(provider);
+    if (kept && kept.signature === signature && now - kept.at < PROBLEMS_CACHE_MS) {
+      return kept.report;
+    }
+    const entry = { signature, at: now, report: this.buildReport(provider) };
+    reports.set(provider, entry);
+    // a report that failed isn't kept
+    entry.report.catch(() => {
+      if (reports.get(provider) === entry) {
+        reports.delete(provider);
+      }
+    });
+    return entry.report;
+  }
+
+  /** What the value set providers say about their content (scanSignature), together */
+  static async signature(provider) {
+    const parts = [];
+    for (const vsp of provider.valueSetProviders) {
+      parts.push(typeof vsp.scanSignature === 'function' ? await vsp.scanSignature() : '');
+    }
+    return parts.join('\n');
+  }
+
+  async buildReport(provider) {
     let unknownVersions = {};  // system -> Set of versions not known to the server
     for (let vsp of provider.valueSetProviders) {
       let sourceUnknownVersions = unknownVersions[vsp.sourcePackage()];

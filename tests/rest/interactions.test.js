@@ -116,6 +116,55 @@ describe.each(engines())('rest interactions (%s)', (engine) => {
     expect(id.status).toBe(422);
   });
 
+  test('FHIRPath Patch: JSON and XML, in a transaction, and errors', async () => {
+    const c = await post('/r4/Patient', patient());
+    const op = (type, path, more = []) => ({ name: 'operation', part: [{ name: 'type', valueCode: type }, { name: 'path', valueString: path }, ...more] });
+    const fp = { resourceType: 'Parameters', parameter: [
+      op('replace', 'Patient.gender', [{ name: 'value', valueCode: 'female' }]),
+      op('insert', 'Patient.name[0].given', [{ name: 'value', valueString: 'James' }, { name: 'index', valueInteger: 1 }]),
+      op('add', 'Patient', [{ name: 'name', valueString: 'contact' }, { name: 'value', part: [{ name: 'gender', valueCode: 'male' }] }])
+    ] };
+    const p = await request(t.app).patch(`/r4/Patient/${c.body.id}`).set('Content-Type', FHIR_JSON).send(body(fp));
+    expect(p.status).toBe(200);
+    expect(p.body.gender).toBe('female');
+    expect(p.body.name[0].given).toEqual(['Peter', 'James']);
+    expect(p.body.contact).toEqual([{ gender: 'male' }]);
+    expect(p.body.meta.versionId).toBe('2');
+
+    const xml = '<Parameters xmlns="http://hl7.org/fhir"><parameter><name value="operation"/>' +
+      '<part><name value="type"/><valueCode value="delete"/></part><part><name value="path"/><valueString value="Patient.contact"/></part>' +
+      '</parameter></Parameters>';
+    const x = await request(t.app).patch(`/r4/Patient/${c.body.id}`).set('Content-Type', 'application/fhir+xml').set('Accept', FHIR_JSON).send(xml);
+    expect(x.status).toBe(200);
+    expect(x.body.contact).toBeUndefined();
+    expect(x.body.meta.versionId).toBe('3');
+
+    const missing = await request(t.app).patch(`/r4/Patient/${c.body.id}`).set('Content-Type', FHIR_JSON)
+      .send(body({ resourceType: 'Parameters', parameter: [op('replace', 'Patient.deceased', [{ name: 'value', valueBoolean: true }])] }));
+    expect(missing.status).toBe(422);
+    expect(missing.body.issue[0].diagnostics).toMatch(/No content found at Patient.deceased when replacing/);
+    const id = await request(t.app).patch(`/r4/Patient/${c.body.id}`).set('Content-Type', FHIR_JSON)
+      .send(body({ resourceType: 'Parameters', parameter: [op('replace', 'Patient.id', [{ name: 'value', valueId: 'other' }])] }));
+    expect(id.status).toBe(422);
+    const notPatch = await request(t.app).patch(`/r4/Patient/${c.body.id}`).set('Content-Type', FHIR_JSON).send(body(patient()));
+    expect(notPatch.status).toBe(400);
+
+    // in a transaction, the Parameters is the entry's resource, and its references are rewritten
+    const tx = await post('/r4', { resourceType: 'Bundle', type: 'transaction', entry: [
+      { fullUrl: 'urn:uuid:7c1d2bd5-4a6c-4b2e-9d3a-0d6a2b1f8e01', resource: { resourceType: 'Organization', name: 'Acme' }, request: { method: 'POST', url: 'Organization' } },
+      { resource: { resourceType: 'Parameters', parameter: [op('add', 'Patient', [{ name: 'name', valueString: 'managingOrganization' },
+        { name: 'value', valueReference: { reference: 'urn:uuid:7c1d2bd5-4a6c-4b2e-9d3a-0d6a2b1f8e01' } }])] },
+      request: { method: 'PATCH', url: `Patient/${c.body.id}` } }
+    ] });
+    expect(tx.status).toBe(200);
+    const after = await request(t.app).get(`/r4/Patient/${c.body.id}`);
+    expect(after.body.managingOrganization.reference).toMatch(/^Organization\/[^/]+$/);
+    expect(after.body.meta.versionId).toBe('4');
+
+    const caps = await request(t.app).get('/r4/metadata');
+    expect(caps.body.patchFormat).toEqual(['application/json-patch+json', 'application/fhir+json', 'application/fhir+xml']);
+  });
+
   test('references must resolve', async () => {
     const bad = await post('/r4/Observation', { resourceType: 'Observation', status: 'final', code: { text: 'x' }, subject: { reference: 'Patient/missing' } });
     expect(bad.status).toBe(422);
@@ -165,10 +214,9 @@ describe.each(engines())('rest interactions (%s)', (engine) => {
     expect(p.operation.some(o => o.name === 'everything')).toBe(true);
   });
 
-  test('formats', async () => {
-    expect((await request(t.app).get('/r4/metadata?_format=xml')).status).toBe(406);
-    expect((await request(t.app).get('/r4/metadata').set('Accept', 'application/fhir+xml')).status).toBe(406);
-    const x = await request(t.app).post('/r4/Patient').set('Content-Type', 'application/fhir+xml').send('<Patient xmlns="http://hl7.org/fhir"/>');
+  test('formats (XML: xml.test.js)', async () => {
+    expect((await request(t.app).get('/r4/metadata?_format=turtle')).status).toBe(406);
+    const x = await request(t.app).post('/r4/Patient').set('Content-Type', 'text/plain').send('Patient');
     expect(x.status).toBe(415);
     const bad = await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send('{ not json');
     expect(bad.status).toBe(400);

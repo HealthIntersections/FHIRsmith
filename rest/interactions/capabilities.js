@@ -14,6 +14,7 @@
 const packageJson = require('../../package.json');
 const { typeAllows } = require('../endpoint/settings');
 const { OPERATIONS } = require('../operations/operations');
+const { operationsFor: terminologyOperations } = require('../operations/terminology');
 
 const COMMON = [
   { name: '_id', type: 'token' }, { name: '_lastUpdated', type: 'date' }, { name: '_tag', type: 'token' },
@@ -57,9 +58,14 @@ function capabilities(ep, freq) {
     if (ts.versionAware) {
       r.versioning = 'versioned-update';
     }
-    const ops = OPERATIONS.filter(o => o.types === null || o.types.includes(type)).filter(o => o.instance || o.type);
+    const ops = OPERATIONS.filter(o => o.types === null || o.types.includes(type)).filter(o => o.instance || o.type)
+      .map(o => ({ name: o.name, definition: o.definition }));
+    // and those the terminology server does (operations/terminology.js)
+    if (ep.terminology) {
+      ops.push(...terminologyOperations(type).map(name => ({ name, definition: definitionOf(type, name) })).filter(o => o.definition));
+    }
     if (ops.length) {
-      r.operation = ops.map(o => ({ name: o.name, definition: o.definition }));
+      r.operation = ops;
     }
     resources.push(r);
   }
@@ -73,21 +79,31 @@ function capabilities(ep, freq) {
     software: { name: 'FHIRsmith', version: packageJson.version },
     implementation: { description: s.description || s.name, url: freq.base },
     fhirVersion: ep.definitions.fhirVersion,
-    format: ['json'],
-    patchFormat: ['application/json-patch+json'],
+    format: ep.xmlModel() ? ['json', 'xml'] : ['json'],
+    patchFormat: ['application/json-patch+json', 'application/fhir+json', ...(ep.xmlModel() ? ['application/fhir+xml'] : [])],
     rest: [{
       mode: 'server',
       security: { cors: true, description: s.anonymous === 'none' ? 'Log in, or send an API token (Authorization: Bearer)' : `Anonymous ${s.anonymous} is allowed` },
       resource: resources,
       interaction: [{ code: 'transaction' }, { code: 'batch' }, { code: 'search-system' }, { code: 'history-system' }],
       searchParam: COMMON,
-      operation: OPERATIONS.filter(o => o.system).map(o => ({ name: o.name, definition: o.definition }))
+      operation: [...OPERATIONS.filter(o => o.system).map(o => ({ name: o.name, definition: o.definition })),
+        ...(ep.terminology ? terminologyOperations(null).map(name => ({ name, definition: definitionOf(null, name) })) : [])]
     }]
   };
   if (s.description) {
     cs.description = s.description;
   }
   return { status: 200, resource: cs };
+}
+
+// the core OperationDefinitions of the terminology operations
+function definitionOf(type, name) {
+  if (!type) {
+    return `http://hl7.org/fhir/OperationDefinition/ConceptMap-${name}`;
+  }
+  // ($batch-validate-code has no core definition: it isn't listed)
+  return name === 'batch-validate-code' ? null : `http://hl7.org/fhir/OperationDefinition/${type}-${name}`;
 }
 
 module.exports = { capabilities };

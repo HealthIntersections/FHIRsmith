@@ -180,28 +180,45 @@ class Searcher {
 
   /**
    * A search interaction.
+   * @param {Object} freq
+   * @param {Object} ctx
+   * @param {Object} [options]
+   * @param {number} [options.lastn] - Observation/$lastn: of the matches, only the most recent
+   *   this many in each group of observations with the same code (observations.js), the
+   *   groups one after the other
    */
-  async search(freq, ctx) {
+  async search(freq, ctx, options = {}) {
     const ep = this.ep;
     if (param(freq, '_getpages') !== undefined) {
       return this.page(freq, ctx);
     }
     const types = this.typesFor(freq);
     const max = ep.settings.searchMaxResults;
+    const lastn = options.lastn || null;
     const prepared = await ep.inRead(ctx, async (q) => {
-      const p = await this.prepare(q, types, freq.params, { access: ctx.access, strict: strict(freq), compartment: freq.compartment });
+      const p = await this.prepare(q, types, freq.params, { access: ctx.access, strict: strict(freq), compartment: freq.compartment, noContained: !!lastn });
       const control = p.parsed.control;
       const count = control.count === null ? ep.settings.defaultCount : Math.min(control.count, ep.settings.maxCount);
       // a contained resource that matches brings back its container, once, unless
       // _containedType=contained asks for the contained resource itself
       const containers = p.mode !== 'false' && control.containedType === 'container';
-      const countSql = `SELECT COUNT(${containers ? 'DISTINCT i.ContainerKey' : '*'}) AS N FROM ${p.from} WHERE ${p.where}`;
+      let countSql = `SELECT COUNT(${containers ? 'DISTINCT i.ContainerKey' : '*'}) AS N FROM ${p.from} WHERE ${p.where}`;
+      let rowsSql = `SELECT i.ResourceKey, ${p.containerKey} AS ContainerKey FROM ${p.from} WHERE ${p.where} ${this.orderBy(control.sort)} LIMIT ${max + 1}`;
       const allArgs = [...p.fromArgs, ...p.args];
+      if (lastn) {
+        // numbered within each code group, most recent first; the groups in a fixed order
+        const ranked = `SELECT i.ResourceKey AS ResourceKey, ov.CodeGroup AS CodeGroup,
+          ROW_NUMBER() OVER (PARTITION BY ov.CodeGroup ORDER BY ov.Effective DESC, i.ResourceKey DESC) AS Rn
+          FROM ${p.from} JOIN ObservationValues ov ON ov.ResourceKey = i.ResourceKey AND ov.Component = 0 WHERE ${p.where}`;
+        countSql = `SELECT COUNT(*) AS N FROM (${ranked}) t WHERE t.Rn <= ${Number(lastn)}`;
+        rowsSql = `SELECT t.ResourceKey, t.ResourceKey AS ContainerKey FROM (${ranked}) t WHERE t.Rn <= ${Number(lastn)}
+          ORDER BY t.CodeGroup, t.Rn LIMIT ${max + 1}`;
+      }
       if (control.summary === 'count' || count === 0) {
         const row = await q.get(countSql, allArgs);
         return { p, count, keys: [], total: Number(row.N), countOnly: true };
       }
-      const rows = await q.all(`SELECT i.ResourceKey, ${p.containerKey} AS ContainerKey FROM ${p.from} WHERE ${p.where} ${this.orderBy(control.sort)} LIMIT ${max + 1}`, allArgs);
+      const rows = await q.all(rowsSql, allArgs);
       const truncated = rows.length > max;
       let keys = rows.slice(0, max).map(r => Number(containers ? r.ContainerKey : r.ResourceKey));
       if (containers) {
@@ -224,7 +241,7 @@ class Searcher {
       warnings.push(`The search matched more than ${max} resources: only the first ${max} can be paged through`);
     }
     const control = p.parsed.control;
-    const self = this.selfLink(freq, p.parsed.used, types);
+    const self = this.selfLink(freq, lastn ? [...p.parsed.used, ['max', String(lastn)]] : p.parsed.used, types);
     if (prepared.countOnly) {
       const bundle = { resourceType: 'Bundle', type: 'searchset', total: prepared.total, link: [{ relation: 'self', url: self }] };
       if (warnings.length) {
@@ -254,7 +271,8 @@ class Searcher {
   }
 
   selfLink(freq, used, types) {
-    const path = freq.segments.filter(s => s !== '_search').map(encodeURIComponent).join('/');
+    // ('$' is fine in a path: an operation's name keeps it)
+    const path = freq.segments.filter(s => s !== '_search').map(s => encodeURIComponent(s).replace(/%24/g, '$')).join('/');
     const params = [...used];
     if (!freq.type && !params.some(([n]) => n === '_type') && freq.params.some(([n]) => n === '_type')) {
       params.push(['_type', types.join(',')]);

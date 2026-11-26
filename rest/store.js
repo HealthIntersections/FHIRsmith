@@ -23,6 +23,7 @@
 
 const zlib = require('zlib');
 const crypto = require('crypto');
+const fhirJson = require('../library/fhir-json');
 const { FhirError, preconditionFailed, conflict, badRequest } = require('./library/errors');
 
 const OP_CREATE = 1;
@@ -39,7 +40,7 @@ const PROFILE_SYSTEM = 'urn:profile';
 const ID_RE = /^[A-Za-z0-9\-.]{1,64}$/;
 
 function encode(resource, compress) {
-  const text = Buffer.from(JSON.stringify(resource), 'utf8');
+  const text = Buffer.from(fhirJson.stringify(resource), 'utf8');
   return compress ? { compressed: 1, content: zlib.gzipSync(text) } : { compressed: 0, content: text };
 }
 
@@ -51,7 +52,7 @@ function decode(row) {
   if (Number(row.Compressed)) {
     buf = zlib.gunzipSync(buf);
   }
-  return JSON.parse(buf.toString('utf8'));
+  return fhirJson.parse(buf.toString('utf8'));
 }
 
 function newUuid() {

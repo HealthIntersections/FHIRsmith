@@ -17,7 +17,7 @@
  *   [base]/[type]?...      search results (and history: [base]/_history, ...)
  *   [base]/[type]/[id]     a resource: what identifies it, its narrative, and its JSON
  *
- * Writes stay JSON: there are no forms that change anything. The CapabilityStatement is drawn
+ * Writes stay JSON (or XML): there are no forms that change anything. The CapabilityStatement is drawn
  * by the tx module's renderer, which needs the translations: they are loaded on the first page.
  *
  * @module rest/web
@@ -25,6 +25,7 @@
 
 const path = require('path');
 const escape = require('escape-html');
+const fhirJson = require('../library/fhir-json');
 const parse5 = require('parse5');
 const htmlServer = require('../library/html-server');
 const { checkResourceNarratives } = require('../library/narrative-check');
@@ -285,7 +286,7 @@ class RestWeb {
       html += row('Terminology server', escape(s.txServer));
     }
     if (require('./access').decide(freq.principal, ep, 'manage').allowed) {
-      html += row('Administration', `<a href="${escape(base)}/_admin/valuesets">Value sets for searching</a>`);
+      html += row('Administration', `<a href="${escape(base)}/_admin/packages">Packages</a> · <a href="${escape(base)}/_admin/valuesets">Value sets for searching</a>`);
     }
     html += '</table>';
 
@@ -444,7 +445,7 @@ class RestWeb {
         html += `<tr><td><a href="${escape(bundle.type === 'history' ? vlink : link)}">${container ? escape(r.resourceType) + ' #' + escape(r.id) + '</a> <small>in ' + escape(container.join('/')) + '</small>' : escape(r.resourceType) + '/' + escape(r.id) + '</a>'}${mode}</td>` +
           `<td>${escape(displayOf(r))}</td><td>${escape(vid || '')}${op}</td>` +
           `<td>${escape(r.meta && r.meta.lastUpdated ? r.meta.lastUpdated.replace('T', ' ').replace(/\.\d+Z$/, 'Z') : '')}</td>` +
-          `<td><a href="${escape(link)}?_format=json">JSON</a></td></tr>`;
+          `<td><a href="${escape(link)}?_format=json">JSON</a>${this.ep.xmlModel() ? ` · <a href="${escape(link)}?_format=xml">XML</a>` : ''}</td></tr>`;
       }
       html += '</tbody></table>';
     }
@@ -494,6 +495,7 @@ class RestWeb {
     html += '<h3>Narrative</h3>';
     html += this.narrative(r);
     html += this.json(r, false);
+    html += `<p style="margin-top: 6px"><small>As <a href="?_format=json">JSON</a>${this.ep.xmlModel() ? ' · <a href="?_format=xml">XML</a>' : ''}</small></p>`;
     return html;
   }
 
@@ -515,7 +517,7 @@ class RestWeb {
   json(resource, open) {
     const id = 'json_' + Math.random().toString(36).substring(2, 10);
     return `<div style="margin-top: 10px"><button type="button" class="btn btn-sm btn-secondary" onclick="toggleJsonSource('${id}')">${open ? 'Hide JSON' : 'Show JSON'}</button>` +
-      `<div id="${id}" style="display: ${open ? 'block' : 'none'}"><pre>${escape(JSON.stringify(resource, null, 2))}</pre></div></div>`;
+      `<div id="${id}" style="display: ${open ? 'block' : 'none'}"><pre>${escape(fhirJson.stringify(resource, null, 2))}</pre></div></div>`;
   }
 
   outcome(oo) {

@@ -28,6 +28,10 @@ The top-level `auth` block of `config.json` (all optional; see `config-template.
 | `sessionHours` | 24 | How long a login lasts |
 | `linkMinutes` | 60 | How long a password link works |
 | `loginAttemptsPerWindow` | 20 | Failed logins (and password link requests, and password changes) per IP address per 15 minutes |
+| `loginForExpensive` | false | The expensive things need someone logged in: see [Login for expensive operations](#login-for-expensive-operations) |
+| `anonymousMaxRows` | 1000 | With `loginForExpensive`: the most rows of an expansion someone not logged in is shown |
+| `loginForOldTools` | false | The terminology API needs a login (an API token) from old versions of the FHIR validator and IG Publisher: `true`, those that don't say which version they are; a version (`"7.0.8"`), those too and any older. See [Login for old tools, and other clients](#login-for-old-tools-and-other-clients) |
+| `loginForOtherClients` | false | The terminology API needs a login from any software other than the FHIR validator and IG Publisher |
 | `requestsPerMinute` | 1000 | Requests a minute from one IP address that bring a login (the session cookie) or an API token, to the routes that look up who is asking (429 after that). Anonymous requests aren't counted, and the terminology API isn't behind it |
 
 Email (the top-level `email` block, [CONFIGURATION.md](../../CONFIGURATION.md#email-and-the-daily-report)) is how
@@ -279,7 +283,6 @@ A token is sent as:
 | testing | edit-links | | the named links |
 | testing | delete-reports | | deleting reports |
 | registry | member | | the API, when it is secured (`security.required`); the documents that aren't public |
-| packages | crawl | | `POST /packages/crawl` |
 | shl | create | | `POST /shl/create` |
 | folder | upload | a folder | uploading into it (`PUT`) |
 
@@ -288,7 +291,8 @@ The users page shows the roles of the modules that are running; a role of a modu
 kept as it is. The IPS projects page also says who manages each project.
 
 Only administrators can do anything that used to need a password in the configuration: empty the
-tx caches (`/{path}/caches`), resync a VSAC value set (the VSAC info page), manage IPS projects,
+tx caches (`/{path}/caches`), resync a VSAC value set (the VSAC info page), start a package crawl
+(`/packages/log`), manage IPS projects,
 clinical and national profiles and reports, publisher websites, and the users themselves.
 
 ## The daily report
@@ -298,8 +302,79 @@ starts with a paragraph on them: the logins in the period (with a password, with
 failed logins altogether, how many were for names that aren't accounts, and how many for each
 account that exists (a wrong password, or a disabled account). A GitHub or Google login that was
 cancelled or abandoned isn't a failed login. Then the user accounts (how many are disabled, how many are new)
-and the sessions logged in now. Logins and failed logins are kept in the auth database
+and the sessions logged in now, and the requests told to log in ([Login for expensive operations](#login-for-expensive-operations)). Logins and failed logins are kept in the auth database
 (`login_events`) for 90 days.
+
+## Login for expensive operations
+
+With `loginForExpensive` on, a few things that cost the server a lot need someone logged in: a
+session, or an API token. Any account will do, with no role: anyone can have one with GitHub or
+Google. It is for web crawlers: on npm.fhir.org (2026-11) one on 78,000 rotating addresses paged
+through every combination of the XIG's list filters, which no limit per address can stop, and
+none of them log in. Everything else stays open.
+
+| Where | Needs a login | Stays open |
+|---|---|---|
+| Terminology API | An answer in XML, or sending XML | Everything in JSON |
+| Terminology web pages | Search results past the first page (or a page of more than 20); *Show all* (`?_showAll=true`); an `$expand` past `anonymousMaxRows` rows (`count`, or `offset` + `count`, more than it; an `$expand` page that names no count shows that many) | Every resource page, the first page of every search, expansions up to `anonymousMaxRows` rows |
+| XIG | A filtered list (any of `ver`, `auth`, `realm`, `type`, `rt`, `text`, `pkg`, `onlyUsed`) past its first page, as a page, JSON or CSV | Resource pages, the sitemap, the first page of every list, the unfiltered list's pages |
+| Packages | Nothing | Everything |
+
+A client logged in also gets a bigger client side cache on the terminology server
+(`cacheMaxConceptsLoggedIn`, [tx/README.md](../../tx/README.md)), whether `loginForExpensive` is on or not.
+
+What someone not logged in sees:
+
+- **The links say so.** *Next* past the first page of a search or a filtered XIG list, and
+  *Show all*, read *(log in)* and go to the login page, which comes back to them.
+- **Asking anyway** (a bookmark, a crawler) gets **401** (`WWW-Authenticate: Bearer`,
+  `X-Robots-Tag: noindex`): a page that says what was asked for and why it needs a login, with
+  the ways to log in and a link back to the first page. Software gets the same in what it reads:
+  an `OperationOutcome` (issue code `login`) in XML for XML from the terminology API (saying the
+  same request in JSON needs none), `{error: "login-required", message}` for the XIG's JSON and CSV.
+- **`/auth/why-login`** explains it all: what needs a login, why, how to log in, and how
+  software gets and sends an API token (with the `fhir-settings.json` entry for the IG Publisher
+  and validator).
+
+### Login for old tools, and other clients
+
+Two more settings ask for a login by who the client is, not what it asks for. They are for the
+terminology API only (not its web pages, nor the package API), and are independent of
+`loginForExpensive` and of each other.
+
+- **`loginForOldTools`**: the FHIR validator and IG Publisher say which version they are, in
+  their User-Agent, from version 7.0.7 of the FHIR core library: `fhir/validator/7.0.7 fhir-core/7.0.7`,
+  `fhir/publisher fhir-core/7.0.7`. With `true`, a FHIR tool that doesn't (`fhir/publisher`,
+  `fhir/main-build`, core's old default `hapi-fhir-tooling-client`, or a build from source,
+  `fhir-core/(unknown)`) needs a token. With a version, so does one that says it is older (by its
+  `fhir-core/` version, or the validator's own). The answer, a 401 `OperationOutcome` (issue code
+  `login`), says to upgrade or log in, and what the client said it is. On tx.fhir.org in 2026-11,
+  most of the traffic was from tools that don't say their version: `fhir/publisher` (203,000
+  requests a day) and `hapi-fhir-tooling-client` (130,000).
+- **`loginForOtherClients`**: anything that isn't one of the FHIR tools (by its User-Agent:
+  `library/client-identity.js`) needs a token: scripts, other FHIR clients, other terminology
+  servers (FHIRsmith servers resolving through the ecosystem send `FHIRsmith (ecosystem
+  resolution)`, and need an API token configured). The registry crawler's requests are the
+  exception (below).
+
+Neither setting (nor `loginForExpensive`) blocks what the **tx registry's crawler** asks for
+(`registry/crawler.js`): `GET /metadata` (and `?mode=terminology`), and the value set list,
+`GET /ValueSet?_elements=url,version` with `_count` and the `_offset` of its next links. The
+crawler can't be told by its User-Agent, which each registry sets (ecosystem.hl7.org's is
+`ecosystem.hl7.org/1.0`), so these requests are recognised by what they ask
+(`TXModule.isRegistryCrawl`). Anything else from it is treated like any other client.
+
+The User-Agent is only what the client says: these are for telling old tools to upgrade and
+other software to identify itself, not for security.
+
+The daily report counts the requests told to log in on the day before, by what they asked for,
+with how many addresses they came from (kept as hashes, only to be counted).
+
+For a module: `auth.mustLogIn(req)` (a promise: true when `loginForExpensive` is on and no one is
+logged in for the request; looked up only when the request brings a login or a token) and
+`auth.refuseAnonymous(req, res, kind, { as, back, hint })` (the 401, counted), with `kind` one of
+`LOGIN_FOR` in auth.js, which is also the list `/auth/why-login` shows. `auth.loggedIn(req)` is
+the question alone.
 
 ## For modules
 
@@ -377,7 +452,7 @@ taken out:
 | `modules.testing.adminToken` | an API token of a user with the testing delete-reports role |
 | `modules.registry.security.users` | `auth`; `security.required: true`. The registry's documents stay where they were |
 | `modules.registry.security.apiToken` | `security.required: true`, and an API token of a user with the registry member role. While `apiToken` or `users` is set, the API stays closed |
-| `modules.packages.crawlToken` | an API token of a user with the packages crawl role, in `Authorization: Bearer` or `x-crawl-token` |
+| `modules.packages.crawlToken` | the server's administrators, logged in, start a crawl on `/packages/log` |
 | `modules.shl.password` | an API token of a user with the shl create role. A `password` sent in the body is ignored |
 | `modules.tx.adminPassword` | the server's administrators, logged in, empty the caches |
 | `modules.tx.vsacCfg.resyncPassword` | the server's administrators, logged in, resync a value set (`resync: false` turns it off) |

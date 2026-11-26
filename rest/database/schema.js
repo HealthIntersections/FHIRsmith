@@ -20,7 +20,7 @@
  * @module rest/database/schema
  */
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 8;
 
 // columns every index table has
 const INDEX_COMMON = [
@@ -200,6 +200,58 @@ const VALUESET_TABLES = [
     indexes: [{ name: 'SK_ValueSetMembers_Member', columns: ['ValueSetKey', 'Member', 'ConceptKey'] }] }
 ];
 
+// version 6: packages loaded into the endpoint (rest/packages.js), queued for the master.
+// Status: 0 queued, 1 loading, 2 loaded, 3 failed. Report: what happened (JSON)
+const PACKAGE_LOADS_TABLE = { name: 'PackageLoads',
+  columns: [['LoadKey', 'key'], ['Package', 'str(128)', { notNull: true }], ['Version', 'str(64)'], ['Examples', 'int', { notNull: true }],
+    ['Status', 'int', { notNull: true }], ['Requested', 'bigint', { notNull: true }], ['RequestedBy', 'str(128)'],
+    ['Started', 'bigint'], ['Finished', 'bigint'], ['Message', 'text'], ['Report', 'text']],
+  indexes: [{ name: 'SK_PackageLoads_Status', columns: ['Status'] }] };
+
+// version 7: the values of Observations, for $lastn and $stats (indexing/observations.js): a
+// row for the observation itself (Component 0), and one for each component (1...), for each
+// Observation with an effective[x] and a code. CodeGroup: the code, as one string (its concepts'
+// keys, in order; or its text, when it has no codings), the same for codes with the same
+// codings. Effective: the time to sort by (the end of a period, the last time of a Timing);
+// EffectiveLo, EffectiveHi: the range it covers. Value: a valueQuantity's value, with its unit,
+// and the UCUM canonical form when the unit is UCUM. ObservationCodes: the concepts of each
+// value's code (Source 2), the observation's categories (Source 1), and for a component, the
+// observation's code (Source 3)
+const OBSERVATION_TABLES = [
+  { name: 'ObservationValues',
+    columns: [['ValueKey', 'key'], ['ResourceKey', 'bigint', { notNull: true }], ['Component', 'int', { notNull: true }],
+      ['CodeGroup', 'str(255)', { notNull: true }], ['CodeText', 'str(255)'], ['SubjectType', 'str(64)'], ['SubjectId', 'str(64)'],
+      ['Status', 'str(32)'], ['Effective', 'bigint', { notNull: true }], ['EffectiveLo', 'bigint', { notNull: true }],
+      ['EffectiveHi', 'bigint', { notNull: true }], ['Value', 'double'], ['UnitSpaceKey', 'bigint'], ['Unit', 'str(128)'],
+      ['UnitDisplay', 'str(128)'], ['Canonical', 'double'], ['CanonicalUnit', 'str(128)']],
+    indexes: [{ name: 'SK_ObservationValues_Res', columns: ['ResourceKey', 'Component'] },
+      { name: 'SK_ObservationValues_Subject', columns: ['SubjectId', 'SubjectType', 'EffectiveLo'] }] },
+  { name: 'ObservationCodes',
+    columns: [['ValueKey', 'bigint', { notNull: true }], ['Source', 'int', { notNull: true }], ['ConceptKey', 'bigint', { notNull: true }]],
+    primaryKey: ['ValueKey', 'Source', 'ConceptKey'],
+    indexes: [{ name: 'SK_ObservationCodes_Concept', columns: ['ConceptKey', 'Source', 'ValueKey'] }] }
+];
+
+// version 8: the queued work of the queue runner (queue/runner.js), and its files. AsyncJobs:
+// the async requests (queue/async.js), by a UUID. State: queued, running, done, failed,
+// cancelled; Cancel: 1 when a DELETE asked for a running job to stop; Runner: the process
+// running it, with its Heartbeat. JobFiles: what a job keeps (its request, its result), in
+// pieces (queue/files.js), so no one value is too big for MySQL's max_allowed_packet
+const JOB_TABLES = [
+  { name: 'AsyncJobs',
+    columns: [['JobKey', 'key'], ['Id', 'str(64)', { notNull: true }], ['State', 'str(16)', { notNull: true }],
+      ['Interaction', 'str(64)', { notNull: true }], ['Url', 'text'], ['UserKey', 'str(128)'], ['UserLabel', 'str(255)'],
+      ['Created', 'bigint', { notNull: true }], ['Started', 'bigint'], ['Finished', 'bigint'], ['Expires', 'bigint', { notNull: true }],
+      ['Runner', 'str(128)'], ['Heartbeat', 'bigint'], ['Cancel', 'int', { notNull: true }], ['Progress', 'str(100)'],
+      ['Status', 'int'], ['Message', 'text'], ['ContentType', 'str(128)']],
+    indexes: [{ name: 'SK_AsyncJobs_Id', columns: ['Id'], unique: true }, { name: 'SK_AsyncJobs_State', columns: ['State', 'JobKey'] },
+      { name: 'SK_AsyncJobs_User', columns: ['UserKey', 'State'] }, { name: 'SK_AsyncJobs_Expires', columns: ['Expires'] }] },
+  { name: 'JobFiles',
+    columns: [['JobKey', 'bigint', { notNull: true }], ['Name', 'str(64)', { notNull: true }], ['Seq', 'int', { notNull: true }],
+      ['Data', 'blob']],
+    primaryKey: ['JobKey', 'Name', 'Seq'] }
+];
+
 const CONTAINED_TABLE = {
   name: 'Contained',
   columns: [['ContainedKey', 'key'], ['ResourceKey', 'bigint', { notNull: true }], ['TypeKey', 'bigint'], ['LocalId', 'str(64)', { notNull: true }]],
@@ -308,6 +360,30 @@ const MIGRATIONS = {
         await q.exec(sql);
       }
     }
+  },
+  // packages loaded into the endpoint
+  6: async (q) => {
+    for (const sql of tableDDL(PACKAGE_LOADS_TABLE, q.dialect.name)) {
+      await q.exec(sql);
+    }
+  },
+  // the values of Observations ($lastn, $stats), filled by reindexing what is there (which
+  // also brings the canonical forms of quantities to the UCUM service the server now uses)
+  7: async (q) => {
+    for (const table of OBSERVATION_TABLES) {
+      for (const sql of tableDDL(table, q.dialect.name)) {
+        await q.exec(sql);
+      }
+    }
+    await flagReindexAll(q);
+  },
+  // the queue runner's queued work: async requests, and the files they keep
+  8: async (q) => {
+    for (const table of JOB_TABLES) {
+      for (const sql of tableDDL(table, q.dialect.name)) {
+        await q.exec(sql);
+      }
+    }
   }
 };
 
@@ -390,4 +466,4 @@ async function waitForSchema(db, timeoutMs = 120000) {
   }
 }
 
-module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, PARAM_CONCEPTS_TABLE, VALUESET_TABLES, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };
+module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, PARAM_CONCEPTS_TABLE, VALUESET_TABLES, PACKAGE_LOADS_TABLE, OBSERVATION_TABLES, JOB_TABLES, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };

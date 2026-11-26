@@ -3033,6 +3033,44 @@ describe('clinical profiles', () => {
     expect((await form(jo, `${at}/constraint/cp-1/delete`)).status).toBe(403);
   });
 
+  test('the codes the rules name are shown with their displays, from the terminology server', async () => {
+    const asked = [];
+    const DISPLAYS = { [`${S}|38341003`]: 'Hypertensive disorder', [`${L}|8480-6`]: 'Systolic blood pressure', 'http://terminology.hl7.org/CodeSystem/condition-category|problem-list-item': 'Problem List Item' };
+    mod.tx = { get: async (path) => {
+      asked.push(path);
+      const q = new URLSearchParams(path.split('?')[1]);
+      const display = DISPLAYS[`${q.get('system')}|${q.get('code')}`];
+      return display ? { status: 200, resource: { resourceType: 'Parameters', parameter: [{ name: 'display', valueString: display }] } }
+        : { status: 404, resource: { resourceType: 'OperationOutcome' } };
+    } };
+    mod.txCache = new Map();
+    const rule = (key, human, expression) => ({ key, human, expression });
+    const sd = profiles.build({ id: 'abcdef012346', url: 'http://example.org/ips/StructureDefinition/profile-abcdef012346', title: 'Displays', constraints: [
+      rule('cp-1', 'Problems', `Bundle.section('${L}', '11450-4').entry('${S}', '38341003').exists()`),
+      rule('cp-2', 'A problem', `Bundle.resources('${S}', '38341003', 'Condition').category.hasCoding('http://terminology.hl7.org/CodeSystem/condition-category', 'problem-list-item')`),
+      rule('cp-3', 'Counted', `Bundle.resources('${L}', '8480-6', 'Observation').count() = 1`),
+      rule('cp-4', 'Unknown', `Bundle.resources('${S}', '999999', 'Condition').exists()`)] });
+    mod.store.saveProfile('abcdef012346', sd);
+    const page = await request(app).get('/ips/StructureDefinition/profile-abcdef012346').set('Accept', 'text/html');
+    expect(page.status).toBe(200);
+    const row = (human, set, rule) => `<td>${human}</td><td>${set}</td><td>${rule}</td></tr>`;
+    expect(page.text).toMatch(/<td>Problems<\/td><td>[^]*?<\/td><td>Code is <b>SNOMED CT\|38341003<\/b> <span class="ips-small">Hypertensive disorder<\/span><\/td><\/tr>/);
+    expect(page.text).toContain(row('A problem', 'Conditions where Code is <b>SNOMED CT|38341003</b> <span class="ips-small">Hypertensive disorder</span>', 'Has category <b>condition-category|problem-list-item</b> <span class="ips-small">Problem List Item</span>'));
+    expect(page.text).toContain(row('Counted', 'Observations where Code is <b>LOINC|8480-6</b> <span class="ips-small">Systolic blood pressure</span>', '<code>.count() = 1</code>'));
+    // a code the server doesn't know: just the code
+    expect(page.text).toContain(row('Unknown', 'Conditions where Code is <b>SNOMED CT|999999</b>', 'Must be present somewhere'));
+    // each code once, and from the cache the next time
+    expect(asked.length).toBe(4);
+    await request(app).get('/ips/StructureDefinition/profile-abcdef012346').set('Accept', 'text/html');
+    expect(asked.length).toBe(4);
+    // a server that is down: the page, without the displays
+    mod.txCache = new Map();
+    mod.tx = { get: async () => { throw new Error('down'); }, log: { error: () => {} } };
+    const down = await request(app).get('/ips/StructureDefinition/profile-abcdef012346').set('Accept', 'text/html');
+    expect(down.status).toBe(200);
+    expect(down.text).toContain(row('Counted', 'Observations where Code is <b>LOINC|8480-6</b>', '<code>.count() = 1</code>'));
+  });
+
   test('a rule about resources is shown as its resource set and, for the known tails, the rule in words', async () => {
     const AU = 'http://hl7.org.au/fhir/ips/StructureDefinition/Bundle-au-ips';
     mod.store.createNationalProfile('hl7.fhir.au.ips', '1.0.0', AU, 'AU');
@@ -3114,14 +3152,16 @@ describe('clinical profiles', () => {
     const at = made.body.url;
     const id = made.body.id.substring('profile-'.length);
     const problems = { section: { system: L, code: '11450-4' }, questions: [{ text: 'Any problems?', type: 'boolean' }], resource: 'Condition:problem', code: { system: S, code: '38341003', display: 'Hypertension' } };
-    const vitals = { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weight', type: 'quantity', units: [{ system: 'http://unitsofmeasure.org', code: 'kg' }], definition: 'Observation.value[x]' }], resource: 'Observation:vitals' };
+    const vitals = { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weighed?', type: 'boolean' }, { text: 'Weight', type: 'quantity', units: [{ system: 'http://unitsofmeasure.org', code: 'kg' }], definition: 'Observation.value[x]' }],
+      resource: 'Observation:vitals', code: { system: L, code: '29463-7' } };
     const story = { section: { system: L, code: '81338-6' }, questions: [{ text: 'In your own words', type: 'display' }] };
     for (const g of [vitals, problems, story]) {
       expect((await send(`${at}/guide`, { guide: g })).status).toBe(201);
     }
     // a second for problems: added at the end of the profile, shown with the other problems guide
-    const more = { section: { system: L, code: '11450-4' }, questions: [{ text: 'Since when?', type: 'date', definition: 'Condition.onset[x]' },
-      { text: 'How bad?', type: 'choice', answers: [{ system: S, code: '24484000', display: 'Severe' }, { system: S, code: '6736007', display: 'Moderate' }] }] };
+    const more = { section: { system: L, code: '11450-4' }, resource: 'Condition:problem', code: { system: S, code: '44054006', display: 'Diabetes' },
+      questions: [{ text: 'Diabetes?', type: 'boolean' }, { text: 'Since when?', type: 'date', definition: 'Condition.onset[x]' },
+        { text: 'How bad?', type: 'choice', answers: [{ system: S, code: '24484000', display: 'Severe' }, { system: S, code: '6736007', display: 'Moderate' }] }] };
     expect((await send(`${at}/guide`, { guide: more })).body).toEqual({ index: 3 });
     // the guide by itself is checked first
     const bad = await send(`${at}/guide`, { guide: { section: { system: L, code: '1' }, questions: [] } });
@@ -3130,7 +3170,7 @@ describe('clinical profiles', () => {
     expect((await send(`${at}/guide/9`, { guide: story })).status).toBe(404);
 
     let sd = mod.store.profile(id);
-    expect(sd.contained[0].item.map(i => i.text)).toEqual(['Weight', 'Any problems?', 'In your own words', 'Since when?', 'How bad?']);
+    expect(sd.contained[0].item.map(i => i.text)).toEqual(['Weighed?', 'Weight', 'Any problems?', 'In your own words', 'Diabetes?', 'Since when?', 'How bad?']);
     expect(sd.extension.length).toBe(4);
     // the page: grouped by section, in the IPS order - Patient Story, Problems (both), Vital Signs
     let page = await agent.get(at).set('Accept', 'text/html');
@@ -3151,17 +3191,18 @@ describe('clinical profiles', () => {
 
     // edit: the questions it keeps keep their linkIds
     const before = cfg.profile.guides[3].questions.map(q => q.linkId);
-    const edited = { ...cfg.profile.guides[3], questions: [cfg.profile.guides[3].questions[1], cfg.profile.guides[3].questions[0], { text: 'Anything else?', type: 'boolean' }] };
+    const qs = cfg.profile.guides[3].questions;
+    const edited = { ...cfg.profile.guides[3], questions: [qs[0], qs[2], qs[1], { text: 'Anything else?', type: 'boolean' }] };
     expect((await send(`${at}/guide/3`, { guide: edited })).status).toBe(200);
     sd = mod.store.profile(id);
     const after = profiles.guidesOf(sd)[3].questions.map(q => q.linkId);
-    expect(after.slice(0, 2)).toEqual([before[1], before[0]]);
-    expect(before).not.toContain(after[2]);
+    expect(after.slice(0, 3)).toEqual([before[0], before[2], before[1]]);
+    expect(before).not.toContain(after[3]);
     // move: within the section - guide 3 (problems) up past guide 1 (problems), not past the others
     expect((await form(agent, `${at}/guide/3/move`, { direction: 'up' })).status).toBe(302);
-    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weight', 'How bad?', 'In your own words', 'Any problems?']);
+    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weighed?', 'Diabetes?', 'In your own words', 'Any problems?']);
     await form(agent, `${at}/guide/1/move`, { direction: 'up' });
-    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weight', 'How bad?', 'In your own words', 'Any problems?']);
+    expect(profiles.guidesOf(mod.store.profile(id)).map(g => g.questions[0].text)).toEqual(['Weighed?', 'Diabetes?', 'In your own words', 'Any problems?']);
     // rules and renaming leave the guided input alone
     expect((await send(`${at}/constraint`, { human: 'Problems', expression: `Bundle.section('${L}', '11450-4').exists()` })).status).toBe(201);
     expect((await form(agent, `${at}/title`, { title: 'Guided v2' })).status).toBe(302);
@@ -3205,7 +3246,7 @@ describe('clinical profiles', () => {
   test('the general editor follows a clinical profile (?profile=): its guidance goes to the page', async () => {
     const { send } = await asAdmin();
     const made = await send('/ips/StructureDefinition', { title: 'Tourism', constraints: [{ human: 'Problems', expression: `Bundle.section('${L}', '11450-4').hasData()` }],
-      guides: [{ section: { system: L, code: '11450-4' }, questions: [{ text: 'Anticoagulants?', type: 'boolean' }] }] });
+      guides: [{ section: { system: L, code: '11450-4' }, questions: [{ text: 'Anticoagulants?', type: 'boolean' }], resource: 'Condition:problem', code: { system: S, code: '1' } }] });
     expect(made.status).toBe(201);
     for (const url of [`/ips/compose/general?profile=${made.body.id}`, `/ips/compose/general?profile=${made.body.id.substring(8)}`]) {
       const page = await request(app).get(url).set('Accept', 'text/html');
@@ -3458,10 +3499,10 @@ describe('the structure view', () => {
 
   test('a tree table: path, type, id, details, with the Composition at the root', () => {
     const h = render.renderStructure(doc({ date: '2026-03-01T09:30:00+10:00' }));
-    expect(h).toContain('<thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th></tr></thead>');
+    expect(h).toContain('<thead><tr><th>Path</th><th>Type</th><th>Id</th><th>Details</th><th>Age</th></tr></thead>');
     const r = row(h, 'Composition');
     expect(r).toContain('<img src="/assets/images/icon_document.png"');
-    expect(cells(r).slice(1)).toEqual(['Composition', 'c', 'IPS <span class="ips-tt-when">01-Mar 26 09:30 (+10:00)</span>']);
+    expect(cells(r).slice(1, 4)).toEqual(['Composition', 'c', 'IPS <span class="ips-tt-when">01-Mar 26 09:30 (+10:00)</span>']);
   });
 
   test('relative references resolve against the referring entry, and what does not resolve is external', () => {
@@ -3470,13 +3511,13 @@ describe('the structure view', () => {
         managingOrganization: { reference: 'Organization/o' } } }));
     const subject = row(h, 'subject');
     expect(subject).toContain('icon_person.png');
-    expect(cells(subject).slice(1)).toEqual(['Patient', 'p', 'Jane Smith <span class="ips-tt-when">06-May 70</span>']);
+    expect(cells(subject).slice(1, 4)).toEqual(['Patient', 'p', 'Jane Smith <span class="ips-tt-when">06-May 70</span>']);
     expect(subject).toContain('<td title="Reference: Patient/p">p</td>');
     for (const path of ['managingOrganization', 'custodian']) {
       const r = row(h, path);
       expect(r).toContain('class="ips-tt-missing"');
       expect(r).toContain('icon_external.png');
-      expect(cells(r).slice(1)).toEqual(['Organization', 'o', '<i>(not in document)</i>']);
+      expect(cells(r).slice(1, 4)).toEqual(['Organization', 'o', '<i>(not in document)</i>']);
     }
   });
 
@@ -3485,13 +3526,13 @@ describe('the structure view', () => {
       { fullUrl: 'urn:uuid:m', resource: { resourceType: 'MedicationStatement', id: 'm', medicationReference: { reference: '#med' }, effectivePeriod: { start: '2025-01-02' },
         contained: [{ resourceType: 'Medication', id: 'med', code: { text: 'Aspirin' }, manufacturer: { reference: '#org' } }, { resourceType: 'Organization', id: 'org', name: 'Acme' }] } }));
     // what a statement is comes from the Medication it refers to
-    expect(cells(row(h, 'entry[0]')).slice(1)).toEqual(['MedicationStatement', 'm', 'Aspirin <span class="ips-tt-when">02-Jan 25</span>']);
+    expect(cells(row(h, 'entry[0]')).slice(1, 4)).toEqual(['MedicationStatement', 'm', 'Aspirin <span class="ips-tt-when">02-Jan 25</span>']);
     const med = row(h, 'medicationReference');
     expect(med).toContain('icon_medication.png');
-    expect(cells(med).slice(1)).toEqual(['Medication', 'med', 'Aspirin <i>(contained)</i>']);
+    expect(cells(med).slice(1, 4)).toEqual(['Medication', 'med', 'Aspirin <i>(contained)</i>']);
     const org = row(h, 'manufacturer');
     expect(org).toContain('icon_organization.png');
-    expect(cells(org).slice(1)).toEqual(['Organization', 'org', 'Acme <i>(contained)</i>']);
+    expect(cells(org).slice(1, 4)).toEqual(['Organization', 'org', 'Acme <i>(contained)</i>']);
   });
 
   test('sections nest, and say what they refer to besides their entries', () => {
@@ -3499,7 +3540,7 @@ describe('the structure view', () => {
     const outer = row(h, 'section[0]');
     const inner = row(h, 'section[0].section[0]');
     expect(outer).toContain('icon_section.png');
-    expect(cells(outer).slice(1)).toEqual(['Section', '', '<b>Outer</b>']);
+    expect(cells(outer).slice(1, 4)).toEqual(['Section', '', '<b>Outer</b>']);
     const id = (r) => /data-tt-id="(\d+)"/.exec(r)[1];
     expect(inner).toContain(`data-tt-parent="${id(outer)}"`);
     expect(row(h, 'author[0]')).toContain(`data-tt-parent="${id(inner)}"`);
@@ -3551,6 +3592,49 @@ describe('the structure view', () => {
     expect(rows(h, 'entry[5]')[0]).toContain('icon_other.png');
     expect(details(5)).toBe('<span class="ips-tt-when">02-Mar 26 01:02 (UTC)</span>');
     expect(rows(h, 'entry[0]')[0]).toContain('icon_clinical.png');
+  });
+
+  test('the age column: the document against now, sections and their entries (when recorded) against the document', () => {
+    const r = (resource) => ({ fullUrl: `urn:uuid:${resource.id}`, resource });
+    const now = Date.parse('2026-11-24T00:00:00Z');
+    const h = render.renderStructure(doc({ date: '2026-10-14T18:27:53Z', subject: { reference: 'urn:uuid:p' }, section: [
+      { title: 'Meds', entry: [{ reference: 'urn:uuid:m1' }, { reference: 'urn:uuid:m2' }] },
+      { title: 'Future', entry: [{ reference: 'urn:uuid:f' }] },
+      { title: 'Undated', entry: [{ reference: 'urn:uuid:u' }, { reference: 'urn:uuid:nowhere' }] },
+      { title: 'Outer', section: [{ title: 'Inner', entry: [{ reference: 'urn:uuid:old' }] }] }] },
+    r({ resourceType: 'Patient', id: 'p', birthDate: '1979-05-09' }),
+    r({ resourceType: 'MedicationStatement', id: 'm1', medicationCodeableConcept: { text: 'A' }, effectivePeriod: { start: '2010-01-01' }, dateAsserted: '2026-10-10' }),
+    r({ resourceType: 'MedicationStatement', id: 'm2', medicationCodeableConcept: { text: 'B' }, dateAsserted: '2026-06-01' }),
+    r({ resourceType: 'Condition', id: 'f', code: { text: 'C' }, recordedDate: '2026-10-20' }),
+    r({ resourceType: 'Condition', id: 'u', code: { text: 'D' }, onsetDateTime: '2026-10-01' }),
+    r({ resourceType: 'Condition', id: 'old', code: { text: 'E' }, recordedDate: '2020-01-01' })), now);
+    const age = (x) => rows(h, x).map(row => cells(row)[4]);
+    // the document: 5 weeks old now
+    expect(age('Composition')[0]).toContain('ips-age-mouldy');
+    expect(age('Composition')[0]).toContain('5 weeks');
+    // only sections and their entries: not what else the Composition refers to
+    expect(age('subject')[0]).toBe('');
+    // the record date, not when it happened (m1 started in 2010); the newest record in the section counts; each entry has its own
+    expect(age('section[0]')[0]).toContain('ips-age-fresh');
+    expect(age('section[0]')[0]).toContain('4 days');
+    expect(age('entry[0]')[0]).toContain('ips-age-fresh');
+    expect(age('entry[1]')[0]).toContain('ips-age-ghost');
+    // after the document: an error, for the entry and its section
+    expect(age('section[1]')[0]).toContain('ips-age-error');
+    expect(age('section[1]')[0]).toContain('after document');
+    // no record date (an onset isn't one): greyed; an entry not in the document has none
+    expect(age('section[2]')[0]).toContain('ips-age-none');
+    expect(age('entry[1]')[1]).toContain('ips-age-none');
+    // a section's age includes its subsections'
+    expect(age('section[3]')[0]).toContain('ips-age-fossil');
+    expect(age('section[3].section[0]')[0]).toContain('ips-age-fossil');
+  });
+
+  test('the age column: a document with no date', () => {
+    const h = render.renderStructure(doc({ section: [{ title: 'S', entry: [{ reference: 'urn:uuid:a' }] }] },
+      { fullUrl: 'urn:uuid:a', resource: { resourceType: 'Condition', id: 'a', recordedDate: '2020-01-01' } }));
+    expect(cells(rows(h, 'Composition')[0])[4]).toContain('no document date');
+    expect(cells(rows(h, 'section[0]')[0])[4]).toContain('ips-age-none');
   });
 
   test('values from the document are escaped', () => {

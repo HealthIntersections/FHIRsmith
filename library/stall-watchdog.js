@@ -85,7 +85,9 @@ function startStallWatchdog({ thresholdSeconds, dir, label, log }) {
   const beat = new BigInt64Array(buffer);
   const tick = () => Atomics.store(beat, 0, BigInt(Date.now()));
   tick();
-  const timer = setInterval(tick, 1000);
+  // well inside the threshold: with a beat only every threshold, a timer a few ms late (any
+  // busy machine) looks like a stall
+  const timer = setInterval(tick, Math.max(50, Math.min(1000, Math.floor(thresholdMs / 4))));
   timer.unref();
 
   const worker = new Worker(path.join(__dirname, 'stall-watchdog-worker.js'), {

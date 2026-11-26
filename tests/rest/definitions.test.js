@@ -87,5 +87,6 @@ describe('core search parameters', () => {
     expect(n).toBeGreaterThan(5000);
     expect(rows).toBeGreaterThan(100000);
     expect(problems).toEqual([]);
-  });
+  // (about 4 s on its own: much longer when the whole suite runs at once)
+  }, 120000);
 });

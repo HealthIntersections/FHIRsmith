@@ -11,7 +11,8 @@
  * For each search parameter on the resource's type, the expression is evaluated, the results
  * turned into rows (values.js), systems turned into SpaceKeys, codes into ConceptKeys (for
  * the closure table), local references into the target's ResourceKey, and compartment rows
- * made from the compartment definitions. The old rows go first.
+ * made from the compartment definitions; an Observation's values too (observations.js). The
+ * old rows go first.
  *
  * @module rest/indexing/indexer
  */
@@ -21,6 +22,7 @@ const { INDEX_TABLES } = require('../database/schema');
 const { chunks } = require('../database/lookups');
 const { unprocessable } = require('../library/errors');
 const fulltext = require('./fulltext');
+const observations = require('./observations');
 const { CONTAINERS } = require('./definitions');
 
 // the most contained resources indexed for one container
@@ -176,6 +178,11 @@ class Indexer {
 
     // the text, for _text and _content (the container's: the contained resources are in it)
     await fulltext.write(q, resourceKey, resource);
+
+    // an Observation's values, for $lastn and $stats
+    if (resource.resourceType === 'Observation') {
+      await observations.write(q, this.lookups, resourceKey, resource, this.ctx);
+    }
 
     // compartments
     const comps = this.compartmentRows(resource, top.rows, resourceKey);
@@ -436,6 +443,7 @@ class Indexer {
     }
     await q.run('DELETE FROM Compartments WHERE ResourceKey = ?', [resourceKey]);
     await fulltext.remove(q, resourceKey);
+    await observations.remove(q, resourceKey);
     // and the contained resources it was indexed with
     const contained = await q.all('SELECT ContainedKey FROM Contained WHERE ResourceKey = ?', [resourceKey]);
     if (contained.length) {

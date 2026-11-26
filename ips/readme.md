@@ -78,6 +78,14 @@ section's - may have active content (script, event handlers, `javascript:` URLs,
 forms and the like; see `library/narrative-check.js`), because the web site shows the
 narratives as they are.
 
+Decimals keep their precision (`library/fhir-json.js`): a `70.50` in a document is stored,
+returned, searched, copied for processing, shared, and shown in a generated narrative as
+`70.50`, not `70.5`; so are the quantities the editors compose.
+
+A document with a property more than once in the same object is refused (400, with an issue
+for each, like the Java validator's: `library/json-duplicates.js`), on the API and the submit page:
+parsing keeps only one of them, so the document would be stored without the other.
+
     POST /ips/{code}/Bundle
     Content-Type: application/fhir+json
     Authorization: Bearer <token>        (the project's token, or a user's API token, if the project needs one)
@@ -680,13 +688,35 @@ Its section rules narrow each section's choices: a section it has a rule for can
 `isKnown()` leaves nil known as the only reason to be empty. A choice that isn't allowed is
 greyed out rather than taken away, since a loaded document may already have made it. The
 profile's guided input is shown at the head of each section, under the entries / narrative /
-empty choice: a list, a guide to a line - first dismiss, then its questions in order, each with
+empty choice: a list on a faint yellow background, a guide to a line - first a Dismiss button, then its questions in order, each with
 its input at the end of its text (yes/no, a choice of its answers, a date, a value and unit -
-one of its units, when it names any), then Apply when there is something to answer (applying
-is still to come). A dismissed guide is greyed out and cut to one line, with "show" to bring it
-back. Guides for a section the editor doesn't have (the Patient Story, another code) are shown
+one of its units, when it names any), then Apply when there is something to answer and a
+resource to make. A dismissed guide is greyed out and cut to one line, starting with a tick,
+"handled" (clicked, it brings the guide back). Guides for a section the editor doesn't have (the Patient Story, another code) are shown
 above the sections, under their section's title. The answers and what is dismissed are kept in
 the model (`model.guidance`), so the draft keeps them; the composer ignores them.
+
+Apply makes what the guide's resource makes of the answers - so far only `Condition:problem` (the
+others' Apply is disabled) - from the first question, which must be answered: yes is a problem
+row with clinical status active and verification confirmed, no is inactive and refuted. The row
+has the guide's code, and a recordedDate of now. Each of the other questions with an answer and
+a definition goes into the row's field with that path (`Condition.onset[x]`, `Condition.severity`
+...) when the answer fits it: a date into a date field, a choice into a coded field, or a select
+that has the code. Anything else is skipped, and display questions never do anything. The row
+takes the place of the row the guide made before (applying it again replaces it), or of the
+section's untouched blank row, or is added as the next entry; the section shows its entries, and
+the guide is marked handled. The build makes the row a Condition like any other: the patient as
+its subject, and the IPS problem-list-item category. When the editor opens a document (Edit on
+its page, a file, a test patient), a guide whose code a Condition in its section already has is
+handled already.
+
+Every problem row has a recordedDate: a field the form doesn't show (`hidden`, type `datetime`),
+which it stamps with the time as it makes the row, and the build fills with the time it is built
+when a row doesn't have it (`stamp`); a document's own is kept.
+
+A guide with questions to answer must have a resource for the answers to make, a yes/no first
+question (the one they depend on - the only kind there is for now), and, with a yes/no question,
+a code: the profile editor refuses it otherwise.
 
 ### The patient IPS editor
 
@@ -839,7 +869,7 @@ A new profile is made on the list page (`/ips/StructureDefinition`) from just a 
 - **Other rules:** any other FHIRPath.
 - **Guided input:** below.
 
-The page that shows a profile is the same for everyone. Its first part is a table of three columns: the **Expectation** (the description), the **Section** (an IPS section by its title, or `system|code`) and the **Entry** (`Code is system|code`, or `Code is in` a value set, by its title, or its URL when the title isn't known). A code system is shown by name when it is a known one. A section's checks follow it, in words (must be asked/known, must have supporting entries, about the same Patient). A cardinality, `[m..n]`, follows an entry unless it is `1..1` or not given (none means at least one). The second part is also a table of three columns: the **Expectation**, the **Resource Set** (the type, as `MedicationAdministrations where` or `Any resource where`, then the code as in the Entry column) and the **Rule**, which is the rest of the expression in words where it is one of these: `.exists()` is "Must be present somewhere"; `.all(sameSubject())` is "Patient must match the Document"; `.x.exists()` and `.x.y.exists()` are "Must have an x" and "Must have an x.y" (no deeper); `.conformsTo(url)` (or `.all(conformsTo(url))`) is "Conform to" the profile, named by its title when it is one of the clinical profiles or by its jurisdiction and package when it is a national profile; and `.category.hasCoding(system, code [, version])` (or inside `.all()`) is "Has category system|code". Any other rest is shown as FHIRPath, and so are the other rules. On the same page the administrator edits the rules one at a time: each row has Edit and Delete, and each part has an Add button. Add and Edit open a dialog for the one rule - the expectation, then the parts of the rule, each with what it means (for a rule about resources, what must be true of them is a choice: present somewhere, the patient matches the document's, an element, conformance to a profile, a category, or other FHIRPath), and the FHIRPath it makes - and Save stores that one rule by itself (`POST /ips/StructureDefinition/{id}/constraint` to add, `.../constraint/{key}` to change, `.../constraint/{key}/delete` to delete). An edited rule keeps its key. Rename changes the title (`POST .../title`; the name follows it). There is no full editor any more: an old link to one (`.../edit`) lands on the profile's page.
+The page that shows a profile is the same for everyone. Its first part is a table of three columns: the **Expectation** (the description), the **Section** (an IPS section by its title, or `system|code`) and the **Entry** (`Code is system|code`, or `Code is in` a value set, by its title, or its URL when the title isn't known). A code system is shown by name when it is a known one. A section's checks follow it, in words (must be asked/known, must have supporting entries, about the same Patient). A cardinality, `[m..n]`, follows an entry unless it is `1..1` or not given (none means at least one). The second part is also a table of three columns: the **Expectation**, the **Resource Set** (the type, as `MedicationAdministrations where` or `Any resource where`, then the code as in the Entry column) and the **Rule**, which is the rest of the expression in words where it is one of these: `.exists()` is "Must be present somewhere"; `.all(sameSubject())` is "Patient must match the Document"; `.x.exists()` and `.x.y.exists()` are "Must have an x" and "Must have an x.y" (no deeper); `.conformsTo(url)` (or `.all(conformsTo(url))`) is "Conform to" the profile, named by its title when it is one of the clinical profiles or by its jurisdiction and package when it is a national profile; and `.category.hasCoding(system, code [, version])` (or inside `.all()`) is "Has category system|code". A code given by system and code (an entry's, a resource set's, a category's) is followed by its display, from the terminology server's `$lookup`: the rules don't carry displays, and a code alone tells a reader little. The lookups are asked together and kept in the module's cache (the one the narrative step uses); the page waits for them at most 5 seconds, and a code the server doesn't know, or can't answer for, is shown without one. Any other rest is shown as FHIRPath, and so are the other rules. On the same page the administrator edits the rules one at a time: each row has Edit and Delete, and each part has an Add button. Add and Edit open a dialog for the one rule - the expectation, then the parts of the rule, each with what it means (for a rule about resources, what must be true of them is a choice: present somewhere, the patient matches the document's, an element, conformance to a profile, a category, or other FHIRPath), and the FHIRPath it makes - and Save stores that one rule by itself (`POST /ips/StructureDefinition/{id}/constraint` to add, `.../constraint/{key}` to change, `.../constraint/{key}/delete` to delete). An edited rule keeps its key. Rename changes the title (`POST .../title`; the name follows it). There is no full editor any more: an old link to one (`.../edit`) lands on the profile's page.
 
 A rule moves between the parts when it is switched between table and FHIRPath, and it lands in the part whose shape it fits. A section is one of the IPS sections, or any code in any system. An entry or resource code is a code in a named code system (SNOMED CT, LOINC, ICD-10...) or in any other given by URL, and it is looked up on the terminology server (`GET /ips/lookup?system=&q=`, for the administrator only). Choosing "In a value set..." as the system matches entries or resources by value set instead. The code box becomes a value set search (`GET /ips/lookup-vs?q=`, for the administrator only): this module's own value sets that match the title come first, then the terminology server's (a `ValueSet?title=` search). A suggestion shows its title, with its URL underneath. A canonical can also be typed or pasted in, with `|version` to pin a version. When the editor opens, it looks up the title of each value set by URL (`?url=`). If the terminology server doesn't know a value set, it says so as a warning, not an error: the value set has to be known when documents are checked, not when the profile is saved. A cardinality is blank (no bounds) or `min..max`, where max may be `*`. Before a profile is saved, every expression is parsed and run once against an empty document. That catches unknown functions and wrong numbers of arguments as well as syntax errors.
 

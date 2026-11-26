@@ -17,8 +17,9 @@ const path = require('path');
 const { deriveDefinitions } = require('../../rest/indexing/definitions');
 
 const TYPES = ['Patient', 'Observation', 'Encounter', 'Practitioner', 'Organization', 'List', 'AuditEvent', 'Condition',
-  'SearchParameter', 'ValueSet', 'Group', 'Device', 'RelatedPerson', 'MedicationRequest'];
+  'SearchParameter', 'ValueSet', 'Group', 'Device', 'RelatedPerson', 'MedicationRequest', 'Provenance', 'Binary', 'CodeSystem', 'ConceptMap'];
 const BASES = new Set(['Resource', 'DomainResource', ...TYPES]);
+const XML_RESOURCES = new Set([...TYPES, 'Resource', 'DomainResource', 'Bundle', 'OperationOutcome', 'Parameters', 'CapabilityStatement', 'Binary']);
 
 const folder = process.argv[2];
 if (!folder) {
@@ -33,7 +34,16 @@ const out = {
   compartments: d.compartments.filter(c => c.url.startsWith('http://hl7.org/fhir/CompartmentDefinition/'))
     .map(c => ({ ...c, resource: c.resource.filter(r => TYPES.includes(r.code)) })),
   summary: Object.fromEntries(Object.entries(d.summary).filter(([k]) => TYPES.includes(k))),
-  mandatory: Object.fromEntries(Object.entries(d.mandatory).filter(([k]) => TYPES.includes(k)))
+  mandatory: Object.fromEntries(Object.entries(d.mandatory).filter(([k]) => TYPES.includes(k))),
+  // XML: the datatypes, the test types, and the resources the server makes itself
+  xml: {
+    primitives: d.xml.primitives,
+    resources: d.xml.resources.filter(t => XML_RESOURCES.has(t)),
+    types: Object.fromEntries(Object.entries(d.xml.types).filter(([k]) => {
+      const root = k.split('.')[0];
+      return !d.xml.resources.includes(root) || XML_RESOURCES.has(root);
+    }))
+  }
 };
 const file = path.join(__dirname, '..', 'data', 'rest', 'r4-definitions.json');
 fs.writeFileSync(file, JSON.stringify(out, null, 1) + '\n');

@@ -22,6 +22,7 @@
  */
 
 const crypto = require('crypto');
+const fhirJson = require('../library/fhir-json');
 const escape = require('escape-html');
 const parse5 = require('parse5');
 const { HEADER, SECTIONS, EMPTY_REASONS, EMPTY_REASON_SYSTEM, LOINC } = require('./editor-schema');
@@ -34,6 +35,8 @@ const MAX_ROWS = 200;
 const MAX_TEXT = 4000;
 const MAX_NARRATIVE = 20000;
 // the elements that repeat, when a path goes through them
+// a FHIR dateTime, to the second or a fraction of one, with a time zone (as the form stamps it)
+const DATETIME_RE = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,9})?(Z|[+-]\d\d:\d\d)$/;
 const ARRAYS = new Set(['protocolApplied', 'dosage', 'referenceRange', 'category', 'note', 'bodySite', 'reasonCode', 'interpretation', 'manifestation', 'reaction', 'component', 'targetDisease', 'deviceName']);
 
 function isObject(v) {
@@ -75,6 +78,9 @@ function codeableOf(v) {
   return cc.coding || cc.text ? cc : null;
 }
 
+// a JSON number, as text
+const NUMBER_RE = /^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$/;
+
 function quantityOf(v) {
   if (!isObject(v)) {
     return null;
@@ -84,6 +90,11 @@ function quantityOf(v) {
     return null;
   }
   const q = { value: n };
+  // as it was written (1.50, not 1.5: library/fhir-json)
+  const written = typeof v.value === 'number' ? fhirJson.writtenAs(v, 'value') : str(v.value).trim();
+  if (written && String(n) !== written && NUMBER_RE.test(written)) {
+    fhirJson.remember(q, 'value', written);
+  }
   if (str(v.unit)) {
     q.unit = str(v.unit);
     q.system = UCUM;
@@ -122,6 +133,13 @@ function fhirValue(field, v) {
         return null;
       }
       return /^\d{4}(-\d\d(-\d\d)?)?$/.test(d) ? d : undefined;
+    }
+    case 'datetime': {
+      const d = str(v);
+      if (!d) {
+        return null;
+      }
+      return DATETIME_RE.test(d) ? d : undefined;
     }
     default: {
       const t = str(v);
@@ -273,6 +291,7 @@ function formValue(field, v) {
         return (field.options || []).some(o => o.code === c) ? c : undefined;
       }
       case 'date': return typeof x === 'string' && /^\d{4}(-\d\d(-\d\d)?)?/.test(x) ? x.substring(0, 10) : undefined;
+      case 'datetime': return typeof x === 'string' && DATETIME_RE.test(x) ? x : undefined;
       default: {
         if (typeof x === 'string') {
           return x;
@@ -486,6 +505,10 @@ function buildRow(def, row, where, patientUrl, bad) {
     ok = false;
   };
   const apply = (target, field, raw, label) => {
+    // a field the form stamps (a Condition's recordedDate): now, when the row doesn't have it
+    if (field.stamp && (raw === undefined || raw === null || raw === '')) {
+      raw = new Date().toISOString();
+    }
     if (raw === undefined || raw === null || raw === '' || (Array.isArray(raw) && raw.length === 0)) {
       if (field.required) {
         fail(`${label} is required`);

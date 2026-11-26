@@ -204,10 +204,10 @@ describe.each(engines())('rest search (%s)', (engine) => {
         expect(r2.status).toBe(200);
         expect(r2.body.entry.map(e => e.resource.name[0].family)).toEqual(['Smith']);
       } finally {
-        await same.mod.shutdown();
+        await same.stop();
       }
     } finally {
-      await other.mod.shutdown();
+      await other.stop();
     }
     const none = await search('/r4/Patient?_total=none&_count=1');
     expect(none.total).toBeUndefined();

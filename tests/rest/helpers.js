@@ -13,6 +13,7 @@
  */
 
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const express = require('express');
@@ -53,7 +54,8 @@ async function emptyMysql(cfg) {
   const conn = await mysql.createConnection({ host: cfg.host, port: cfg.port, user: cfg.user, password: process.env[cfg.passwordEnv], database: cfg.database });
   try {
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
-    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers']) {
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers', 'PackageLoads',
+      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles']) {
       await conn.query(`DROP TABLE IF EXISTS ${t}`);
     }
   } finally {
@@ -73,7 +75,13 @@ const silent = { info: () => {}, warn: () => {}, error: (...a) => console.error(
  *   administrator)
  * @param {boolean} [options.master]
  * @param {string} [options.dir] - the data folder (to open the same SQLite database again)
- * @returns {Promise<{app, mod, ep, dir, close}>}
+ * @returns {Promise<{app, mod, ep, dir, stop, close}>} stop() ends the app and leaves its data;
+ *   close() deletes the data too (SQLite, unless options.keep). app is a server listening on 127.0.0.1, for
+ *   supertest's request(app): given an Express app, supertest starts a server on port 0 for
+ *   each request, on every address, and the system may give it a port that something else
+ *   holds on one address (TextMate's rmate server holds 52698 on macOS), whose answer the
+ *   test then gets ("Parse Error: Expected HTTP/"). Bound to 127.0.0.1, the server is never
+ *   given a port that is taken there, and there is one for all the app's requests
  */
 async function makeApp(engine, options = {}) {
   const dir = options.dir || fs.mkdtempSync(path.join(os.tmpdir(), 'fhirsmith-rest-'));
@@ -88,7 +96,10 @@ async function makeApp(engine, options = {}) {
   }
   const app = express();
   app.use(express.raw({ type: 'application/fhir+json', limit: '20mb' }));
-  app.use(express.json({ limit: '20mb' }));
+  // as server.js: the text kept alongside (req.rawBody)
+  app.use(express.json({ limit: '20mb', verify: (req, res, buf) => {
+    req.rawBody = buf;
+  } }));
   if (options.before) {
     // something else on the same app (the tx module, as a terminology server)
     await options.before(app);
@@ -99,13 +110,33 @@ async function makeApp(engine, options = {}) {
     endpoints: [{ path: '/r4', fhirVersion: '4.0.1', database, baseUrl: 'http://test.example/r4', initialSettings: { audit: 'off', ...(options.settings || {}) }, types: options.types }]
   }, app, {
     derived: () => DEFINITIONS,
+    packageManager: options.packageManager,
     master: options.master !== false,
-    principal: options.principal || (async () => admin)
+    jobs: options.jobs,
+    localBase: options.localBase,
+    principal: options.principal || (async () => admin),
+    principalById: options.principalById || (async (id) => (String(id) === String(admin.id) ? admin : null))
   });
+  const server = http.createServer(app);
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  // a test that forgets to stop it doesn't keep jest from exiting
+  server.unref();
+  // the server and the module, leaving the data (to open the same database again)
+  const stop = async () => {
+    if (server.listening) {
+      // supertest's connections are kept alive: close them, or close() waits for them
+      server.closeAllConnections();
+      await new Promise(resolve => server.close(() => resolve()));
+    }
+    await mod.shutdown();
+  };
   return {
-    app, mod, ep: mod.endpoints[0], dir,
+    app: server, mod, ep: mod.endpoints[0], dir, stop,
     close: async () => {
-      await mod.shutdown();
+      await stop();
       if (!options.keep && engine === 'sqlite') {
         fs.rmSync(dir, { recursive: true, force: true });
       }
@@ -125,7 +156,8 @@ function body(resource) {
 async function snapshot(ep) {
   return ep.db.read(async (q) => {
     const out = {};
-    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers']) {
+    for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers', 'PackageLoads',
+      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles']) {
       const r = await q.get(`SELECT COUNT(*) AS N FROM ${t}`);
       out[t] = Number(r.N);
     }
@@ -135,7 +167,7 @@ async function snapshot(ep) {
 
 /**
  * What must always be true of the database, whatever happened: no reservation left without a
- * version, versions numbered 1..n, Ids pointing at the newest version, deletions marked, index
+ * version, versions numbered upwards from 1, Ids pointing at the newest version, deletions marked, index
  * rows only for resources that aren't deleted, references to local resources keyed when the
  * target exists, and a subscription queue row for every version.
  * @param {Object} ep
@@ -161,8 +193,9 @@ async function invariants(ep) {
         problems.push(`Ids ${k} (${i.Id}) has no version: a reservation was left behind`);
         continue;
       }
+      // numbered upwards from 1 (gaps where versions were expunged)
       vs.forEach((v, n) => {
-        if (Number(v.VersionId) !== n + 1) {
+        if (n > 0 ? Number(v.VersionId) <= Number(vs[n - 1].VersionId) : Number(v.VersionId) < 1) {
           problems.push(`resource ${k} (${i.Id}): version ${n + 1} is numbered ${v.VersionId}`);
         }
       });
@@ -173,7 +206,8 @@ async function invariants(ep) {
         problems.push(`resource ${k} (${i.Id}): Deleted doesn't match its newest version`);
       }
     }
-    for (const t of ['IndexStrings', 'IndexTokens', 'IndexDates', 'IndexReferences', 'IndexUris', 'IndexQuantities', 'IndexNumbers', 'Compartments']) {
+    for (const t of ['IndexStrings', 'IndexTokens', 'IndexDates', 'IndexReferences', 'IndexUris', 'IndexQuantities', 'IndexNumbers', 'Compartments',
+      'ObservationValues']) {
       const r = await q.get(`SELECT COUNT(*) AS N FROM ${t} x JOIN Ids i ON i.ResourceKey = x.ResourceKey WHERE i.Deleted = 1`);
       if (Number(r.N)) {
         problems.push(`${t} has ${r.N} rows for deleted resources`);
@@ -187,6 +221,10 @@ async function invariants(ep) {
       if (Number(c.N)) {
         problems.push(`${t} has ${c.N} rows for contained resources that aren't in Contained`);
       }
+    }
+    const oc = await q.get('SELECT COUNT(*) AS N FROM ObservationCodes c LEFT JOIN ObservationValues v ON v.ValueKey = c.ValueKey WHERE v.ValueKey IS NULL');
+    if (Number(oc.N)) {
+      problems.push(`ObservationCodes has ${oc.N} rows for values that aren't in ObservationValues`);
     }
     const cDeleted = await q.get('SELECT COUNT(*) AS N FROM Contained c JOIN Ids i ON i.ResourceKey = c.ResourceKey WHERE i.Deleted = 1');
     if (Number(cDeleted.N)) {

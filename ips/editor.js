@@ -34,8 +34,25 @@
 
   function emptyModel() {
     var m = { patient: {}, document: {}, sections: {} };
-    schema.sections.forEach(function (s) { m.sections[s.key] = { mode: s.required ? 'data' : 'omit', rows: s.required ? [{}] : [] }; });
+    schema.sections.forEach(function (s) { m.sections[s.key] = { mode: s.required ? 'data' : 'omit', rows: s.required ? [newRow(s)] : [] }; });
     return m;
+  }
+  /** A new row: empty, but for the fields the form stamps (a Condition's recordedDate: now). */
+  function newRow(def) {
+    var row = {};
+    def.fields.forEach(function (f) { if (f.stamp) { row[f.name] = new Date().toISOString(); } });
+    return row;
+  }
+  /**
+   * Whether a row has nothing in it but what the form put there itself - stamps, and the defaults
+   * it fills in as it draws the row: the blank row a section starts with.
+   */
+  function isBlank(def, row) {
+    return Object.keys(row).every(function (k) {
+      var f = def.fields.filter(function (x) { return x.name === k; })[0];
+      var v = row[k];
+      return (f && (f.stamp || (f.default !== undefined && v === f.default))) || v === undefined || v === null || v === '' || (Array.isArray(v) && v.length === 0) || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0);
+    });
   }
   function loadDraft() {
     try { var d = localStorage.getItem(draftKey); return d ? JSON.parse(d) : null; } catch (e) { return null; }
@@ -230,6 +247,108 @@
     }
     return el('span', {}, [value, unit]);
   }
+  // ---- applying a guide's answers: a row in its section, made by the guide's resource (type:class) ----
+
+  var guideNotes = {};
+  function blank(v) { return v === undefined || v === null || v === '' || (typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length === 0); }
+  function codingOf(c) {
+    var out = { system: c.system, code: c.code };
+    if (c.display) { out.display = c.display; }
+    return out;
+  }
+  function sameCoding(a, b) { return !!(a && b && a.system === b.system && a.code === b.code); }
+  /**
+   * The other answers, into the row's fields: a question's definition (Condition.onset[x]) names a
+   * field by its path; a date goes into a date field, a choice into a coded field, or a select that
+   * has the code. Anything else - no definition, no such field, a value that doesn't fit - is skipped.
+   */
+  function fillFromAnswers(def, row, g) {
+    var answers = guidanceState().answers;
+    g.questions.slice(1).forEach(function (q) {
+      var v = answers[q.linkId];
+      if (q.type === 'display' || !q.definition || blank(v)) { return; }
+      var f = def.fields.filter(function (x) { return x.path && !x.hidden && def.resourceType + '.' + x.path === q.definition; })[0];
+      if (!f) { return; }
+      if (q.type === 'date' && f.type === 'date' && /^\d{4}(-\d\d(-\d\d)?)?$/.test(String(v).trim())) {
+        row[f.name] = String(v).trim();
+      } else if (q.type === 'choice') {
+        var a = q.answers.filter(function (x) { return codingKey(x) === v; })[0];
+        if (!a) { return; }
+        if (f.type === 'code') {
+          row[f.name] = f.list ? [codingOf(a)] : codingOf(a);
+        } else if (f.type === 'select' && (!f.system || f.system === a.system) && f.options.some(function (o) { return o.code === a.code; })) {
+          row[f.name] = a.code;
+        }
+      }
+    });
+  }
+  // what each kind of resource makes of the answers, from the first (yes/no) one: a row, or null
+  var APPLIERS = {
+    'Condition:problem': function (def, g, yes) {
+      if (def.resourceType !== 'Condition') { return null; }
+      var row = newRow(def);
+      row.code = codingOf(g.code);
+      row.clinicalStatus = yes ? 'active' : 'inactive';
+      row.verificationStatus = yes ? 'confirmed' : 'refuted';
+      fillFromAnswers(def, row, g);
+      return row;
+    }
+  };
+  /**
+   * Apply a guide: its first question (yes/no) answered, make the row its resource makes, and put it
+   * in the section - in place of the row the guide made before, or of the section's blank row, or
+   * as the next entry - then mark the guide handled.
+   */
+  function applyGuide(g) {
+    var st = guidanceState();
+    var first = g.questions[0];
+    var answer = st.answers[first.linkId];
+    var def = g.section.system === LOINC ? schema.sections.filter(function (d) { return d.code === g.section.code; })[0] : null;
+    var make = APPLIERS[g.resource];
+    if (answer !== 'yes' && answer !== 'no') {
+      guideNotes[g.key] = 'Answer "' + first.text + '" first';
+    } else if (!def || !make || !g.code) {
+      guideNotes[g.key] = 'This can\'t be applied in this section';
+    } else {
+      var row = make(def, g, answer === 'yes');
+      if (!row) {
+        guideNotes[g.key] = 'This can\'t be applied in this section';
+      } else {
+        row._guide = g.key;
+        var s = section(def.key);
+        var rows = s.rows || (s.rows = []);
+        var mine = rows.map(function (r) { return r._guide; }).indexOf(g.key);
+        if (mine >= 0) {
+          rows[mine] = row;
+        } else if (s.mode !== 'data' && rows.length === 0) {
+          rows.push(row);
+        } else if (rows.length === 1 && isBlank(def, rows[0])) {
+          rows[0] = row;
+        } else {
+          rows.push(row);
+        }
+        s.mode = 'data';
+        delete guideNotes[g.key];
+        st.dismissed[g.key] = true;
+        open[def.key] = true;
+      }
+    }
+    saveDraft();
+    draw();
+  }
+  /** On opening a document: a guide whose code a Condition in its section already has is handled. */
+  function markHandled() {
+    if (!guidance) { return; }
+    var st = guidanceState();
+    guidance.guides.forEach(function (g) {
+      if (!g.code || g.section.system !== LOINC) { return; }
+      var def = schema.sections.filter(function (d) { return d.code === g.section.code; })[0];
+      if (!def || def.resourceType !== 'Condition') { return; }
+      var s = model.sections[def.key];
+      if (s && (s.rows || []).some(function (r) { return sameCoding(r.code, g.code); })) { st.dismissed[g.key] = true; }
+    });
+  }
+
   /**
    * A section's guides, as a list: each one dismiss first, then its questions in order with their
    * inputs at the end of their text, then Apply (when there is anything to answer). Dismissed, a
@@ -239,12 +358,16 @@
     var st = guidanceState();
     return el('ul', { class: 'ips-ed-guides' }, guides.map(function (g) {
       var dismissed = !!st.dismissed[g.key];
-      var toggle = el('a', { href: '#', class: 'ips-ed-guide-dismiss', onclick: function (e) {
+      var flip = function (e) {
         e.preventDefault();
         if (dismissed) { delete st.dismissed[g.key]; } else { st.dismissed[g.key] = true; }
         saveDraft();
         draw();
-      } }, [dismissed ? 'show' : 'dismiss']);
+      };
+      // a button to dismiss it; once dismissed, a tick saying it is handled (which brings it back, clicked)
+      var toggle = dismissed
+        ? el('span', { class: 'ips-ed-guide-handled', title: 'Handled - click to show it again', onclick: flip }, ['\u2713 handled'])
+        : el('button', { type: 'button', class: 'btn btn-default btn-xs ips-ed-guide-dismiss', title: 'Dismiss this: it is handled', onclick: flip }, ['\u2715 Dismiss']);
       if (dismissed) {
         var all = g.questions.map(function (q) { return q.text; }).join(' ');
         return el('li', { class: 'ips-ed-guide ips-ed-guide-dismissed', title: all }, [toggle, ' ', all]);
@@ -259,9 +382,12 @@
         }
         parts.push(' ');
       });
-      if (asks) {
-        parts.push(el('button', { type: 'button', class: 'btn btn-default btn-xs ips-ed-guide-apply', disabled: true, title: 'Applying the answers is still to come' }, ['Apply']));
+      if (asks && g.resource) {
+        var can = !!APPLIERS[g.resource];
+        parts.push(el('button', { type: 'button', class: 'btn btn-default btn-xs ips-ed-guide-apply', disabled: !can,
+          title: can ? 'Add what the answers say to the section' : 'Applying answers that make a ' + g.resource + ' is still to come', onclick: function () { applyGuide(g); } }, ['Apply']));
       }
+      if (guideNotes[g.key]) { parts.push(' ', el('span', { class: 'ips-ed-guide-note', text: guideNotes[g.key] })); }
       return el('li', { class: 'ips-ed-guide' }, parts);
     }));
   }
@@ -302,7 +428,7 @@
       el('b', { text: def.label + ' ' + (index + 1) }),
       el('button', { type: 'button', class: 'btn btn-link ips-ed-remove', onclick: function () { s.rows.splice(index, 1); saveDraft(); draw(); } }, ['remove'])
     ]));
-    panel.appendChild(el('div', { class: 'ips-ed-grid' }, def.fields.map(function (f) { return fieldRow(row, f); })));
+    panel.appendChild(el('div', { class: 'ips-ed-grid' }, def.fields.filter(function (f) { return !f.hidden; }).map(function (f) { return fieldRow(row, f); })));
     (def.subs || []).forEach(function (sub) {
       var items = row[sub.name] || (row[sub.name] = []);
       var subPanel = el('div', { class: 'ips-ed-sub' }, [el('div', { class: 'ips-ed-sub-head', text: sub.label })]);
@@ -339,7 +465,7 @@
       radio.checked = s.mode === m[0];
       // a choice the profile doesn't allow: shown (it may be what the document has), but not to be chosen
       radio.disabled = !!off[m[0]];
-      radio.addEventListener('change', function () { s.mode = m[0]; if (m[0] === 'data' && !(s.rows || []).length) { s.rows = [{}]; } saveDraft(); draw(); });
+      radio.addEventListener('change', function () { s.mode = m[0]; if (m[0] === 'data' && !(s.rows || []).length) { s.rows = [newRow(def)]; } saveDraft(); draw(); });
       return el('label', { for: id, class: 'ips-ed-mode' + (off[m[0]] ? ' ips-ed-mode-off' : ''), title: off[m[0]] || null }, [radio, ' ' + m[1]]);
     }));
     body.appendChild(modeBar);
@@ -347,7 +473,7 @@
     if (s.mode === 'data') {
       var rows = s.rows || (s.rows = []);
       rows.forEach(function (row, i) { body.appendChild(rowPanel(def, s, row, i)); });
-      body.appendChild(el('button', { type: 'button', class: 'btn btn-default btn-sm', onclick: function () { rows.push({}); saveDraft(); draw(); } }, ['Add ' + def.label.toLowerCase()]));
+      body.appendChild(el('button', { type: 'button', class: 'btn btn-default btn-sm', onclick: function () { rows.push(newRow(def)); saveDraft(); draw(); } }, ['Add ' + def.label.toLowerCase()]));
       if (s.partial) { body.appendChild(el('p', { class: 'ips-small text-warning', text: 'Some of this section\'s entries in the original document are of a kind this editor cannot hold; they are not here.' })); }
     } else if (s.mode === 'narrative') {
       var ta = el('textarea', { class: 'form-control ips-ed-input', rows: 6, placeholder: 'What this section would say; a blank line starts a new paragraph' });
@@ -394,6 +520,7 @@
       .then(function (j) {
         model = j.model;
         open = {};
+        markHandled();
         saveDraft();
         draw();
         loadMessages.innerHTML = '<p class="text-success">Loaded ' + escapeHtml(what) + '. Anything in it the editor cannot hold is not here.</p>';
@@ -452,6 +579,8 @@
   }
   var actionsPanel = null;
   window.addEventListener('beforeunload', function (e) { if (dirty) { e.preventDefault(); e.returnValue = ''; } });
+  // an existing document (Edit on its page): what it already has is handled
+  if (cfg.model) { markHandled(); }
   draw();
   rebuild();
 })();

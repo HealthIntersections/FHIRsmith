@@ -70,6 +70,8 @@ class ValueSetDatabase {
     // after a migration ALTER TABLE can fail with a stale schema cache.
     this._writeDb = null;
     this._migrationPromise = null;
+    // a second connection, for the scans that read every value set (_getScanConnection)
+    this._scanDbPromise = null;
   }
 
   /**
@@ -195,6 +197,34 @@ class ValueSetDatabase {
   }
 
   /**
+   * A connection of its own for the scans that read every value set (scanAllValueSets: the
+   * problems page, the usage tracker), opened when first wanted, once the schema is up to date.
+   * sqlite3 serialises each connection with a mutex: while a worker thread ran one of a scan's
+   * long reads on the one connection everything else uses, the main thread waited on the
+   * mutex whenever it touched that connection - 3-4 s on tx.fhir.org (2026-11-24, the
+   * problems page). Read-only where the main connection is
+   * @returns {Promise<sqlite3.Database>}
+   * @private
+   */
+  _getScanConnection() {
+    if (!this._scanDbPromise) {
+      this._scanDbPromise = this._ensureMigrated().then(() => new Promise((resolve, reject) => {
+        const mode = this.readOnly ? sqlite3.OPEN_READONLY : sqlite3.OPEN_READWRITE;
+        const db = new sqlite3.Database(this.dbPath, mode, guarded(reject, (err) => {
+          if (err) {
+            reject(new Error(`Failed to open database ${this.dbPath} for scanning: ${err.message}`));
+            return;
+          }
+          db.configure('busyTimeout', 5000);
+          resolve(db);
+        }));
+      }));
+      this._scanDbPromise.catch(() => { this._scanDbPromise = null; });
+    }
+    return this._scanDbPromise;
+  }
+
+  /**
    * Get a read-write database connection (opens lazily if needed)
    * @returns {Promise<sqlite3.Database>}
    * @private
@@ -308,6 +338,17 @@ class ValueSetDatabase {
   async close() {
     // Clear the cached migration promise so a subsequent open re-migrates
     this._migrationPromise = null;
+
+    if (this._scanDbPromise) {
+      const opening = this._scanDbPromise;
+      this._scanDbPromise = null;
+      try {
+        const db = await opening;
+        await new Promise((resolve) => db.close(() => resolve()));
+      } catch (e) {
+        // it never opened
+      }
+    }
 
     if (!this._writeDb) {
       return;
@@ -1002,6 +1043,40 @@ class ValueSetDatabase {
       db.all(url == null ? 'SELECT id, url, version FROM valuesets ORDER BY rowid' : 'SELECT id, url, version FROM valuesets WHERE url = ? ORDER BY rowid', url == null ? [] : [url],
         (err, rows) => err ? reject(new Error(`Failed to list versions of ${url}: ${err.message}`)) : resolve(rows));
     });
+  }
+
+  /**
+   * Every row's id, url and version, as listVersions(null), on the scan connection
+   * (_getScanConnection)
+   * @returns {Promise<Object[]>}
+   */
+  async listVersionsForScan() {
+    const db = await this._getScanConnection();
+    return new Promise((resolve, reject) => {
+      db.all('SELECT id, url, version FROM valuesets ORDER BY rowid', [],
+        guarded(reject, (err, rows) => err ? reject(new Error(`Failed to list the value sets: ${err.message}`)) : resolve(rows)));
+    });
+  }
+
+  /**
+   * The rows of several ValueSets by id, on the scan connection (_getScanConnection), not yet
+   * parsed: the scan makes each one into a ValueSet as it comes to it (valueSetFromRow), so a
+   * batch isn't parsed in one go
+   * @param {string[]} ids
+   * @returns {Promise<Map<string, Object>>} id -> row
+   */
+  async readRowsForScan(ids) {
+    return this._readRows(await this._getScanConnection(), ids);
+  }
+
+  /**
+   * A row from readRowsForScan as a ValueSet, or null if it isn't acceptable (as loadValueSets)
+   * @param {Object} row
+   * @param {string} source
+   * @returns {ValueSet|null}
+   */
+  valueSetFromRow(row, source) {
+    return this._rowToValueSet(row, source);
   }
 
   /**

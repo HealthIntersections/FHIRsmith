@@ -11,6 +11,8 @@
  * @module rest/search/shape
  */
 
+const { copyNotes } = require('../../library/fhir-json');
+
 const SUBSETTED = { system: 'http://terminology.hl7.org/CodeSystem/v3-ObservationValue', code: 'SUBSETTED', display: 'Resource encoded in summary mode' };
 const ALWAYS = new Set(['resourceType', 'id', 'meta', 'implicitRules']);
 
@@ -29,6 +31,8 @@ function keep(resource, names) {
       out[k] = v;
     }
   }
+  // numbers kept as they were written (library/fhir-json)
+  copyNotes(resource, out);
   return out;
 }
 
@@ -55,6 +59,7 @@ function shape(resource, control, definitions) {
   }
   if (summary === 'data') {
     const r = { ...resource };
+    copyNotes(resource, r);
     delete r.text;
     return markSubsetted(r);
   }

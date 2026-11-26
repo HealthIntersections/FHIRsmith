@@ -11,6 +11,12 @@ const { reportedReleaseDate } = require('../library/changelog');
 const SERIALISE_LOG_MS = 10;
 // the most XML kept for large resources, by default (modules.tx.xmlCacheMB)
 const DEFAULT_XML_CACHE_MB = 256;
+// how XML is written and read (modules.tx.xmlConverter): the model-driven converter
+// (library/fhir-xml.js: 'model', the default), the classes in tx/xml ('legacy'), or the classes, with the converter's
+// result compared and the differences logged ('compare')
+const XML_CONVERTERS = ['legacy', 'model', 'compare'];
+// the core package each FHIR version's XML model comes from (R4B is served as R4)
+const XML_CORE_PACKAGES = { '3.0': 'hl7.fhir.r3.core#3.0.2', '4.0': 'hl7.fhir.r4.core#4.0.1', '4.3': 'hl7.fhir.r4.core#4.0.1', '5.0': 'hl7.fhir.r5.core#5.0.0' };
 // when this server process started (the release date of a snapshot build)
 const SERVER_STARTED = new Date(Date.now() - process.uptime() * 1000);
 const express = require('express');
@@ -21,6 +27,7 @@ const { Library } = require('./library');
 const { OperationContext, ResourceCache, ExpansionCache, ExpansionCacheBudget, debugLog} = require('./operation-context');
 const { LanguageDefinitions } = require('../library/languages');
 const { I18nSupport } = require('../library/i18nsupport');
+const { duplicatesOutcome } = require('../library/json-duplicates');
 const { CodeSystemXML } = require('./xml/codesystem-xml');
 const { FhirXmlBase } = require('./xml/xml-base');
 const { XmlFragmentCache } = require('./xml/xml-fragment-cache');
@@ -30,6 +37,7 @@ const memoryGuard = require('../library/memory-guard');
 const { prepareTextIndexes, registerCaches, buildCachesPage, buildCacheListPage } = require('./tx-caches');
 const escapeHtml = require('escape-html');
 const auth = require('../library/auth');
+const { identifyClient, isOldTool } = require('../library/client-identity');
 const rateLimit = require('express-rate-limit');
 const { trimNativeMemory } = require('../library/native-memory');
 const { connectCaches } = require('../library/cluster-caches');
@@ -51,6 +59,7 @@ const { MetadataHandler } = require('./workers/metadata');
 const { BatchValidateWorker } = require('./workers/batch-validate');
 const { CacheControlWorker } = require('./workers/cache-control');
 const {CapabilityStatementXML} = require("./xml/capabilitystatement-xml");
+const fhirXml = require('../library/fhir-xml');
 const {TerminologyCapabilitiesXML} = require("./xml/terminologycapabilities-xml");
 const {ParametersXML} = require("./xml/parameters-xml");
 const {OperationOutcomeXML} = require("./xml/operationoutcome-xml");
@@ -113,6 +122,159 @@ class TXModule {
     return `tx-${this.requestIdCounter}`;
   }
 
+  /**
+   * Who is asking, and whether they may (library/auth). Someone logged in (a session, or an API
+   * token: any account) gets the bigger client side cache (cacheMaxConceptsLoggedIn). With
+   * auth.loginForExpensive on, someone not logged in can't have (401, auth.refuseAnonymous):
+   *  - an answer in XML, or send XML (JSON needs no login): the most expensive to parse and make
+   *  - in the web pages: search results past the first page, Show all (?_showAll=true), or an
+   *    expansion past auth.anonymousMaxRows rows (an $expand that names no count is shown that
+   *    many: opContext.anonymousMaxRows)
+   * The web pages draw the links that would go past these as "log in" links (req.txLoginFor).
+   * Who is asking is looked up only when the request brings a login or a token
+   * @returns {Promise<boolean>} whether to go on; false = answered
+   */
+  async checkLogin(req, res) {
+    const opContext = req.txOpContext;
+    const loggedIn = await auth.loggedIn(req);
+    if (opContext) {
+      opContext.loggedIn = loggedIn;
+      // (none: the cache's own limit, cacheMaxConcepts)
+      opContext.cacheMaxConcepts = loggedIn ? this.limits.cacheMaxConceptsLoggedIn : undefined;
+      // what a client could have with a login, when that is more (and there are logins), for the
+      // message that tells a client not logged in whose cache is too big
+      opContext.cacheMaxConceptsLoggedIn = auth.initialized && this.limits.cacheMaxConceptsLoggedIn > this.limits.cacheMaxConcepts
+        ? this.limits.cacheMaxConceptsLoggedIn : undefined;
+    }
+    if (loggedIn) {
+      return true;
+    }
+    const html = txHtml.acceptsHtml(req);
+    // who the client is (auth.loginForOldTools, auth.loginForOtherClients), for the API: the web
+    // pages are for people, and their own requests ask for HTML
+    const kind = html || TXModule.isRegistryCrawl(req) ? null
+      : TXModule.clientLoginNeeded(req.get('User-Agent'), auth.loginForOldTools(), auth.loginForOtherClients());
+    if (kind) {
+      const xml = this.acceptsXml(req) || TXModule.sendsXml(req);
+      const agent = String(req.get('User-Agent') || '').substring(0, 100);
+      this.log.info(`[${opContext ? opContext.id : '-'}] ${req.method} ${xml ? 'xml' : 'json'} 401 0ms 0: ${req.originalUrl} (needs a login: ${kind}, "${agent}"))`);
+      auth.refuseAnonymous(req, res, kind, {
+        as: xml ? 'fhir-xml' : 'fhir-json',
+        hint: kind === 'old-tool' ? `This client says it is "${agent}"` : ''
+      });
+      return false;
+    }
+    if (!auth.loginForExpensive()) {
+      return true;
+    }
+    req.txLoginFor = true;
+    if (!html && (this.acceptsXml(req) || TXModule.sendsXml(req))) {
+      this.log.info(`[${opContext ? opContext.id : '-'}] ${req.method} xml 401 0ms 0: ${req.originalUrl} (needs a login))`);
+      auth.refuseAnonymous(req, res, 'xml', { as: 'fhir-xml', hint: 'The same request in JSON needs no login' });
+      return false;
+    }
+    if (html && req.method === 'GET') {
+      const refused = TXModule.webLoginNeeded(req, opContext, auth.anonymousMaxRows());
+      if (refused) {
+        this.log.info(`[${opContext ? opContext.id : '-'}] GET html 401 0ms 0: ${req.originalUrl} (needs a login))`);
+        auth.refuseAnonymous(req, res, refused.kind, { back: refused.back });
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * For an API request from someone not logged in: does the client need a login for who it is?
+   * 'old-tool' (an old version of the FHIR validator or IG Publisher, by auth.loginForOldTools),
+   * 'other-client' (any other software, with auth.loginForOtherClients), or null
+   * @param {string|undefined} userAgent
+   * @param {false|true|string} oldTools - auth.loginForOldTools()
+   * @param {boolean} otherClients - auth.loginForOtherClients()
+   */
+  static clientLoginNeeded(userAgent, oldTools, otherClients) {
+    if (!oldTools && !otherClients) {
+      return null;
+    }
+    const client = identifyClient(userAgent);
+    if (client.fhirTool) {
+      return isOldTool(client, oldTools) ? 'old-tool' : null;
+    }
+    return otherClients ? 'other-client' : null;
+  }
+
+  /**
+   * Is this one of the requests the tx registry's crawler makes (registry/crawler.js), which no
+   * login setting blocks? The crawler can't be told by its User-Agent (each registry sets its own:
+   * ecosystem.hl7.org/1.0, fhirsmith/1.0, ...), so by what it asks: GET /metadata (and
+   * ?mode=terminology), and the value set list, GET /ValueSet?_elements=url,version (with
+   * _count, and the _offset of its next links). Cheap, and what the ecosystem runs on
+   */
+  static isRegistryCrawl(req) {
+    if (req.method !== 'GET') {
+      return false;
+    }
+    if (req.path === '/metadata' || req.path === '/metadata/') {
+      return true;
+    }
+    if (req.path !== '/ValueSet' && req.path !== '/ValueSet/') {
+      return false;
+    }
+    const q = req.query || {};
+    const elements = typeof q._elements === 'string' ? q._elements.split(',').map(e => e.trim()).sort().join(',') : null;
+    return elements === 'url,version' && Object.keys(q).every(k => ['_elements', '_count', '_offset', '_format'].includes(k));
+  }
+
+  /** Does the request send XML (its Content-Type)? */
+  static sendsXml(req) {
+    const type = (req.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+    return type === 'application/xml' || type === 'application/fhir+xml' || type === 'application/xml+fhir' || type === 'text/xml';
+  }
+
+  /**
+   * For a web page someone not logged in asks for: what it is that needs a login, and the page
+   * to go back to - {kind, back} - or null if it doesn't. An $expand that names no count is
+   * given one: opContext.anonymousMaxRows
+   * @param {import('express').Request} req
+   * @param {OperationContext|null} opContext
+   * @param {number} maxRows - auth.anonymousMaxRows
+   */
+  static webLoginNeeded(req, opContext, maxRows) {
+    const q = req.query || {};
+    const int = v => {
+      const n = parseInt(Array.isArray(v) ? v[0] : v, 10);
+      return Number.isFinite(n) ? n : null;
+    };
+    const without = (...names) => {
+      const url = new URL(req.originalUrl, 'http://localhost');
+      for (const name of names) {
+        url.searchParams.delete(name);
+      }
+      return url.pathname + url.search;
+    };
+    if (q._showAll === 'true') {
+      return { kind: 'show-all', back: without('_showAll') };
+    }
+    // a search (GET /{type}): its first page only, of the size the pages use
+    if (/^\/[A-Z][A-Za-z]+\/?$/.test(req.path)) {
+      if ((int(q._offset) || 0) > 0 || (int(q._count) || 0) > SearchWorker.HTML_PAGE_SIZE) {
+        return { kind: 'search-page', back: without('_offset', '_count') };
+      }
+      return null;
+    }
+    if (/\/\$expand$/.test(req.path)) {
+      const offset = Math.max(0, int(q.offset) || 0);
+      const count = int(q.count);
+      if (offset >= maxRows || (count !== null && count > 0 && offset + count > maxRows)) {
+        return { kind: 'expansion-rows', back: without('offset', 'count') };
+      }
+      if (opContext) {
+        opContext.anonymousMaxRows = maxRows - offset;
+      }
+    }
+    return null;
+  }
+
   acceptsXml(req) {
     let _fmt = req.query._format || req.query.format || req.body?._format;
     if (_fmt && typeof _fmt !== 'string') {
@@ -172,8 +334,11 @@ class TXModule {
       }
       return n === 0 ? Infinity : n;
     };
+    const cacheMaxConcepts = limit('cacheMaxConcepts', ResourceCache.MAX_CONCEPTS_PER_CACHE);
     return {
-      cacheMaxConcepts: limit('cacheMaxConcepts', ResourceCache.MAX_CONCEPTS_PER_CACHE),
+      cacheMaxConcepts,
+      // a client logged in (an API token) may have a bigger cache; never a smaller one
+      cacheMaxConceptsLoggedIn: Math.max(cacheMaxConcepts, limit('cacheMaxConceptsLoggedIn', cacheMaxConcepts === Infinity ? 0 : cacheMaxConcepts)),
       cacheMaxTotalConcepts: limit('cacheMaxTotalConcepts', ResourceCache.MAX_TOTAL_CONCEPTS),
       usageTrackerMaxCodes: limit('usageTrackerMaxCodes', ConceptUsageTracker.MAX_CODES),
       usageTrackerMaxCodeLength: limit('usageTrackerMaxCodeLength', ConceptUsageTracker.MAX_CODE_LENGTH),
@@ -347,9 +512,19 @@ class TXModule {
     // Load the library from YAML
     this.log.info(`Loading library from: ${config.librarySource}`);
     this.library = new Library(config.librarySource, config.vsacCfg, this.log, this.stats, config.snomed);
+    // the rest module's endpoints, for the library's rest: sources (tx/rest/rest-source.js)
+    this.library.restEndpoints = Array.isArray(server.restEndpoints) ? server.restEndpoints : [];
+    this.library.restDatabasesDir = server.databasesDir || require('../library/folder-setup').databasesDir();
+    this.library.restDatabases = server.restDatabases || null;
     if (config.pruneTerminologyCache !== undefined && typeof config.pruneTerminologyCache !== 'boolean') {
       throw new Error(`modules.tx.pruneTerminologyCache must be true or false, not '${config.pruneTerminologyCache}'`);
     }
+    if (config.xmlConverter !== undefined && !XML_CONVERTERS.includes(config.xmlConverter)) {
+      throw new Error(`modules.tx.xmlConverter must be one of ${XML_CONVERTERS.join(', ')}, not '${config.xmlConverter}'`);
+    }
+    this.xmlConverter = config.xmlConverter || 'model';
+    // the XML models, by FHIR version (major.minor), loaded as the endpoints are set up
+    this.xmlModels = new Map();
     // delete the .db and .cache files and package folders in terminology-cache that aren't used
     // (once the endpoints are set up: see below)
     this.library.pruneTerminologyCacheFiles = config.pruneTerminologyCache === true;
@@ -494,6 +669,8 @@ class TXModule {
       resourceCache: this.config.sharedCache ? this.createSharedResourceCache(endpointPath) : new ResourceCache(this.stats),
       expansionCache: new ExpansionCache(this.stats, expansionCacheSize, expansionCacheMemoryThreshold, this.expansionCacheBudget)
     };
+    // the model-driven XML converter's model for this FHIR version (null: the tx/xml classes)
+    endpointInfo.xmlModel = this.xmlConverter === 'legacy' ? null : await this.xmlModelFor(fhirVersion);
     // Create the provider once for this endpoint
     endpointInfo.provider = await this.library.cloneWithFhirVersion(fhirVersion, context, endpointPath);
     for (const old of ['ecosystemResolution', 'ecosystemExcludedServers']) {
@@ -635,6 +812,8 @@ class TXModule {
       let txhtml = new TxHtmlRenderer(new Renderer(opContext, endpointInfo.provider), this.liquid, this.languages, this.i18n, endpointInfo.path);
       res.json = async (data) => {
         try {
+          // someone not logged in: the links past what they may see go to the login page
+          txhtml.loginUrlFor = req.txLoginFor ? (url => auth.loginUrl(req, url)) : null;
           // the operation's time; what follows (version conversion, serialising) is timed
           // separately: for a large resource it can be the larger part
           const serialiseStart = Date.now();
@@ -685,7 +864,7 @@ class TXModule {
             result = res.send(html);
           } else if (xmlFmt) {
             try {
-              const parts = await FhirXmlBase.toXmlChunksAsync(() => this.convertResourceToXml(data), () => !opContext.clientGone);
+              const parts = await this.resourceToXmlParts(data, req, () => !opContext.clientGone);
               res.setHeader('Content-Type', xmlFmt);
               if (parts.length === 1 && typeof parts[0] === 'string') {
                 responseSize = Buffer.byteLength(parts[0], 'utf8');
@@ -746,6 +925,12 @@ class TXModule {
       next();
     });
 
+    // Who is logged in, and what needs a login (auth.loginForExpensive: see checkLogin). Before
+    // the body is parsed: a request that is refused costs nothing more
+    router.use((req, res, next) => {
+      void this.checkLogin(req, res).then(go => (go ? next() : undefined), next);
+    });
+
     // CORS is handled once at the app level (server.js, from config.server.cors).
     // Do not set Access-Control-* headers here - doing so stacks a second
     // CORS layer and produces duplicate, conflicting headers that browsers
@@ -771,16 +956,32 @@ class TXModule {
         contentType.includes('application/fhir+json') ||
         contentType.includes('application/json+fhir')) {
 
+        // the text as it came: application/fhir+json is still a Buffer; application/json
+        // arrives parsed, with its text alongside (server.js)
+        const text = Buffer.isBuffer(req.body) ? req.body.toString('utf8')
+          : Buffer.isBuffer(req.rawBody) ? req.rawBody.toString('utf8') : '';
+
         // If body is a Buffer, parse it
         if (Buffer.isBuffer(req.body)) {
           try {
-            const bodyStr = req.body.toString('utf8');
-            if (bodyStr) {
-              req.body = JSON.parse(bodyStr);
+            if (text) {
+              req.body = JSON.parse(text);
             }
           } catch (e) {
             this.log.error(`JSON parse error: ${e.message}`);
             return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid JSON: ${e.message}`));
+          }
+        }
+
+        // a property more than once in an object is refused: parsing kept only the last, so
+        // the request isn't the one that was sent (library/json-duplicates)
+        if (text) {
+          const duplicates = duplicatesOutcome(text, {
+            acceptLanguage: req.get('Accept-Language'),
+            resourceType: req.body && typeof req.body === 'object' ? req.body.resourceType : undefined
+          });
+          if (duplicates) {
+            return res.status(400).json(duplicates);
           }
         }
 
@@ -798,7 +999,7 @@ class TXModule {
 
         if (xmlStr) {
           try {
-            req.body = this.convertXmlToResource(xmlStr);
+            req.body = this.xmlToResource(xmlStr, req);
           } catch (e) {
             this.log.error(`XML parse error: ${e.message}`);
             return res.status(400).json(buildOperationOutcome('error', 'invalid', `Invalid XML: ${e.message}`));
@@ -1961,6 +2162,104 @@ class TXModule {
     return params;
   }
 
+  /**
+   * The XML model for a FHIR version, from its core package (fetched through the library's
+   * package manager, so the library keeps it), kept for the endpoints that share it. null, with
+   * a warning, when it can't be had: the endpoint uses the tx/xml classes
+   * @param {string} fhirVersion
+   * @returns {Promise<Object|null>}
+   */
+  async xmlModelFor(fhirVersion) {
+    const mm = String(fhirVersion).split('.').slice(0, 2).join('.');
+    if (!this.xmlModels.has(mm)) {
+      const corePackage = XML_CORE_PACKAGES[mm];
+      let model = null;
+      if (!corePackage) {
+        this.log.warn(`No XML model for FHIR ${fhirVersion}: its endpoints use the tx/xml classes`);
+      } else {
+        try {
+          model = await fhirXml.loadXmlModel({ corePackage, packageManager: this.library.packageManager, cacheFolder: this.library.cacheFolder });
+          this.log.info(`XML (${this.xmlConverter}): the model for FHIR ${mm}, from ${corePackage}`);
+        } catch (e) {
+          this.log.warn(`The XML model for FHIR ${mm} (${corePackage}) couldn't be loaded: ${e.message}. Its endpoints use the tx/xml classes`);
+        }
+      }
+      this.xmlModels.set(mm, model);
+    }
+    return this.xmlModels.get(mm);
+  }
+
+  /**
+   * A response as XML, in parts (see FhirXmlBase.toXmlChunksAsync, fhirXml.toXmlChunks): by the
+   * model-driven converter or the tx/xml classes (modules.tx.xmlConverter). Comparing, the
+   * classes' XML is the answer, and the converter's is compared with it afterwards
+   * @param {Object} data
+   * @param {Object} req
+   * @param {Function} stillWanted
+   * @returns {Promise<Array<string|Buffer>>}
+   */
+  async resourceToXmlParts(data, req, stillWanted) {
+    const model = req.txEndpoint ? req.txEndpoint.xmlModel : null;
+    if (model && this.xmlConverter === 'model') {
+      return fhirXml.toXmlChunks(data, model, { pretty: true, stillWanted, cache: FhirXmlBase.fragmentCache });
+    }
+    const parts = await FhirXmlBase.toXmlChunksAsync(() => this.convertResourceToXml(data), stillWanted);
+    if (model && this.xmlConverter === 'compare') {
+      setImmediate(() => {
+        void this.compareXmlOut(data, parts, model, req.originalUrl).catch(e => this.log.warn(`XML compare: ${req.originalUrl}: ${e.message}`));
+      });
+    }
+    return parts;
+  }
+
+  /** The tx/xml classes' XML and the converter's, read back (by the converter), compared */
+  async compareXmlOut(data, parts, model, url) {
+    const legacy = parts.map(p => (typeof p === 'string' ? p : p.toString('utf8'))).join('');
+    let mine;
+    try {
+      mine = fhirXml.toXml(data, model);
+    } catch (e) {
+      this.log.warn(`XML compare: ${url}: the converter can't write this ${data.resourceType}: ${e.message}`);
+      return;
+    }
+    let a;
+    try {
+      a = fhirXml.fromXml(legacy, model);
+    } catch (e) {
+      this.log.warn(`XML compare: ${url}: the tx/xml classes' ${data.resourceType} isn't FHIR XML the converter can read: ${e.message}`);
+      return;
+    }
+    const b = fhirXml.fromXml(mine, model);
+    const diffs = xmlDifferences(a, b, data.resourceType, []);
+    if (diffs.length) {
+      this.log.warn(`XML compare: ${url}: the tx/xml classes' ${data.resourceType} and the converter's differ: ${diffs.slice(0, 5).join('; ')}${diffs.length > 5 ? ` (and ${diffs.length - 5} more)` : ''}`);
+    }
+  }
+
+  /**
+   * A request body from XML: by the model-driven converter or the tx/xml classes
+   * (modules.tx.xmlConverter). Comparing, the classes' result is used, and the converter's
+   * compared with it
+   */
+  xmlToResource(xml, req) {
+    const model = req.txEndpoint ? req.txEndpoint.xmlModel : null;
+    if (model && this.xmlConverter === 'model') {
+      return fhirXml.fromXml(xml, model);
+    }
+    const data = this.convertXmlToResource(xml);
+    if (model && this.xmlConverter === 'compare') {
+      try {
+        const diffs = xmlDifferences(data, fhirXml.fromXml(xml, model), data.resourceType, []);
+        if (diffs.length) {
+          this.log.warn(`XML compare: ${req.originalUrl}: the request's ${data.resourceType}, read by the tx/xml classes and by the converter, differs: ${diffs.slice(0, 5).join('; ')}`);
+        }
+      } catch (e) {
+        this.log.warn(`XML compare: ${req.originalUrl}: the converter can't read the request's ${data.resourceType}: ${e.message}`);
+      }
+    }
+    return data;
+  }
+
   convertResourceToXml(res) {
     switch (res.resourceType) {
       case "CodeSystem" : return CodeSystemXML.toXml(res);
@@ -2151,6 +2450,27 @@ class TXModule {
     return limit;
   }
 
+}
+
+/**
+ * Where two resources differ (paths), for comparing XML converters (modules.tx.xmlConverter
+ * compare)
+ */
+function xmlDifferences(a, b, where, out) {
+  if (out.length >= 20) {
+    return out;
+  }
+  if (a === b || JSON.stringify(a) === JSON.stringify(b)) {
+    return out;
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object' && Array.isArray(a) === Array.isArray(b)) {
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      xmlDifferences(a[k], b[k], Array.isArray(a) ? `${where}[${k}]` : `${where}.${k}`, out);
+    }
+    return out;
+  }
+  out.push(`${where}: ${JSON.stringify(a)?.substring(0, 60)} / ${JSON.stringify(b)?.substring(0, 60)}`);
+  return out;
 }
 
 module.exports = TXModule;

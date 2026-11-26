@@ -44,6 +44,106 @@ const PAGE_SIZE = 200;
 // and rendering them blocks the server - but they are available as JSON (_fmt=json)
 const MAX_INLINE_RESOURCE = 1024 * 1024;
 
+// ---- What a list's filter costs, kept ----
+//
+// A list page runs about ten whole-table queries that are the same for every page of the list:
+// the count, and the summary's counts by version, authority and realm. A crawler paging through
+// the lists (npm.fhir.org, 2026-11: 770,000 list requests in two days, for 237,000 different
+// filters) ran them all again for every page. So they are kept, per filter, for as long as the
+// database is (the nightly update replaces it), up to xig.listCacheMB of them (default
+// LIST_CACHE_MB), the least recently used going first. Kept as promises, so requests for the same
+// filter at the same time share the queries; one that fails isn't kept.
+const LIST_CACHE_MB = 32;
+
+class ListCache {
+  constructor(maxBytes) {
+    this.maxBytes = maxBytes; // a function: the setting can change (tests)
+    this.bytes = 0;
+    this.entries = new Map(); // key -> { value: Promise, bytes }, least recently used first
+    this.db = null;
+  }
+
+  // the value for key, from build() the first time; sizeOf(value) is about how many bytes it holds
+  get(key, build, sizeOf) {
+    if (this.db !== xigDb) {
+      this.clear();
+      this.db = xigDb;
+    }
+    let entry = this.entries.get(key);
+    if (entry) {
+      this.entries.delete(key);
+      this.entries.set(key, entry);
+      return entry.value;
+    }
+    entry = { value: null, bytes: 0 };
+    entry.value = Promise.resolve().then(build).then(value => {
+      if (this.entries.get(key) === entry) {
+        entry.bytes = key.length * 2 + sizeOf(value);
+        this.bytes += entry.bytes;
+        this.trim();
+      }
+      return value;
+    }, error => {
+      if (this.entries.get(key) === entry) {
+        this.entries.delete(key);
+      }
+      throw error;
+    });
+    this.entries.set(key, entry);
+    return entry.value;
+  }
+
+  trim() {
+    const max = this.maxBytes();
+    for (const [key, entry] of this.entries) {
+      if (this.bytes <= max) {
+        break;
+      }
+      this.entries.delete(key);
+      this.bytes -= entry.bytes;
+    }
+  }
+
+  clear() {
+    this.entries.clear();
+    this.bytes = 0;
+  }
+}
+
+const listCache = new ListCache(() => {
+  const mb = xigSettings && xigSettings.listCacheMB;
+  return (typeof mb === 'number' && mb >= 0 ? mb : LIST_CACHE_MB) * 1024 * 1024;
+});
+
+// A list's filter, as a key: everything that chooses the rows, but not which page of them
+function filterKey(queryParams) {
+  const { ver, auth, realm, type, rt, text, pkg, onlyUsed } = queryParams;
+  return JSON.stringify([ver, auth, realm, type, rt, text, pkg, onlyUsed]);
+}
+
+// ---- When the client has gone ----
+//
+// nginx gives up on a request whose client has gone (a 499) and closes the connection to us. A
+// list page's queries take a while, and when a crawler gave up on thousands of them
+// (npm.fhir.org, 2026-11: 1,000-3,000 a minute) the server ran them all anyway, queued for a
+// database connection, holding their results and pages until the heap's collections stopped the
+// event loop for seconds at a time. So a list stops between its steps once no one is waiting.
+class ClientGone extends Error {
+  constructor() {
+    super('client gone');
+  }
+}
+
+function clientGone(req, res) {
+  return !!((res && res.destroyed) || (req && req.socket && req.socket.destroyed));
+}
+
+function checkClient(req, res) {
+  if (clientGone(req, res)) {
+    throw new ClientGone();
+  }
+}
+
 // Request tracking
 let requestStats = {
   total: 0,
@@ -384,8 +484,10 @@ function hasTerminologySource(sourceCode) {
 // Resource List Table Functions
 
 // Start / Prev / Next links for a list of count rows shown PAGE_SIZE at a time from offset.
-// urlFor(offset) gives the link to the page starting at offset. Nothing when it fits on one page
-function buildPager(count, offset, urlFor) {
+// urlFor(offset) gives the link to the page starting at offset. Nothing when it fits on one page.
+// loginUrlFor, for someone not logged in who may see only the first page: url -> the login page
+// that comes back to it, for the Next link
+function buildPager(count, offset, urlFor, loginUrlFor = null) {
   if (count <= PAGE_SIZE) {
     return '';
   }
@@ -399,17 +501,28 @@ function buildPager(count, offset, urlFor) {
   }
   html += `<b>Rows ${offset} - ${Math.min(offset + PAGE_SIZE, count)} of ${count.toLocaleString()}</b>`;
   if (offset + PAGE_SIZE < count) {
-    html += ` <a href="${escape(urlFor(offset + PAGE_SIZE))}">Next</a>`;
+    if (loginUrlFor) {
+      html += ` <a href="${escape(loginUrlFor(urlFor(offset + PAGE_SIZE)))}">Next (log in)</a>`;
+    } else {
+      html += ` <a href="${escape(urlFor(offset + PAGE_SIZE))}">Next</a>`;
+    }
   }
   html += '</p>';
   return html;
 }
 
-function buildPaginationControls(count, offset, baseUrl, queryParams) {
+function buildPaginationControls(count, offset, baseUrl, queryParams, loginUrlFor = null) {
   return buildPager(count, offset, o => {
     const params = { ...queryParams, offset: o ? o.toString() : '' };
     return buildPaginationUrl(baseUrl, params);
-  });
+  }, loginUrlFor);
+}
+
+// Is a list filtered (anything that chooses its rows, not just the page)? Someone not logged in
+// sees only the first page of a filtered list, when auth.loginForExpensive is on: a crawler on
+// 78,000 addresses paged through every combination of the filters (npm.fhir.org, 2026-11)
+function isFiltered(queryParams) {
+  return ['ver', 'auth', 'realm', 'type', 'rt', 'text', 'pkg', 'onlyUsed'].some(k => queryParams[k]);
 }
 
 // An offset from the request: a whole number, 0 or more
@@ -436,8 +549,12 @@ function buildPageLinks(count, offset, urlFor) {
   return links.join(', ');
 }
 
-// How many resources the list's filter matches
+// How many resources the list's filter matches (kept: listCache)
 function countResources(queryParams) {
+  return listCache.get('count ' + filterKey(queryParams), () => queryResourceCount(queryParams), () => 16);
+}
+
+function queryResourceCount(queryParams) {
   const { query, params } = buildSecureResourceCountQuery(queryParams);
   return new Promise((resolve, reject) => {
     if (!xigDb) {
@@ -502,7 +619,7 @@ function renderExtension(details) {
   }
 }
 
-async function buildResourceTable(queryParams, resourceCount, offset = 0) {
+async function buildResourceTable(queryParams, resourceCount, offset = 0, loginUrlFor = null) {
   if (!xigDb || resourceCount === 0) {
     return '<p>No resources to display.</p>';
   }
@@ -512,7 +629,7 @@ async function buildResourceTable(queryParams, resourceCount, offset = 0) {
 
   try {
     // Add pagination controls
-    parts.push(buildPaginationControls(resourceCount, offset, '/xig', queryParams));
+    parts.push(buildPaginationControls(resourceCount, offset, '/xig', queryParams, loginUrlFor));
 
     // Get resource data with pagination
     const { query: resourceQuery, params: qp } = buildSecureResourceQuery(queryParams, offset, PAGE_SIZE);
@@ -860,121 +977,121 @@ async function buildResourceCsv(queryParams, offset = 0) {
 
 // Summary Statistics Functions
 
+// The counts by version, authority and realm above a list (kept: listCache). The same for every
+// page of the list: its links go to the first page of the narrower list
 async function buildSummaryStats(queryParams, baseUrl) {
+  if (!xigDb) {
+    return '<p class="text-warning">Database not available for summary statistics</p>';
+  }
+  try {
+    return await listCache.get(`summary ${baseUrl} ${filterKey(queryParams)}`,
+      () => querySummaryStats(queryParams, baseUrl), html => html.length * 2);
+  } catch (error) {
+    xigLog.error(`Error building summary statistics: ${error.message}`);
+    return `<p class="text-warning">Error loading summary statistics: ${escape(error.message)}</p>`;
+  }
+}
+
+async function querySummaryStats(queryParams, baseUrl) {
   const { ver, auth, realm } = queryParams;
   const { where, params } = buildResourceFilter(queryParams);
   let html = '';
 
-  if (!xigDb) {
-    return '<p class="text-warning">Database not available for summary statistics</p>';
-  }
+  html += '<div style="background-color:rgb(254, 250, 198); border: 1px black solid; padding: 6px; font-size: 12px; font-family: verdana;">';
+  // Version breakdown (only if no version filter is applied)
+  if (!ver || ver === '') {
+    html += '<p><strong>By Version</strong></p>';
+    html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
 
-  try {
-    html += '<div style="background-color:rgb(254, 250, 198); border: 1px black solid; padding: 6px; font-size: 12px; font-family: verdana;">';
-    // Version breakdown (only if no version filter is applied)
-    if (!ver || ver === '') {
-      html += '<p><strong>By Version</strong></p>';
-      html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
-
-      const versions = getCachedSet('versions');
-      for (const version of versions) {
-        try {
-          if (!VERSION_COLUMNS.includes(version)) {
-            continue; // a column name, so only one of the known ones
-          }
-          const sql = `SELECT COUNT(*) as count FROM Resources ${where} AND ${version} = 1`;
-
-          const count = await new Promise((resolve, reject) => {
-            xigDb.get(sql, params, guarded(reject, (err, row) => {
-              if (err) reject(err);
-              else resolve(row ? row.count : 0);
-            }));
-          });
-
-          const linkUrl = buildVersionLinkUrl(baseUrl, queryParams, version);
-          html += `<li><a href="${linkUrl}">${escape(version)}</a>: ${count.toLocaleString()}</li>`;
-        } catch (error) {
-          html += `<li>${escape(version)}: Error</li>`;
-        }
+    const versions = getCachedSet('versions');
+    for (const version of versions) {
+      if (!VERSION_COLUMNS.includes(version)) {
+        continue; // a column name, so only one of the known ones
       }
-      html += '</ul>';
-    }
+      const sql = `SELECT COUNT(*) as count FROM Resources ${where} AND ${version} = 1`;
 
-    // Authority breakdown (only if no authority filter is applied)
-    if (!auth || auth === '') {
-      html += '<p><strong>By Authority</strong></p>';
-      html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
-
-      const sql = `SELECT Authority, COUNT(*) as count FROM Resources ${where} GROUP BY Authority ORDER BY Authority`;
-
-      const authorityResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, params, guarded(reject, (err, rows) => {
+      const count = await new Promise((resolve, reject) => {
+        xigDb.get(sql, params, guarded(reject, (err, row) => {
           if (err) reject(err);
-          else resolve(rows || []);
+          else resolve(row ? row.count : 0);
         }));
       });
 
-      authorityResults.forEach(row => {
-        const authority = row.Authority;
-        const count = row.count;
-
-        if (!authority || authority === '') {
-          html += `<li>none: ${count.toLocaleString()}</li>`;
-        } else {
-          const linkUrl = buildAuthorityLinkUrl(baseUrl, queryParams, authority);
-          html += `<li><a href="${linkUrl}">${escape(authority)}</a>: ${count.toLocaleString()}</li>`;
-        }
-      });
-      html += '</ul>';
+      const linkUrl = buildVersionLinkUrl(baseUrl, queryParams, version);
+      html += `<li><a href="${linkUrl}">${escape(version)}</a>: ${count.toLocaleString()}</li>`;
     }
-
-    // Realm breakdown (only if no realm filter is applied)
-    if (!realm || realm === '') {
-      html += '<p><strong>By Realm</strong></p>';
-      html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
-
-      const sql = `SELECT Realm, COUNT(*) as count FROM Resources ${where} GROUP BY Realm ORDER BY Realm`;
-
-      const realmResults = await new Promise((resolve, reject) => {
-        xigDb.all(sql, params, guarded(reject, (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows || []);
-        }));
-      });
-
-      var c = 0;
-      realmResults.forEach(row => {
-        const realmCode = row.Realm;
-        const count = row.count;
-
-        if (!realmCode || realmCode === '') {
-          html += `<li>none: ${count.toLocaleString()}</li>`;
-        } else  if (realmCode.length > 3) {
-          c++;
-        } else {
-          const linkUrl = buildRealmLinkUrl(baseUrl, queryParams, realmCode);
-          html += `<li><a href="${linkUrl}">${escape(realmCode)}</a>: ${count.toLocaleString()}</li>`;
-        }
-      });
-      if (c > 0) {
-        html += `<li>other: ${c}</li>`;
-      }
-      html += '</ul>';
-    }
-    html += '</div><p>&nbsp;</p>';
-
-  } catch (error) {
-    console.error(error);
-    xigLog.error(`Error building summary stats: ${error.message}`);
-    html += `<p class="text-warning">Error loading summary statistics: ${escape(error.message)}</p>`;
+    html += '</ul>';
   }
+
+  // Authority breakdown (only if no authority filter is applied)
+  if (!auth || auth === '') {
+    html += '<p><strong>By Authority</strong></p>';
+    html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
+
+    const sql = `SELECT Authority, COUNT(*) as count FROM Resources ${where} GROUP BY Authority ORDER BY Authority`;
+
+    const authorityResults = await new Promise((resolve, reject) => {
+      xigDb.all(sql, params, guarded(reject, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }));
+    });
+
+    authorityResults.forEach(row => {
+      const authority = row.Authority;
+      const count = row.count;
+
+      if (!authority || authority === '') {
+        html += `<li>none: ${count.toLocaleString()}</li>`;
+      } else {
+        const linkUrl = buildAuthorityLinkUrl(baseUrl, queryParams, authority);
+        html += `<li><a href="${linkUrl}">${escape(authority)}</a>: ${count.toLocaleString()}</li>`;
+      }
+    });
+    html += '</ul>';
+  }
+
+  // Realm breakdown (only if no realm filter is applied)
+  if (!realm || realm === '') {
+    html += '<p><strong>By Realm</strong></p>';
+    html += '<ul style="columns: 4; -webkit-columns: 4; -moz-columns: 4">';
+
+    const sql = `SELECT Realm, COUNT(*) as count FROM Resources ${where} GROUP BY Realm ORDER BY Realm`;
+
+    const realmResults = await new Promise((resolve, reject) => {
+      xigDb.all(sql, params, guarded(reject, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows || []);
+      }));
+    });
+
+    var c = 0;
+    realmResults.forEach(row => {
+      const realmCode = row.Realm;
+      const count = row.count;
+
+      if (!realmCode || realmCode === '') {
+        html += `<li>none: ${count.toLocaleString()}</li>`;
+      } else  if (realmCode.length > 3) {
+        c++;
+      } else {
+        const linkUrl = buildRealmLinkUrl(baseUrl, queryParams, realmCode);
+        html += `<li><a href="${linkUrl}">${escape(realmCode)}</a>: ${count.toLocaleString()}</li>`;
+      }
+    });
+    if (c > 0) {
+      html += `<li>other: ${c}</li>`;
+    }
+    html += '</ul>';
+  }
+  html += '</div><p>&nbsp;</p>';
 
   return html;
 }
 
 // Helper functions to build links for summary stats
 function buildVersionLinkUrl(baseUrl, currentParams, version) {
-  const params = { ...currentParams, ver: version };
+  const params = { ...currentParams, ver: version, offset: '' };
   const queryString = Object.keys(params)
     .filter(key => params[key] && params[key] !== '')
     .map(key => `${key}=${encodeURIComponent(params[key])}`)
@@ -983,7 +1100,7 @@ function buildVersionLinkUrl(baseUrl, currentParams, version) {
 }
 
 function buildAuthorityLinkUrl(baseUrl, currentParams, authority) {
-  const params = { ...currentParams, auth: authority };
+  const params = { ...currentParams, auth: authority, offset: '' };
   const queryString = Object.keys(params)
     .filter(key => params[key] && params[key] !== '')
     .map(key => `${key}=${encodeURIComponent(params[key])}`)
@@ -992,7 +1109,7 @@ function buildAuthorityLinkUrl(baseUrl, currentParams, authority) {
 }
 
 function buildRealmLinkUrl(baseUrl, currentParams, realm) {
-  const params = { ...currentParams, realm: realm };
+  const params = { ...currentParams, realm: realm, offset: '' };
   const queryString = Object.keys(params)
     .filter(key => params[key] && params[key] !== '')
     .map(key => `${key}=${encodeURIComponent(params[key])}`)
@@ -1002,7 +1119,29 @@ function buildRealmLinkUrl(baseUrl, currentParams, realm) {
 
 // Form Building Functions
 
+// The same few selects, with the same choices, are on every list page: each is built once for its
+// list of options (while that list is current: getCachedSet) and selected value
+const selectCache = new WeakMap(); // optionsList -> Map(name + selected -> html)
+const SELECT_CACHE_MAX = 1000; // per list: the selected value comes from the request
+
 function makeSelect(selectedValue, optionsList, name = 'rt') {
+  let byKey = selectCache.get(optionsList);
+  if (!byKey) {
+    byKey = new Map();
+    selectCache.set(optionsList, byKey);
+  }
+  const key = name + '\n' + (selectedValue || '');
+  let html = byKey.get(key);
+  if (html === undefined) {
+    html = buildSelect(selectedValue, optionsList, name);
+    if (byKey.size < SELECT_CACHE_MAX) {
+      byKey.set(key, html);
+    }
+  }
+  return html;
+}
+
+function buildSelect(selectedValue, optionsList, name) {
   let html = `<select name="${name}" size="1">`;
 
   // Add empty option
@@ -1212,9 +1351,12 @@ function buildPageHeading(queryParams) {
   return heading;
 }
 
+// A link that changes the filter: to the first page of the new list, so not with the offset (with
+// it, every page of every list linked to every page of every other: a crawler's endless supply)
 function buildBaseUrl(baseUrl, params, excludeParam) {
   const filteredParams = { ...params };
   delete filteredParams[excludeParam];
+  delete filteredParams.offset;
 
   const queryString = Object.keys(filteredParams)
     .filter(key => filteredParams[key] && filteredParams[key] !== '')
@@ -1354,10 +1496,18 @@ function buildControlPanel(baseUrl, queryParams) {
 
 // Cache Functions
 
+// A cached set's values, sorted (once per set: a new cache is new sets). Not to be changed
+const sortedSets = new WeakMap();
+
 function getCachedSet(tableName) {
   const cache = getCachedTable(tableName);
   if (cache instanceof Set) {
-    return Array.from(cache).sort(); // Sort for consistent order
+    let sorted = sortedSets.get(cache);
+    if (!sorted) {
+      sorted = Object.freeze(Array.from(cache).sort()); // Sort for consistent order
+      sortedSets.set(cache, sorted);
+    }
+    return sorted;
   }
   return [];
 }
@@ -2244,9 +2394,20 @@ router.get('/', async (req, res) => {
       // ── Format negotiation ──────────────────────────────────────
       const fmt = getRequestedFormat(req);
 
+      // someone not logged in sees only the first page of a filtered list (auth.loginForExpensive)
+      const firstPageOnly = isFiltered(queryParams) && await auth.mustLogIn(req);
+      if (firstPageOnly && offset > 0) {
+        return auth.refuseAnonymous(req, res, 'xig-page', {
+          as: fmt === 'json' || fmt === 'csv' ? 'json' : 'html',
+          back: buildPaginationUrl('/xig', { ...queryParams, offset: '' })
+        });
+      }
+      const loginUrlFor = firstPageOnly ? (url => auth.loginUrl(req, url)) : null;
+
       if (fmt === 'json' || fmt === 'csv') {
         // One page at a time; the headers say how many there are and where the other pages are
         const total = await countResources(queryParams);
+        checkClient(req, res);
         res.setHeader('X-Total-Count', String(total));
         const links = buildPageLinks(total, offset, o => buildPaginationUrl('/xig',
           { ...queryParams, _fmt: req.query._fmt === fmt ? fmt : '', offset: o ? o.toString() : '' }));
@@ -2276,16 +2437,7 @@ router.get('/', async (req, res) => {
 
       try {
         if (xigDb) {
-          const {query: countQuery, params: countParams} = buildSecureResourceCountQuery(queryParams);
-          resourceCount = await new Promise((resolve, reject) => {
-            xigDb.get(countQuery, countParams, guarded(reject, (err, row) => {
-              if (err) {
-                reject(err);
-              } else {
-                resolve(row ? row.total : 0);
-              }
-            }));
-          });
+          resourceCount = await countResources(queryParams);
         }
       } catch (error) {
         countError = error.message;
@@ -2315,10 +2467,12 @@ router.get('/', async (req, res) => {
       const additionalForm = buildAdditionalForm(queryParams);
 
       // Build summary statistics
+      checkClient(req, res);
       const summaryStats = await buildSummaryStats(queryParams, '/xig');
 
       // Build resource table
-      const resourceTable = await buildResourceTable(queryParams, resourceCount, offset);
+      checkClient(req, res);
+      const resourceTable = await buildResourceTable(queryParams, resourceCount, offset, loginUrlFor);
 
       // Build content
       let content = controlPanel;
@@ -2331,11 +2485,15 @@ router.get('/', async (req, res) => {
       const stats = await gatherPageStatistics();
       stats.processingTime = Date.now() - startTime;
 
+      checkClient(req, res);
       const html = renderPage(title, content, stats);
       res.setHeader('Content-Type', 'text/html');
       res.send(html);
 
     } catch (error) {
+      if (error instanceof ClientGone) {
+        return; // nothing to send it to: the request log says '(client gone)'
+      }
       xigLog.error(`Error rendering resources page: ${error.message}`);
       htmlServer.sendErrorResponse(res, 'xig', error);
     }
@@ -3477,5 +3635,11 @@ module.exports = {
   cacheEmitter,
 
   // Tests only: use this database (and its counts) without downloading one
-  setDatabaseForTests: (db) => { xigDb = db; }
+  setDatabaseForTests: (db) => { xigDb = db; },
+  setStatsForTests: (stats) => { globalStats = stats; },
+  ListCache,
+  listCache,
+  filterKey,
+  clientGone,
+  isFiltered
 };
