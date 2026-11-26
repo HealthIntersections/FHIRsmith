@@ -57,7 +57,8 @@ async function history(ep, freq, ctx) {
     // written before the range ends, and not replaced before it starts
     where.push('v.LastUpdated < ?');
     args.push(r.hi);
-    where.push('NOT EXISTS (SELECT 1 FROM Versions n WHERE n.ResourceKey = v.ResourceKey AND n.VersionId = v.VersionId + 1 AND n.LastUpdated <= ?)');
+    // (any later version: versions between may have been expunged)
+    where.push('NOT EXISTS (SELECT 1 FROM Versions n WHERE n.ResourceKey = v.ResourceKey AND n.VersionId > v.VersionId AND n.LastUpdated <= ?)');
     args.push(r.lo);
   }
   const cursor = param(freq, '_cursor');

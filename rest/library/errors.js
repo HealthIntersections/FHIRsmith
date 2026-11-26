@@ -44,16 +44,26 @@ const unprocessable = (msg, extra) => new FhirError(422, 'processing', msg, extr
 const tooCostly = (msg) => new FhirError(400, 'too-costly', msg);
 
 /**
- * @param {Array<{severity: string, code: string, diagnostics?: string, expression?: string[]}>} issues
+ * @param {Array<{severity: string, code: string, diagnostics?: string, details?: Object, extension?: Object[], expression?: string[]}>} issues
  */
 function operationOutcome(issues) {
   return {
     resourceType: 'OperationOutcome',
     issue: issues.map(i => {
-      const o = { severity: i.severity || 'error', code: i.code || 'processing' };
+      const o = {};
+      if (i.extension && i.extension.length) {
+        o.extension = i.extension;
+      }
+      o.severity = i.severity || 'error';
+      o.code = i.code || 'processing';
+      if (i.details) {
+        o.details = i.details;
+      }
       if (i.diagnostics) {
         o.diagnostics = i.diagnostics;
-        o.details = { text: i.diagnostics };
+        if (!o.details) {
+          o.details = { text: i.diagnostics };
+        }
       }
       if (i.expression && i.expression.length) {
         o.expression = i.expression;

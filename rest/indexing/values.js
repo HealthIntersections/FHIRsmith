@@ -24,6 +24,8 @@
  * @module rest/indexing/values
  */
 
+const fs = require('fs');
+const path = require('path');
 const { dateRange, periodRange, numberRange } = require('../../library/fhir-search-values');
 
 const MAX_NORM = 255;
@@ -31,11 +33,15 @@ const MAX_EXACT = 1024;
 const MAX_CODE = 255;
 const UCUM = 'http://unitsofmeasure.org';
 
+// the UCUM service the terminology server uses (tx/library), loaded when first needed
 let ucum = null;
-function ucumUtils() {
+function ucumService() {
   if (ucum === null) {
     try {
-      ucum = require('@lhncbc/ucum-lhc').UcumLhcUtils.getInstance();
+      const { UcumService } = require('../../tx/library/ucum-service');
+      const service = new UcumService();
+      service.init(fs.readFileSync(path.join(__dirname, '..', '..', 'tx', 'data', 'ucum-essence.xml'), 'utf8'));
+      ucum = service;
     } catch (e) {
       ucum = false;
     }
@@ -45,7 +51,7 @@ function ucumUtils() {
 
 /** Lower case, with accents (combining marks) removed */
 function normalise(s) {
-  return String(s).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return String(s).normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 }
 
 function truncate(s, n) {
@@ -54,23 +60,25 @@ function truncate(s, n) {
 }
 
 /**
- * The canonical (UCUM base unit) form of a quantity: the magnitude, and the unit as a
- * stable string ("g", "g.m-1.s-2"), or null if the unit isn't UCUM.
+ * The canonical (UCUM base unit) form of a quantity: the magnitude, and the unit as the
+ * service writes it ("g", "g.m-1.s-2"; "1" for a unit with no dimension), or null if the unit
+ * isn't UCUM.
  * @param {string} code - a UCUM unit code
  * @param {number} value
  */
 function canonicalQuantity(code, value) {
-  const u = ucumUtils();
-  if (!u || !code) {
+  const u = ucumService();
+  if (!u || !code || typeof value !== 'number' || !Number.isFinite(value)) {
     return null;
   }
   try {
-    const r = u.convertToBaseUnits(code, value);
-    if (!r || r.status !== 'succeeded') {
+    const { Pair, Decimal } = require('../../tx/library/ucum-types');
+    const p = u.getCanonicalForm(new Pair(new Decimal(String(value)), code));
+    const v = Number(p.getValue().asDecimal());
+    if (!Number.isFinite(v)) {
       return null;
     }
-    const unit = Object.keys(r.unitToExp).sort().map(k => r.unitToExp[k] === 1 ? k : `${k}${r.unitToExp[k]}`).join('.');
-    return { value: r.magnitude, unit: unit || '1' };
+    return { value: v, unit: p.getCode() || '1' };
   } catch (e) {
     return null;
   }

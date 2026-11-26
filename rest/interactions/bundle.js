@@ -17,10 +17,12 @@
  */
 
 const http = require('http');
+const fhirJson = require('../../library/fhir-json');
 const { FhirError, badRequest, preconditionFailed, unprocessable, notFound } = require('../library/errors');
 const { fromEntry, parseQuery, preferReturn } = require('../request');
 const access = require('../access');
 const crud = require('./crud');
+const provenance = require('./provenance');
 
 const ORDER = { DELETE: 0, POST: 1, PUT: 2, PATCH: 2, GET: 3, HEAD: 3 };
 
@@ -86,6 +88,10 @@ async function batch(ep, freq) {
   const entries = freq.body.entry || [];
   const out = [];
   for (const entry of entries) {
+    // an async batch that has been cancelled stops here (queue/async.js)
+    if (freq.cancelled && freq.cancelled()) {
+      throw cancelled();
+    }
     try {
       const efreq = fromEntry(entry, freq);
       if (efreq.interaction === 'bundle') {
@@ -110,6 +116,13 @@ async function batch(ep, freq) {
     }
   }
   return { status: 200, resource: { resourceType: 'Bundle', type: 'batch-response', entry: out } };
+}
+
+/** The error that stops a cancelled async batch or transaction */
+function cancelled() {
+  const e = new FhirError(409, 'processing', 'The request was cancelled');
+  e.cancelled = true;
+  return e;
 }
 
 /** Replace strings exactly equal to a mapped value, everywhere in a resource */
@@ -559,7 +572,10 @@ async function transaction(ep, freq) {
 
   const results = await ep.db.write(async (q) => {
     // fresh copies of everything the planning changes: the transaction can run again (busy, deadlock)
-    const work = ordered.map(it => ({ ...it, efreq: { ...it.efreq, headers: { ...it.efreq.headers }, body: it.efreq.body ? JSON.parse(JSON.stringify(it.efreq.body)) : null }, plan: null, result: null }));
+    // (and the X-Provenance header's Provenance collects its targets afresh)
+    const prv = provenance.collector(freq.provenance);
+    const work = ordered.map(it => ({ ...it, efreq: { ...it.efreq, headers: { ...it.efreq.headers }, body: it.efreq.body ? fhirJson.clone(it.efreq.body) : null, provenance: prv },
+      plan: null, result: null }));
     const reserved = new Set();
 
     // 2. what each entry changes; a resource changed by two entries fails
@@ -662,6 +678,10 @@ async function transaction(ep, freq) {
     // 6. run the entries, in order
     const unresolved = new Set();
     for (const it of work) {
+      // an async transaction that has been cancelled stops, and rolls back (queue/async.js)
+      if (freq.cancelled && freq.cancelled()) {
+        throw cancelled();
+      }
       try {
         it.result = await runEntry(ep, q, it, reserved);
       } catch (e) {
@@ -671,6 +691,9 @@ async function transaction(ep, freq) {
         it.result.written.unresolved.forEach(u => unresolved.add(u));
       }
     }
+
+    // the Provenance (X-Provenance), for everything the transaction wrote
+    (await provenance.finish(ep, q, freq, prv)).forEach(u => unresolved.add(u));
 
     // and the references, now that everything is written
     if (ep.settings.checkReferences && unresolved.size) {
@@ -686,4 +709,4 @@ async function transaction(ep, freq) {
   return { status: 200, resource: { resourceType: 'Bundle', type: 'transaction-response', entry: out } };
 }
 
-module.exports = { bundle, batch, transaction, rewrite, rewriteNarrative, notFound };
+module.exports = { bundle, batch, transaction, rewrite, rewriteNarrative, notFound, responseEntry, errorEntry };

@@ -18,6 +18,7 @@
  */
 
 const { badRequest, notAllowed } = require('./library/errors');
+const fhirJson = require('../library/fhir-json');
 
 const TYPE_RE = /^[A-Z][A-Za-z]{0,63}$/;
 
@@ -146,6 +147,13 @@ function classify(freq) {
       out.id = null;
       out.interaction = 'search-type';
     }
+  } else if (s.length === 5 && s[2] === '_history' && isOp(s[4])) {
+    // an operation on a version ($expunge)
+    out.type = checkType(s[0]);
+    out.id = s[1];
+    out.vid = s[3];
+    out.interaction = 'operation';
+    out.operation = s[4].substring(1);
   }
   if (!out.interaction) {
     throw notAllowed(`${m} ${s.join('/') || '/'} is not a FHIR interaction this server knows`);
@@ -213,11 +221,11 @@ function fromEntry(entry, parent) {
     headers.prefer = parent.headers.prefer;
   }
   const freq = { method: String(r.method).toUpperCase(), segments, params, headers, body: entry.resource || null,
-    principal: parent.principal, ip: parent.ip, base: parent.base, url, inBundle: true };
+    principal: parent.principal, ip: parent.ip, base: parent.base, url, inBundle: true, provenance: parent.provenance || null };
   if (freq.method === 'PATCH' && entry.resource && entry.resource.resourceType === 'Binary' && entry.resource.data) {
     // a JSON Patch in a Bundle comes as a Binary
     try {
-      freq.body = JSON.parse(Buffer.from(entry.resource.data, 'base64').toString('utf8'));
+      freq.body = fhirJson.parse(Buffer.from(entry.resource.data, 'base64').toString('utf8'));
     } catch (e) {
       throw badRequest('The PATCH entry\'s Binary is not a JSON Patch');
     }

@@ -280,7 +280,7 @@ class Terminology {
   /**
    * One round of the membership job: for each registered value set, the concepts not yet
    * checked, asked about with $batch-validate-code (those in systems the value set doesn't
-   * draw on are not members, without asking). A master job; a value set the server fails on
+   * draw on are not members, without asking). A queue runner job; a value set the server fails on
    * is logged and tried again next round, without holding up the others.
    * @param {Object} ep
    * @param {number} [budgetMs] - stop starting batches after this long
@@ -371,7 +371,7 @@ class Terminology {
 
   /**
    * One round of the closure job: send the concepts not yet in their closures, and apply what
-   * comes back. A master job.
+   * comes back. A queue runner job.
    *
    * Each place a code can be (a resource type's token search parameter: Observation.code and
    * Condition.code are two, though one SearchParameter defines both) has its own closure
