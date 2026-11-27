@@ -1764,6 +1764,37 @@ describe('SNOMED CT map reference sets', () => {
     expect(await located('concept', 'in', EXTENDED, '262798009')).toBe(true);
   });
 
+  test('a reference set\'s refs, read in place, are those of its member records', () => {
+    const sct = provider.sct;
+    for (const id of [SIMPLE, EXTENDED]) {
+      const index = sct.getConceptRefSet(sct.concepts.findConcept(id).index, false);
+      expect(Array.from(sct.refSetMembers.getMemberRefs(index))).toEqual(sct.refSetMembers.getMembers(index).map(m => m.ref));
+    }
+  });
+
+  // tx.fhir.org, 2026-11: $expand of ?fhir_vs=refset/... with count=3 made every member of a big
+  // reference set, every time
+  test('what a big reference set comes to is kept for the next filter', async () => {
+    const SnomedServices = provider.sct.constructor;
+    const min = SnomedServices.REF_SET_IN_CACHE_MIN;
+    const max = SnomedServices.REF_SET_IN_CACHE_MEMBERS;
+    try {
+      SnomedServices.REF_SET_IN_CACHE_MIN = 1;
+      const first = provider.sct.filterIn(SIMPLE).members;
+      expect(provider.sct.filterIn(SIMPLE).members).toBe(first);
+      expect(await codes('concept', 'in', SIMPLE)).toEqual(['16763008', '262796008']);
+      // room for one: the least recently used goes
+      SnomedServices.REF_SET_IN_CACHE_MEMBERS = first.length;
+      const other = provider.sct.filterIn(EXTENDED).members;
+      expect(provider.sct.filterIn(EXTENDED).members).toBe(other);
+      expect(provider.sct.filterIn(SIMPLE).members).not.toBe(first);
+      expect(await codes('concept', 'in', EXTENDED)).toEqual(['262797004', '262798009']);
+    } finally {
+      SnomedServices.REF_SET_IN_CACHE_MIN = min;
+      SnomedServices.REF_SET_IN_CACHE_MEMBERS = max;
+    }
+  });
+
   test('member filters can select on the map fields', async () => {
     expect(await codes('constraint', '=', `^ ${EXTENDED} {{ M mapTarget = "Y92.9" }}`)).toEqual(['262797004']);
     expect(await codes('constraint', '=', `^ ${SIMPLE} {{ M mapTarget = "K76.89" }}`)).toEqual(['16763008']);

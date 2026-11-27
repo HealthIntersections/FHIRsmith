@@ -1326,6 +1326,13 @@ class ValueSetChecker {
               if (st) {
                 vstatus.value = st;
               }
+            } else if (!this.params.membershipOnly && !inactive.value && !vstatus.value) {
+              // a deprecated code is reported as deprecated whether or not it is in the value set,
+              // as an inactive one is
+              const st = await prov.getStatus(ctxt.context);
+              if (st && st.toLowerCase() === 'deprecated') {
+                vstatus.value = st;
+              }
             }
             // this coding isn't in the value set: its display is only reported if no coding is
             // (the display goes with the code that's reported - the first coding that's in the

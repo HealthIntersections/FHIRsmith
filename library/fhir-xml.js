@@ -5,10 +5,11 @@
 //
 
 /**
- * FHIR XML: converting resources between JSON and XML, by a type model derived from the
- * core package's StructureDefinitions (deriveXmlModel; loadXmlModel fetches the core package
- * for a FHIR version and keeps the model in the cache folder). Used by the rest module (whose
- * model is kept with its other derived definitions) and the tx module.
+ * FHIR XML: converting resources between JSON and XML, by the type model derived from the
+ * core package's StructureDefinitions (library/fhir-model.js: deriveXmlModel, and loadXmlModel,
+ * which fetches the core package for a FHIR version and keeps the model in the cache folder,
+ * are its, exported here too). Used by the rest module (whose model is kept with its other
+ * derived definitions) and the tx module.
  *
  * The conversion is the same for every type, given, for each element of each type (and each
  * backbone element, by path): its order, whether it repeats, its type (or types: value[x]),
@@ -32,8 +33,7 @@
  */
 
 const fhirJson = require('./fhir-json');
-const fs = require('fs');
-const path = require('path');
+const { deriveXmlModel, XmlModel, loadXmlModel } = require('./fhir-model');
 const { performance } = require('perf_hooks');
 const { XMLParser, XMLValidator } = require('fast-xml-parser');
 
@@ -43,186 +43,11 @@ const YIELD_MS = 25;
 // and the narrative is checked)
 // eslint-disable-next-line no-control-regex
 const MARK = /\u0000(\d+)\u0000/;
-// the shape of the models loadXmlModel keeps: a change makes them be derived again
-const MODEL_FORMAT = 1;
 
 const FHIR_NS = 'http://hl7.org/fhir';
 // indentation strings, by level
 const INDENTS = Array.from({ length: 32 }, (_, i) => '  '.repeat(i));
 const XHTML_NS = 'http://www.w3.org/1999/xhtml';
-const FHIR_TYPE_EXT = 'http://hl7.org/fhir/StructureDefinition/structuredefinition-fhir-type';
-
-// element flags in the model
-const ARRAY = 1;
-const ATTR = 2;
-const CHOICE = 4;
-
-const NUMBER_TYPES = new Set(['integer', 'decimal', 'positiveInt', 'unsignedInt']);
-// the FHIRPath system types some elements are given (Element.id, Extension.url...), when the
-// element doesn't say what FHIR type it is
-const SYSTEM_TYPES = { String: 'string', Boolean: 'boolean', Integer: 'integer', Decimal: 'decimal', Date: 'date', DateTime: 'dateTime', Time: 'time' };
-
-// ---- the model ----
-
-/**
- * The XML model, from the core package's StructureDefinitions.
- * @param {Object[]} sds - StructureDefinition resources
- * @returns {{primitives: Object, resources: string[], types: Object}} primitives: type ->
- *   'string', 'number', 'boolean' or 'xhtml'; resources: the resource types; types: type
- *   name or backbone path -> [[name, flags, [type codes], contentReference or null]...], in
- *   order
- */
-function deriveXmlModel(sds) {
-  const primitives = {};
-  const resources = [];
-  const types = {};
-  for (const sd of sds) {
-    if (!sd || sd.kind === 'logical' || sd.derivation === 'constraint' || !sd.type || !sd.snapshot) {
-      continue;
-    }
-    if (sd.kind === 'primitive-type') {
-      primitives[sd.type] = sd.type === 'xhtml' ? 'xhtml' : sd.type === 'boolean' ? 'boolean' : NUMBER_TYPES.has(sd.type) ? 'number' : 'string';
-      continue;
-    }
-    if (sd.kind === 'resource' && !resources.includes(sd.type)) {
-      resources.push(sd.type);
-    }
-    if (types[sd.type]) {
-      // the first definition of a type wins (the core's)
-      continue;
-    }
-    const seen = new Set();
-    for (const e of sd.snapshot.element || []) {
-      const p = String(e.path || '');
-      const dot = p.lastIndexOf('.');
-      if (dot < 0 || e.max === '0' || seen.has(p)) {
-        continue;
-      }
-      seen.add(p);
-      const parent = p.substring(0, dot);
-      let name = p.substring(dot + 1);
-      let flags = 0;
-      if (name.endsWith('[x]')) {
-        name = name.substring(0, name.length - 3);
-        flags |= CHOICE;
-      }
-      if (e.max !== '1') {
-        flags |= ARRAY;
-      }
-      if (Array.isArray(e.representation) && e.representation.includes('xmlAttr')) {
-        flags |= ATTR;
-      }
-      const codes = [...new Set((e.type || []).map(typeCode).filter(x => x))];
-      const ref = e.contentReference ? e.contentReference.substring(e.contentReference.indexOf('#') + 1) : null;
-      (types[parent] = types[parent] || []).push([name, flags, codes, ref]);
-    }
-  }
-  return { primitives, resources: resources.sort(), types };
-}
-
-function typeCode(t) {
-  const code = String(t.code || '');
-  if (code.startsWith('http://hl7.org/fhirpath/System.')) {
-    const ext = (t.extension || []).find(x => x.url === FHIR_TYPE_EXT);
-    if (ext) {
-      return ext.valueUrl || ext.valueUri || ext.valueString;
-    }
-    return SYSTEM_TYPES[code.substring('http://hl7.org/fhirpath/System.'.length)] || 'string';
-  }
-  return code;
-}
-
-/**
- * A model ready to use: per type, its elements in order, and by JSON property name.
- */
-class XmlModel {
-  /**
-   * @param {Object} raw - from deriveXmlModel
-   */
-  constructor(raw) {
-    this.raw = raw;
-    this.primitives = raw.primitives || {};
-    this.resources = new Set(raw.resources || []);
-    this.compiled = new Map();
-  }
-
-  /** @returns {boolean} whether the type is in the model */
-  has(key) {
-    return !!this.raw.types[key];
-  }
-
-  /**
-   * A type's elements: { list: [{name, array, attr, choice, types, ref, path}], byJson: Map(json
-   * name -> {el, type}) }
-   */
-  type(key) {
-    let c = this.compiled.get(key);
-    if (c) {
-      return c;
-    }
-    const raw = this.raw.types[key];
-    if (!raw) {
-      return null;
-    }
-    const list = raw.map(([name, flags, types, ref]) => ({ name, array: !!(flags & ARRAY), attr: !!(flags & ATTR), choice: !!(flags & CHOICE), types, ref,
-      path: key + '.' + name }));
-    const byJson = new Map();
-    for (const el of list) {
-      // [JSON name, its type, what its values are], for each type it can be
-      el.forms = (el.choice ? el.types : [el.types[0] || null]).map(t => {
-        const json = el.choice ? el.name + t.charAt(0).toUpperCase() + t.substring(1) : el.name;
-        return { json, ext: '_' + json, type: t };
-      });
-      for (const f of el.forms) {
-        byJson.set(f.json, { el, type: f.type });
-      }
-    }
-    c = { list, byJson };
-    this.compiled.set(key, c);
-    return c;
-  }
-
-  /**
-   * What a value of an element is: { kind: 'primitive'|'xhtml'|'resource'|'complex', json, key }
-   * (json: what JSON makes of a primitive; key: a complex value's type, or backbone path)
-   */
-  kindOf(el, type) {
-    let kinds = el.kinds;
-    if (!kinds) {
-      kinds = el.kinds = new Map();
-    }
-    let k = kinds.get(type);
-    if (!k) {
-      k = this.kindOfUncached(el, type);
-      kinds.set(type, k);
-    }
-    return k;
-  }
-
-  kindOfUncached(el, type) {
-    if (el.ref) {
-      return { kind: 'complex', key: el.ref };
-    }
-    if (this.raw.types[el.path]) {
-      return { kind: 'complex', key: el.path };
-    }
-    const p = this.primitives[type];
-    if (p === 'xhtml') {
-      return { kind: 'xhtml' };
-    }
-    if (p) {
-      return { kind: 'primitive', json: p };
-    }
-    if (type === 'Resource' || type === 'DomainResource' || this.resources.has(type)) {
-      return { kind: 'resource' };
-    }
-    if (this.raw.types[type]) {
-      return { kind: 'complex', key: type };
-    }
-    // a type the model doesn't have: an Element with no children of its own
-    return { kind: 'complex', key: 'Element' };
-  }
-}
 
 // ---- JSON to XML ----
 
@@ -864,59 +689,6 @@ async function writeParts(res, parts) {
   }
   res.end();
   return size;
-}
-
-// ---- a model for a FHIR version, from its core package ----
-
-/**
- * The XML model for a FHIR version, from the StructureDefinitions in its core package: kept in
- * the cache folder, and derived (from the package, fetched if need be) when it isn't there.
- * @param {Object} options
- * @param {string} options.corePackage - 'hl7.fhir.r4.core#4.0.1'
- * @param {Object} options.packageManager - library/package-manager.js (fetch, cacheFolder)
- * @param {string} options.cacheFolder - where to keep the model
- * @returns {Promise<XmlModel>}
- */
-async function loadXmlModel(options) {
-  const [id, version] = options.corePackage.split('#');
-  const file = path.join(options.cacheFolder, `fhir-xml-model-${id}-${version}-v${MODEL_FORMAT}.json`);
-  // the package is fetched every time, though the model is kept, so it counts as used (the tx
-  // module's library deletes the packages it hasn't fetched)
-  const name = await options.packageManager.fetch(id, version);
-  if (fs.existsSync(file)) {
-    try {
-      return new XmlModel(JSON.parse(fs.readFileSync(file, 'utf8')));
-    } catch (e) {
-      // a broken file: derive it again
-    }
-  }
-  const folder = path.isAbsolute(name) ? name : path.join(options.packageManager.cacheFolder, name);
-  const raw = { ...deriveXmlModel(readStructureDefinitions(folder)), version };
-  fs.mkdirSync(options.cacheFolder, { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(raw));
-  fs.renameSync(tmp, file);
-  return new XmlModel(raw);
-}
-
-function readStructureDefinitions(folder) {
-  const dir = fs.existsSync(path.join(folder, 'package')) ? path.join(folder, 'package') : folder;
-  let files;
-  const indexFile = path.join(dir, '.index.json');
-  if (fs.existsSync(indexFile)) {
-    files = (JSON.parse(fs.readFileSync(indexFile, 'utf8')).files || []).filter(f => f.resourceType === 'StructureDefinition').map(f => f.filename);
-  } else {
-    files = fs.readdirSync(dir).filter(f => f.startsWith('StructureDefinition-') && f.endsWith('.json'));
-  }
-  const out = [];
-  for (const f of files) {
-    try {
-      out.push(JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
-    } catch (e) {
-      // not readable: skipped
-    }
-  }
-  return out;
 }
 
 module.exports = { deriveXmlModel, XmlModel, toXml, toXmlChunks, writeParts, fromXml, loadXmlModel, XmlProblem, FHIR_NS, YIELD_MS };

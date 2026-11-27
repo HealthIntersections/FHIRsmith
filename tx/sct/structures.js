@@ -974,6 +974,33 @@ class SnomedReferenceSetMembers {
     return this.master.readUInt32LE(index);
   }
 
+  /**
+   * Just the refs (referencedComponentId) of a reference set's members, read in place: no member
+   * records are made, so this is cheap for a big reference set (a map reference set has hundreds
+   * of thousands of members). In membersByRef order, a ref as often as it has members
+   * @param {number} index - membersByRef (or membersByName)
+   * @returns {Uint32Array}
+   */
+  getMemberRefs(index) {
+    if (index === SnomedReferenceSetMembers.MAGIC_NO_CHILDREN) {
+      return new Uint32Array(0);
+    }
+    if (index > this.master.length) {
+      throw new Error(`Wrong length index getting Snomed list. asked for ${index}, limit is ${this.master.length}`);
+    }
+    const count = this.master.readUInt32LE(index);
+    const ids = this.master.readUInt8(index + 4) !== 0;
+    // a member: [GUID 16, module 4, date 2] kind 1, ref 4, values 4 (see getMembers)
+    const stride = ids ? 31 : 9;
+    let offset = index + 5 + (ids ? 23 : 1);
+    const result = new Uint32Array(count);
+    for (let i = 0; i < count; i++) {
+      result[i] = this.master.readUInt32LE(offset);
+      offset += stride;
+    }
+    return result;
+  }
+
   getMembers(index) {
     if (index === SnomedReferenceSetMembers.MAGIC_NO_CHILDREN) {
       return null;

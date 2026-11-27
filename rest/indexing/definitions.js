@@ -34,7 +34,7 @@ const SPECIAL_PARAMS = new Set(['_id', '_lastUpdated', '_tag', '_profile', '_sec
   '_contained', '_containedType', '_total', '_format', '_pretty', '_offset', '_getpages']);
 
 // the shape of what deriveDefinitions makes: a change makes the cached copies be derived again
-const DERIVED_FORMAT = 3;
+const DERIVED_FORMAT = 4;
 
 const INDEXED_TYPES = new Set(['string', 'token', 'date', 'number', 'quantity', 'reference', 'uri', 'composite']);
 

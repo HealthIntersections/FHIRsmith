@@ -175,8 +175,8 @@ describe('loadXmlModel', () => {
       const m = await loadXmlModel({ corePackage: 'test.core#1.0.0', packageManager: pm, cacheFolder: dir });
       expect(toXml({ resourceType: 'Thing', id: 'a', name: ['x', 'y'] }, m)).toBe(
         '<?xml version="1.0" encoding="UTF-8"?><Thing xmlns="http://hl7.org/fhir"><id value="a"/><name value="x"/><name value="y"/></Thing>');
-      const kept = fs.readdirSync(dir).filter(f => f.startsWith('fhir-xml-model-'));
-      expect(kept).toEqual(['fhir-xml-model-test.core-1.0.0-v1.json']);
+      const kept = fs.readdirSync(dir).filter(f => f.startsWith('fhir-model-'));
+      expect(kept).toEqual(['fhir-model-test.core-1.0.0-v2.json']);
       // the second time, from the file (the package still fetched, so it counts as used)
       fs.rmSync(pkg, { recursive: true });
       const m2 = await loadXmlModel({ corePackage: 'test.core#1.0.0', packageManager: pm, cacheFolder: dir });

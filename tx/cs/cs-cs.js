@@ -23,6 +23,10 @@ const { FILTER_ANALYSIS, recall, remember } = require('../library/filter-memo');
 
 // The standard concept properties (http://hl7.org/fhir/concept-properties)
 const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
+// The properties a filter can use whether or not the code system declares them (unless it
+// declares the code for a property of its own), and the operators they support
+const KNOWN_PROPERTIES = ['notSelectable', 'status', 'inactive', 'deprecated'];
+const KNOWN_PROPERTY_OPS = ['=', 'in', 'not-in', 'exists'];
 
 // The text index of each code system (text-match.js), built the first time it is searched, and
 // dropped with the code system: {size, promise of a NameIndex}
@@ -1185,6 +1189,13 @@ class FhirCodeSystemProvider extends BaseCSServices {
       return true;
     }
 
+    // The built-in properties (notSelectable, status, inactive, deprecated) - unless the code
+    // system uses the code for a property of its own. Checked first, as filter() does: these
+    // take their built-in meaning even when the code system declares them
+    if (this._isKnownPropertyFilter(prop)) {
+      return KNOWN_PROPERTY_OPS.includes(op);
+    }
+
     // Property-based filters
     const propertyDefs = this.propertyDefinitions();
     if (propertyDefs) {
@@ -1192,12 +1203,6 @@ class FhirCodeSystemProvider extends BaseCSServices {
       if (hasProperty && ['=', 'in', 'not-in', 'regex', 'exists'].includes(op)) {
         return true;
       }
-    }
-
-    // Known special properties
-    const knownProperties = ['notSelectable', 'status', 'inactive', 'deprecated'];
-    if (knownProperties.includes(prop) && ['=', 'in', 'not-in'].includes(op)) {
-      return true;
     }
 
     return false;
@@ -1479,8 +1484,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
 
       // Handle known special properties - unless the code system uses the code for a
       // property of its own, in which case the property filter above applies
-      const knownProperties = ['notSelectable', 'status', 'inactive', 'deprecated'];
-      if (knownProperties.includes(prop) && !this.redefinesStandardProperty(prop)) {
+      if (this._isKnownPropertyFilter(prop)) {
         results = await this._handleKnownPropertyFilter(filterContext, prop, op, value);
       }
 
@@ -1522,7 +1526,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
     if (propertyDefs && propertyDefs.find(p => p.code === prop)) {
       return true;
     }
-    return ['notSelectable', 'status', 'inactive', 'deprecated'].includes(prop);
+    return KNOWN_PROPERTIES.includes(prop);
   }
 
   /**
@@ -1805,59 +1809,90 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
-   * Handle known property filters (notSelectable, status, etc.)
+   * Whether a filter on this property has its built-in meaning: notSelectable, status, inactive
+   * and deprecated, unless the code system uses the code for a property of its own (declared
+   * with a different uri)
+   * @param {string} prop - Property name
+   * @returns {boolean}
+   * @private
+   */
+  _isKnownPropertyFilter(prop) {
+    return KNOWN_PROPERTIES.includes(prop) && !this.redefinesStandardProperty(prop);
+  }
+
+  /**
+   * The value of a built-in property for a concept, as a string, or null if it has none.
+   * notSelectable has a value only when the concept carries the property; status is the
+   * concept's status, if anything says what it is; inactive and deprecated are always true or
+   * false
+   * @param {Object} concept - the concept
+   * @param {string} prop - notSelectable, status, inactive or deprecated
+   * @returns {Promise<string|null>}
+   * @private
+   */
+  async _knownPropertyValue(concept, prop) {
+    switch (prop) {
+      case 'notSelectable': {
+        const nsCodes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
+        const abstractProp = (concept.property || []).find(p => nsCodes.has(p.code));
+        if (!abstractProp) {
+          return null;
+        }
+        const v = getValuePrimitive(abstractProp);
+        return v === null || v === undefined ? null : String(v);
+      }
+      case 'status': {
+        const status = await this.getStatus(new FhirCodeSystemProviderContext(concept.code, concept));
+        return status === null || status === undefined ? null : String(status);
+      }
+      case 'inactive':
+        return String(await this.isInactive(new FhirCodeSystemProviderContext(concept.code, concept)));
+      case 'deprecated':
+        return String(await this.isDeprecated(new FhirCodeSystemProviderContext(concept.code, concept)));
+      default:
+        return null;
+    }
+  }
+
+  /**
+   * Handle known property filters (notSelectable, status, inactive, deprecated). The operators
+   * are the same for all four: = and in select the concepts whose value is (one of) those
+   * given, not-in those whose value isn't - including a concept with no value - and exists
+   * true / false the concepts that do / don't have a value
    * @param {FilterExecutionContext} filterContext - Filter context
    * @param {string} prop - Property name
    * @param {string} op - Filter operator
    * @param {string} value - Filter value
-   * @returns {Promise<FhirCodeSystemProviderFilterContext>} Filter results
+   * @returns {Promise<FhirCodeSystemProviderFilterContext|null>} Filter results, or null for an
+   *   operator these properties don't support (the filter is then not understood)
    * @private
    */
   async _handleKnownPropertyFilter(filterContext, prop, op, value) {
+    if (!KNOWN_PROPERTY_OPS.includes(op)) {
+      return null;
+    }
     const results = new FhirCodeSystemProviderFilterContext();
     const allConcepts = this.codeSystem.getAllConcepts();
-    const nsCodes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
+    const values = (op === 'in' || op === 'not-in') ? String(value).split(',').map(v => v.trim()) : null;
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:knownPropertyFilter');
-      let matches = false;
-
-      if (prop === 'notSelectable') {
-        const abstractProp = (concept.property || []).find(p => nsCodes.has(p.code));
-        let vv = abstractProp ? String(getValuePrimitive(abstractProp)) : null;
-        if (op === '=') {
-          matches = (vv === value);
-        } else if (op === 'in') {
-          const values = value.split(',').map(v => v.trim());
-          matches = values.includes(vv);
-        } else if (op === 'not-in') {
-          const values = value.split(',').map(v => v.trim());
-          matches = !values.includes(vv);
-        }
+      const v = await this._knownPropertyValue(concept, prop);
+      let matches;
+      switch (op) {
+        case '=':
+          matches = v !== null && v === value;
+          break;
+        case 'in':
+          matches = v !== null && values.includes(v);
+          break;
+        case 'not-in':
+          matches = v === null || !values.includes(v);
+          break;
+        case 'exists':
+          matches = value === 'true' ? v !== null : value === 'false' ? v === null : false;
+          break;
       }
-      else if (prop === 'status') {
-        const status = await this.getStatus(new FhirCodeSystemProviderContext(concept.code, concept));
-        if (op === '=') {
-          matches = (status === value);
-        } else if (op === 'in') {
-          const values = value.split(',').map(v => v.trim());
-          matches = values.includes(status);
-        } else if (op === 'not-in') {
-          const values = value.split(',').map(v => v.trim());
-          matches = !values.includes(status);
-        }
-      }
-      else if (prop === 'inactive') {
-        const isInactive = await this.isInactive(new FhirCodeSystemProviderContext(concept.code, concept));
-        const expectedValue = (value === 'true');
-        matches = (isInactive === expectedValue);
-      }
-      else if (prop === 'deprecated') {
-        const isDeprecated = await this.isDeprecated(new FhirCodeSystemProviderContext(concept.code, concept));
-        const expectedValue = (value === 'true');
-        matches = (isDeprecated === expectedValue);
-      }
-
       if (matches) {
         results.add(concept, 0);
       }

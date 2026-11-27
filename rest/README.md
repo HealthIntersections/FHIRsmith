@@ -343,9 +343,11 @@ the name and the path of the object it is in (`library/json-duplicates.js`, shar
 and ips modules).
 
 Resources are stored as JSON, and converted (library/fhir-xml.js, shared with the tx module)
-by a model of the FHIR version's types derived from the core package's StructureDefinitions,
-kept with the endpoint's other derived definitions: for each element, its order, whether it
-repeats, its type or types, and whether it's an attribute. Every resource in the R4 and R5 core packages converts to XML and
+by a model of the FHIR version's types derived from the core package's StructureDefinitions
+(library/fhir-model.js, which also has what checking FHIRPath types needs: what each type
+specialises, System types, target profiles, bindings), kept with the endpoint's other derived
+definitions: for each element, its order, whether it repeats, its type or types, and whether
+it's an attribute. Every resource in the R4 and R5 core packages converts to XML and
 back unchanged (tests/rest/xml.test.js). A large response is written in pieces, giving the
 event loop back every 25 ms, and stops if the client goes away; the response is checked before
 any of it is sent, so an error is still an error.

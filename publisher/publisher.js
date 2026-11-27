@@ -1341,7 +1341,7 @@ class PublisherModule {
     // Step 9: Run the website update script
     if (website.server_update_script) {
       await this.logTaskMessage(task.id, 'info', 'Running website update script: ' + website.server_update_script);
-      await this.runCommand('bash', ['-c', website.server_update_script], {}, task.id, 'Running website update script');
+      await this.runCommand('bash', ['-c', website.server_update_script], { logOutput: true }, task.id, 'Running website update script');
     }
   }
 
@@ -2633,10 +2633,16 @@ class PublisherModule {
   async runCommand(command, args, options, taskId, description) {
     const { spawn } = require('child_process');
 
+    // logOutput: put what the command wrote into the task log when it ends (it is only
+    // logged on failure otherwise). Not a spawn option.
+    const { logOutput, ...rest } = options || {};
+
     await this.logTaskMessage(taskId, 'info', description);
 
     return new Promise((resolve, reject) => {
-      const spawnOptions = { stdio: ['pipe', 'pipe', 'pipe'], ...options };
+      // stdin is closed: nothing run here is interactive, and a command that reads stdin
+      // (a script that prompts, sudo, ...) would otherwise wait on it for ever
+      const spawnOptions = { stdio: ['ignore', 'pipe', 'pipe'], ...rest };
       if (command === 'git') {
         // never let git block on (or fail obscurely at) a credentials prompt
         spawnOptions.env = gitRemote.gitEnv(spawnOptions.env || process.env);
@@ -2645,26 +2651,76 @@ class PublisherModule {
 
       let stdout = '';
       let stderr = '';
+      let settled = false;
+      let drainTimer = null;
+      const start = Date.now();
+      let lastDataAt = start;
 
       proc.stdout.on('data', (data) => {
+        lastDataAt = Date.now();
         stdout += data.toString();
       });
 
       proc.stderr.on('data', (data) => {
+        lastDataAt = Date.now();
         stderr += data.toString();
       });
 
-      proc.on('close', async (code) => {
+      // Heartbeat: a long step (a website update script, a big git push) gets a status line
+      // every 60s, so a slow step can be told from a stuck one
+      const heartbeat = setInterval(() => {
+        const elapsedMs = Date.now() - start;
+        const idleSec = Math.floor((Date.now() - lastDataAt) / 1000);
+        void this.logTaskMessage(taskId, 'info',
+            description + ' heartbeat: elapsed ' + Math.floor(elapsedMs / 60000) + 'm' +
+            (Math.floor(elapsedMs / 1000) % 60) + 's, output ' +
+            Math.round((stdout.length + stderr.length) / 1024) + ' KB, last output ' + idleSec + 's ago');
+      }, 60 * 1000);
+
+      const finish = async (code, signal) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(heartbeat);
+        clearTimeout(drainTimer);
         if (code === 0) {
+          if (logOutput) {
+            const output = (stdout + stderr).trim();
+            const secs = Math.round((Date.now() - start) / 1000);
+            await this.logTaskMessage(taskId, 'info', description + ' finished in ' + secs + 's' +
+                (output ? ':\n' + output : ' (no output)'));
+          }
           resolve(stdout);
         } else {
-          const error = description + ' failed with code ' + code + ': ' + (stderr || stdout);
+          const how = code !== null ? 'with code ' + code : 'on signal ' + signal;
+          const error = description + ' failed ' + how + ': ' + (stderr || stdout);
           await this.logTaskMessage(taskId, 'error', error);
           reject(new Error(error));
         }
+      };
+
+      // 'close' only comes once the output pipes are closed as well as the process ended, and
+      // a process the command leaves running in the background (a service restarted by a
+      // website update script) holds them open - for ever, if it's a server. So once the
+      // command itself has exited, give its output a few seconds to drain, then stop waiting.
+      proc.on('exit', (code, signal) => {
+        if (settled) return;
+        drainTimer = setTimeout(async () => {
+          if (settled) return;
+          await this.logTaskMessage(taskId, 'warn', description +
+              ' exited, but left a process running that holds its output open - not waiting for it');
+          proc.stdout.destroy();
+          proc.stderr.destroy();
+          await finish(code, signal);
+        }, 10 * 1000);
       });
 
+      proc.on('close', (code, signal) => finish(code, signal));
+
       proc.on('error', async (error) => {
+        if (settled) return;
+        settled = true;
+        clearInterval(heartbeat);
+        clearTimeout(drainTimer);
         await this.logTaskMessage(taskId, 'error', description + ' error: ' + error.message);
         reject(error);
       });
