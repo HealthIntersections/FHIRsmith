@@ -91,6 +91,41 @@ describe('ConceptMap relationship -> equivalence (R5 -> R3/R4)', () => {
   });
 });
 
+describe('ConceptMap noMap -> unmatched (R5 -> R3/R4)', () => {
+  const r5NoMap = () => ({
+    resourceType: 'ConceptMap',
+    group: [{ element: [{ code: 'ASERU', noMap: true, comment: 'pending' }] }]
+  });
+
+  for (const version of ['4.0.1', '3.0.2']) {
+    test(`R${version[0]}: noMap becomes a target-less unmatched target carrying the comment`, () => {
+      const element = conceptMapFromR5(r5NoMap(), version).group[0].element[0];
+      expect(element).toEqual({ code: 'ASERU', target: [{ equivalence: 'unmatched', comment: 'pending' }] });
+    });
+  }
+
+  test('a noMap element without a comment gets an unmatched target with no comment', () => {
+    const cm = r5NoMap();
+    delete cm.group[0].element[0].comment;
+    expect(conceptMapFromR5(cm, '4.0.1').group[0].element[0]).toEqual({ code: 'ASERU', target: [{ equivalence: 'unmatched' }] });
+  });
+
+  test('the R5 input is not changed', () => {
+    const cm = r5NoMap();
+    conceptMapFromR5(cm, '4.0.1');
+    expect(cm).toEqual(r5NoMap());
+  });
+
+  test('R4 unmatched survives R4 -> R5 -> R4', () => {
+    const r4 = {
+      resourceType: 'ConceptMap',
+      group: [{ element: [{ code: 'ASERU', target: [{ equivalence: 'unmatched', comment: 'pending' }] }] }]
+    };
+    const back = conceptMapFromR5(conceptMapToR5(JSON.parse(JSON.stringify(r4)), '4.0.1'), '4.0.1');
+    expect(back.group[0].element[0]).toEqual(r4.group[0].element[0]);
+  });
+});
+
 describe('round trip', () => {
   test.each(['related-to', 'equivalent', 'source-is-narrower-than-target', 'source-is-broader-than-target', 'not-related-to'])(
     'R5 %s survives R5 -> R4 -> R5', rel => {

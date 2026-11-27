@@ -232,6 +232,20 @@ function groupFromR5(group) {
 
 /** An element (the same object if none of its targets changes) @private */
 function elementFromR5(element) {
+  if (element.noMap === true) {
+    // The inverse of conceptMapToR5: R3/R4 have no element.noMap or element.comment, and say
+    // "no map" with a target-less target whose equivalence is 'unmatched'.
+    const copy = { ...element };
+    delete copy.noMap;
+    delete copy.comment;
+    const unmatched = { equivalence: 'unmatched' };
+    if (element.comment !== undefined) {
+      unmatched.comment = element.comment;
+    }
+    const target = Array.isArray(element.target) ? mapShared(element.target, targetFromR5) : [];
+    copy.target = [...target, unmatched];
+    return copy;
+  }
   if (!Array.isArray(element.target)) {
     return element;
   }

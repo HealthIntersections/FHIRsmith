@@ -11,6 +11,8 @@ class OCLBackgroundJobQueue {
   static activeJobs = new Map();
   static heartbeatTimer = null;
   static enqueueSequence = 0;
+  // keys asked for by a request while their job was still resolving its size (see prioritize)
+  static prioritizedKeys = new Set();
 
   static enqueue(jobKey, jobType, runJob, options = {}) {
     if (!jobKey || typeof runJob !== 'function') {
@@ -33,7 +35,7 @@ class OCLBackgroundJobQueue {
         getProgress: typeof options?.getProgress === 'function' ? options.getProgress : null,
         runJob,
         enqueueOrder: this.enqueueSequence++,
-        userRequested: !!options.userRequested
+        userRequested: !!options.userRequested || this.prioritizedKeys.delete(jobKey)
       };
       this.#insertPendingJobOrdered(job);
       this.ensureHeartbeatRunning();
@@ -44,6 +46,7 @@ class OCLBackgroundJobQueue {
       .then(resolveAndEnqueue)
       .catch((error) => {
         this.queuedOrRunningKeys.delete(jobKey);
+        this.prioritizedKeys.delete(jobKey);
         const message = error && error.message ? error.message : String(error);
         oclLog.error(`Failed to enqueue background job: ${jobType || 'background-job'} ${jobKey}: ${message}`);
       });
@@ -91,6 +94,31 @@ class OCLBackgroundJobQueue {
       index = this.pendingJobs.length;
     }
     this.pendingJobs.splice(index, 0, job);
+  }
+
+  /**
+   * Moves a job that is waiting to the front of the queue, as a user-requested job: a request
+   * needs it now, and in cluster mode the proactive warm-up may have queued it first, at its
+   * size's place (or last, when its size wasn't found) - behind hours of larger sources.
+   * A job still resolving its size is flagged and goes to the front once it is queued.
+   * Returns false when the job is running or isn't known.
+   */
+  static prioritize(jobKey) {
+    if (!jobKey || this.activeJobs.has(jobKey)) {
+      return false;
+    }
+    const index = this.pendingJobs.findIndex(job => job.jobKey === jobKey);
+    if (index >= 0) {
+      const [job] = this.pendingJobs.splice(index, 1);
+      job.userRequested = true;
+      this.pendingJobs.unshift(job);
+      return true;
+    }
+    if (this.queuedOrRunningKeys.has(jobKey)) {
+      this.prioritizedKeys.add(jobKey);
+      return true;
+    }
+    return false;
   }
 
   static isQueuedOrRunning(jobKey) {

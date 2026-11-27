@@ -177,8 +177,8 @@ function conceptMap() {
         ],
         unmapped: { mode: 'use-source-code', relationship: 'related-to' }
       },
-      // nothing to convert in this group
-      { source: 'http://example.org/c', target: 'http://example.org/d', element: [{ code: '3', noMap: true }] }
+      // nothing to convert in this group (an element with no target and no noMap)
+      { source: 'http://example.org/c', target: 'http://example.org/d', element: [{ code: '3' }] }
     ]
   };
 }
@@ -193,6 +193,7 @@ describe('conceptMapFromR5', () => {
     expect(r4.sourceScope).toBeUndefined();
     expect(r4.property).toBeUndefined();
     expect(r4.group[0].element[0].target[0]).toEqual({ code: 'x', equivalence: 'wider' });
+    expect(r4.group[0].element[1]).toEqual({ code: '2', target: [{ equivalence: 'unmatched' }] });
     expect(r4.group[0].unmapped).toEqual({ mode: 'provided',
       extension: [{ url: 'http://hl7.org/fhir/5.0/StructureDefinition/extension-ConceptMap.group.unmapped.relationship', valueCode: 'related-to' }] });
   });
@@ -201,7 +202,7 @@ describe('conceptMapFromR5', () => {
     const cm = deepFreeze(conceptMap());
     const r4 = conceptMapFromR5(cm, '4.0.1');
     expect(r4.group[1]).toBe(cm.group[1]);
-    expect(r4.group[0].element[1]).toBe(cm.group[0].element[1]);
+    expect(r4.group[1].element[0]).toBe(cm.group[1].element[0]);
   });
 
   test('converting the same map again gives the same groups (so their XML can come from the cache)', () => {
