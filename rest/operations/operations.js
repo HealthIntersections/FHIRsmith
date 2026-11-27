@@ -5,7 +5,8 @@
 //
 
 /**
- * The operations: $meta, $meta-add, $meta-delete, and $everything on Patient.
+ * The operations: $meta, $meta-add, $meta-delete, $everything on Patient, $lastn and $stats
+ * on Observation (observations.js), and $expunge (expunge.js).
  *
  * @module rest/operations/operations
  */
@@ -14,12 +15,20 @@ const { badRequest, notFound, gone, notSupported, notAllowed } = require('../lib
 const { TAG, SECURITY, PROFILE, metaTags } = require('../store');
 const { versionHeaders } = require('../interactions/crud');
 const { param } = require('../request');
+const observations = require('./observations');
+const { expunge } = require('./expunge');
 
 const OPERATIONS = [
   { name: 'meta', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-meta', types: null, system: true, type: true, instance: true, read: true, run: meta },
   { name: 'meta-add', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-meta-add', types: null, system: false, type: false, instance: true, read: false, run: metaAdd },
   { name: 'meta-delete', definition: 'http://hl7.org/fhir/OperationDefinition/Resource-meta-delete', types: null, system: false, type: false, instance: true, read: false, run: metaDelete },
-  { name: 'everything', definition: 'http://hl7.org/fhir/OperationDefinition/Patient-everything', types: ['Patient'], system: false, type: false, instance: true, read: true, run: everything }
+  { name: 'everything', definition: 'http://hl7.org/fhir/OperationDefinition/Patient-everything', types: ['Patient'], system: false, type: false, instance: true, read: true, run: everything },
+  { name: 'lastn', definition: 'http://hl7.org/fhir/OperationDefinition/Observation-lastn', types: ['Observation'], system: false, type: true, instance: false, read: true,
+    run: (ep, freq, ctx) => observations.lastn(ep, freq, ctx) },
+  { name: 'stats', definition: 'http://hl7.org/fhir/OperationDefinition/Observation-stats', types: ['Observation'], system: false, type: true, instance: false, read: true,
+    run: (ep, freq, ctx) => observations.stats(ep, freq, ctx) },
+  // HAPI's: removes versions for good (expunge.js); needs the manage role. version: on [type]/[id]/_history/[vid]
+  { name: 'expunge', definition: 'http://healthintersections.com.au/fhir/OperationDefinition/expunge', types: null, system: true, type: true, instance: true, version: true, read: false, manage: true, run: expunge }
 ];
 
 /** Find an operation for a request; throws if there is none at that level */
@@ -28,9 +37,9 @@ function findOperation(freq) {
   if (!op) {
     throw notSupported(`The operation $${freq.operation} is not supported`);
   }
-  const level = freq.id ? 'instance' : freq.type ? 'type' : 'system';
+  const level = freq.vid ? 'version' : freq.id ? 'instance' : freq.type ? 'type' : 'system';
   if (!op[level] || (freq.type && op.types && !op.types.includes(freq.type))) {
-    throw notSupported(`$${freq.operation} can't be used ${level === 'system' ? 'on the endpoint' : level === 'type' ? 'on ' + freq.type : 'on a ' + freq.type}`);
+    throw notSupported(`$${freq.operation} can't be used ${level === 'system' ? 'on the endpoint' : level === 'type' ? 'on ' + freq.type : level === 'version' ? 'on a version' : 'on a ' + freq.type}`);
   }
   if (!op.read && freq.method !== 'POST') {
     throw notAllowed(`$${freq.operation} needs POST`);

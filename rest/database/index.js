@@ -55,6 +55,7 @@ function mysqlPassword(cfg) {
  * @param {Object} options
  * @param {string} options.databasesDir - where a relative SQLite file goes
  * @param {boolean} [options.master] - bring the schema up to date (else wait for it)
+ * @param {number} [options.schemaWaitMs] - how long to wait for it (not the master)
  * @param {function(string)} [options.log]
  */
 async function openDatabase(cfg, options = {}) {
@@ -82,7 +83,7 @@ async function openDatabase(cfg, options = {}) {
     if (options.master !== false) {
       await migrate(db, options.log);
     } else {
-      await waitForSchema(db);
+      await waitForSchema(db, options.schemaWaitMs);
     }
   } catch (err) {
     await db.close();

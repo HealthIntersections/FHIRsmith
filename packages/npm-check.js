@@ -441,7 +441,9 @@ async function digestsOf(buffer, algs) {
 function readPackageJson(tgz) {
   return new Promise((resolve) => {
     const gunzip = zlib.createGunzip();
-    const names = new EntryNames();
+    // strict: a package being published can't have two examples of the same name either, though
+    // readers take the ones already published that do
+    const names = new EntryNames({ strict: true });
     const outside = [];
     let found = null;
     let buf = Buffer.alloc(0);

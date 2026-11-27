@@ -787,9 +787,16 @@ class Search {
 
 // Converter for converting terms to canonical form (port of Converter.java)
 class Converter {
-  constructor(model, handlers) {
+  /**
+   * @param {Object} model
+   * @param {Registry} [handlers]
+   * @param {boolean} [unitsOnly] - only the units are wanted (not a value): a special unit
+   *   with an offset (Cel, [degF]) is simply its units (K), the offset not mattering
+   */
+  constructor(model, handlers, unitsOnly = false) {
     this.model = model;
     this.handlers = handlers || new Registry();
+    this.unitsOnly = unitsOnly;
   }
 
   convert(term) {
@@ -920,7 +927,8 @@ class Converter {
         const handler = this.handlers.get(unit.code);
         u = handler.getUnits();
         v = handler.getValue();
-        if (handler.hasOffset()) {
+        if (handler.hasOffset() && !this.unitsOnly) {
+          // a value in it can only be converted when it is the whole unit (UcumService does that)
           throw new UcumException("Not handled yet (special unit with offset from 0 at intersect)");
         }
       }

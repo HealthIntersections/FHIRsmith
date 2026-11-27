@@ -29,6 +29,7 @@ In `config.json`, under `modules`:
 | `autoUpdate` | true | Download the database again every night at 02:00 (server time). `false` keeps whatever is there |
 | `updateToken` | none | A shared secret for `POST /xig/update`, which downloads the database now. Send it in the `x-update-token` header (or from the form on `/xig/stats`). Without it, that endpoint is turned off. The nightly update doesn't need it |
 | `connections` | 4 | How many read-only connections to the database are kept open. A connection runs one query at a time, so with one, every XIG request waits behind any slow page (a crawler paging deep into a list). A connection is given one query at a time; the others wait for the first that is free (`library/sqlite-pool.js`) |
+| `listCacheMB` | 32 | How much memory the counts above a list (the total, and by version, authority and realm) may take. They are the same for every page of a list, so they are kept, per filter, until the database is replaced, the least recently used going first when this is reached. `0` keeps none |
 | `baseUrl` | the request's | The public address the sitemap's URLs start with, e.g. `https://npm.fhir.org` (behind a proxy, the request's own address is only right if the proxy passes the host and scheme on) |
 
 The database is kept at `xig/xig.db` in the data directory. If it isn't there at startup, it is
@@ -73,3 +74,14 @@ User-agent: *
 Disallow: /xig?
 Sitemap: https://npm.fhir.org/xig/sitemap.xml
 ```
+
+Crawlers that ignore robots.txt are dealt with in two ways:
+
+- **What a list costs is kept.** The count and the summary counts above a list (by version,
+  authority and realm) are the same for every page of it, so they are kept per filter, up to
+  `listCacheMB`, until the database is replaced. A list stops between its steps once its client
+  has gone (nginx's 499). The links that change a filter go to the first page of the new list.
+- **A filtered list past its first page needs a login**, when the server's
+  `auth.loginForExpensive` is on ([library/auth](../library/auth/README.md#login-for-expensive-operations)):
+  someone not logged in sees the first page, with *Next (log in)*, and a 401 page (or JSON) for
+  any other. Any account will do. The unfiltered list, the resource pages and the sitemap stay open.

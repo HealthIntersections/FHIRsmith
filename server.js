@@ -95,7 +95,7 @@ try {
 
 // --role=master|tx-worker (cluster.md). With no role this is null and the configuration is
 // untouched: every `if (role)` below is skipped
-const { parseRole, applyRole, describeRole } = require('./library/role');
+const { parseRole, applyRole, describeRole, roleLabel } = require('./library/role');
 let role;
 try {
   role = parseRole(process.argv.slice(2), process.env);
@@ -170,7 +170,7 @@ const { connectMetrics, graphData, externalSummary } = require('./library/cluste
 const { connectCounts } = require('./library/cluster-counts');
 const { startStallWatchdog } = require('./library/stall-watchdog');
 const { connectClusterEvents } = require('./library/cluster-events');
-const { connectStatus, ownFigures, clusterView, processView, storageView, clusterSummary, processSummary, STATUS_INTERVAL_MS } = require('./library/cluster-status');
+const { connectStatus, ownFigures, clusterView, processView, storageView, jobsView, jobProblems, clusterSummary, processSummary, STATUS_INTERVAL_MS } = require('./library/cluster-status');
 const {Liquid} = require("liquidjs");
 const FolderModule = require("./folder/folder");
 const ExtensionTrackerModule = require("./extension-tracker/extension-tracker");
@@ -232,7 +232,11 @@ const unlessOwnBody = (parser) => (req, res, next) => (ownsBody(req) ? next() : 
 const maxBody = maxBodyBytes(config.server);
 app.use(unlessOwnBody(express.raw({ type: 'application/fhir+json', limit: maxBody })));
 app.use(unlessOwnBody(express.raw({ type: 'application/fhir+xml', limit: maxBody })));
-app.use(unlessOwnBody(express.json({ limit: maxBody })));
+// (the text is kept too, as req.rawBody: the rest module reads it again, to keep decimals as
+// they were written and to find duplicate properties, which parsing loses)
+app.use(unlessOwnBody(express.json({ limit: maxBody, verify: (req, res, buf) => {
+  req.rawBody = buf;
+} })));
 app.use((req, res, next) => {
   const requestId = req.headers['x-request-id'];
   if (requestId) {
@@ -267,7 +271,7 @@ let disconnectStatus = () => {};
 // on the master under the launcher, every process it reports; otherwise this process's own
 // samples as one series, with its memory guard's refusal threshold. `level`: the graphs' titles'
 function metricsTemplate(page, level = 4) {
-  const label = !role ? 'This process' : `${role.role === 'master' ? 'Master' : 'Worker'} ${config.modules.tx.instanceCode}`;
+  const label = !role ? 'This process' : `${roleLabel(role)} ${config.modules.tx.instanceCode}`;
   const guard = memoryGuard._state;
   // (legend: false - statusContent puts the graphs' key under "More")
   return [`cluster-${page}`, { metricsJson: graphData(stats, label, Date.now(), { rejectAt: guard.rejectAt, group: Boolean(guard.group) }), level, legend: false }];
@@ -295,7 +299,9 @@ async function initializeModules() {
     // of them all (library/cluster-status.js)
     disconnectStatus = connectStatus(stats, process, { role: role.role,
       intervalMs: Number(config.server.cluster?.statusSeconds ?? STATUS_INTERVAL_MS / 1000) * 1000,
-      figures: () => ownFigures(stats, { inFlight: () => inFlight, refusing: () => memoryGuard.shouldReject() }) });
+      // (with the rest module's background work, from the process that runs it)
+      figures: () => ({ ...ownFigures(stats, { inFlight: () => inFlight, refusing: () => memoryGuard.shouldReject() }),
+        jobs: modules.rest ? modules.rest.jobStatus() : null }) });
   }
   npmAudit = new NpmAudit(config.npmAudit || {}, Logger.getInstance().child({ module: 'npm-audit' }), __dirname, stats);
 
@@ -475,7 +481,8 @@ async function initializeModules() {
     try {
       serverLog.info('Initializing module: tx...');
       modules.tx = new TXModule(stats.forModule('tx'));
-      await modules.tx.initialize(config.modules.tx, app, { hostName: config.hostName });
+      // (the rest module's endpoints, for a tx library source that publishes one's terminology)
+      await modules.tx.initialize(config.modules.tx, app, { hostName: config.hostName, restEndpoints: config.modules?.rest?.endpoints });
     } catch (error) {
       serverLog.error('Failed to initialize TX module:', error);
       throw error;
@@ -484,13 +491,16 @@ async function initializeModules() {
 
   // Initialize the rest module: database-backed FHIR endpoints, mounted at their own paths
   // like the tx module's. After tx, so an endpoint's terminology server can be the tx module's
-  // own endpoint, in process. On a worker its endpoints leave migrations and jobs to the master
+  // own endpoint, in process. Only the master migrates; the jobs and queues run in the jobs
+  // process (--role=jobs) when the cluster has one, else on the master (library/role.js)
   if (config.modules?.rest?.enabled) {
     try {
       serverLog.info('Initializing module: rest...');
       modules.rest = new RestModule(stats.forModule('rest'));
+      const { runsRestJobs, FRONT_DOOR_ENV } = require('./library/role');
       await modules.rest.initialize(config.modules.rest, app, {
-        hostName: config.hostName, master: !role || role.role === 'master', maxBody
+        hostName: config.hostName, master: !role || role.role === 'master', jobs: runsRestJobs(role, config), maxBody,
+        localBase: role && role.role === 'jobs' ? process.env[FRONT_DOOR_ENV] : undefined
       });
     } catch (error) {
       serverLog.error('Failed to initialize rest module:', error);
@@ -577,7 +587,7 @@ function statusView() {
     guard: { measure: g.sampleRss, limit: g.limit, rejectAt: g.rejectAt, abortAt: g.abortAt, rejectFraction: g.rejectFraction,
       abortFraction: g.abortFraction, group: Boolean(g.group), fileBacked: g.excludeFileBacked }
   }, !role ? { heading: 'Server', meta: ['one process'] } : {
-    heading: `${role.role === 'master' ? 'Master' : 'Worker'} ${code}`,
+    heading: `${roleLabel(role)} ${code}`,
     meta: role.role === 'master' && process.send ? ['this process', 'waiting for the launcher\'s first snapshot'] : ['this process only']
   });
 }
@@ -599,6 +609,7 @@ function statusLine() {
   const disk = logs ? logs.disk : null;
   const failedTasks = stats.failedTasks();
   const other = npmAudit && npmAudit.enabled && npmAudit.checkedAt && npmAudit.isSerious() ? [`npm audit: ${npmAudit.summary()}`] : [];
+  other.push(...jobProblems(jobSources()));
   const cluster = clusterStatus();
   if (cluster) {
     return clusterSummary(cluster, { uptime, uptimeSub, disk, failedTasks, other });
@@ -650,6 +661,10 @@ async function statusContent(liquid, page, level, { notes = [], details = '', mo
     content += await liquid.renderFile('external-metrics', { external, level: level + 1 });
   }
   content += await liquid.renderFile('status-panel', { view: storageStatusView(), level: level + 1 });
+  const jobs = jobsStatusView();
+  if (jobs) {
+    content += await liquid.renderFile('status-panel', { view: jobs, level: level + 1 });
+  }
   content += backgroundTasks(level + 1);
   content += more;
   content += '</details>';
@@ -671,6 +686,22 @@ function externalStatus(now = Date.now()) {
     average: average >= 1000 ? `${(average / 1000).toFixed(1)} s` : `${Math.round(average)} ms`,
     span: hours >= 23.5 ? '24 hours' : hours >= 1.5 ? `${Math.round(hours)} hours` : hours >= 1 || Math.round(hours * 60) <= 1 ? (hours >= 1 ? 'hour' : 'minute') : `${Math.round(hours * 60)} minutes`
   };
+}
+
+// Where the rest module's background work is reported from (library/cluster-status.js
+// jobsView): on the master under the launcher, the processes that sent it (the jobs process);
+// else this process, if it runs the jobs
+function jobSources() {
+  const cluster = clusterStatus();
+  if (cluster) {
+    return cluster.processes.filter(p => p.jobs).map(p => ({ label: p.label, jobs: p.jobs }));
+  }
+  const own = modules.rest ? modules.rest.jobStatus() : null;
+  return own ? [{ label: 'this process', jobs: own }] : [];
+}
+
+function jobsStatusView() {
+  return jobsView(jobSources());
 }
 
 // The storage tiles below the graphs: closure tables, logs, disk

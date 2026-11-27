@@ -853,6 +853,44 @@ async function lookupDisplay(tx, coding) {
 }
 
 /**
+ * The displays of some codings, from the module's terminology server (CodeSystem/$lookup),
+ * through the module's cache (module.txCache, the same answers the narrative step keeps), asked
+ * in parallel. A coding the server doesn't know, or couldn't answer for, has none.
+ * @param {Object} module - the IPS module (tx, txCache)
+ * @param {Array<{system: string, code: string, version?: string}>} codings
+ * @returns {Promise<Map<string, string>>} display by `system|code` (or `system|version|code` for a coding with a version)
+ */
+async function lookupDisplays(module, codings) {
+  const found = new Map();
+  if (!module.tx) {
+    return found;
+  }
+  const cache = module.txCache || (module.txCache = new Map());
+  const keyOf = (c) => c.version ? `${c.system}|${c.version}|${c.code}` : `${c.system}|${c.code}`;
+  const seen = new Set();
+  const asked = codings.filter(c => c && typeof c.system === 'string' && typeof c.code === 'string' && !seen.has(keyOf(c)) && seen.add(keyOf(c)));
+  await Promise.all(asked.map(async (c) => {
+    const key = `lookup|${c.system}|${c.version || ''}|${c.code}`;
+    let display = cache.get(key);
+    if (display === undefined && !cache.has(key)) {
+      const answer = await lookupDisplayAnswer(module.tx, c);
+      display = answer.display;
+      // a server that was down or slow isn't an answer: asked again next time
+      if (answer.definite) {
+        if (cache.size >= MAX_CACHED_ANSWERS) {
+          cache.delete(cache.keys().next().value);
+        }
+        cache.set(key, display);
+      }
+    }
+    if (display) {
+      found.set(keyOf(c), display);
+    }
+  }));
+  return found;
+}
+
+/**
  * Generate a document's narrative with the IPS presenter - displays from the module's
  * terminology server, if it has one (cached, bounded) - and write it into the document, as the
  * Composition's and each section's text (status generated). Used by the narrative step, and for
@@ -1280,7 +1318,7 @@ const reportsStep = {
 const STEPS = [signaturesStep, nationalityStep, analysisStep, translate, narrative, validation, national, terminology, profilesStep, aiStep, reportsStep];
 
 module.exports = {
-  STEPS, generateNarrative, signatures: signaturesStep, signatureOutcome, withTimeout, VERIFY_TIMEOUT_MS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
+  STEPS, generateNarrative, signatures: signaturesStep, signatureOutcome, withTimeout, VERIFY_TIMEOUT_MS, analysis: analysisStep, reports: reportsStep, translate, narrative, validation, national, terminology, profiles: profilesStep, ai: aiStep, checkConstraint, valueSetsIn, lookupDisplay, lookupDisplays, checkConcept, documentForAi, stripAttachments, ATTACHMENT_PLACEHOLDER, assessmentOf, aiSystemPrompt, AI_SYSTEM_PROMPT, checkOf, addCheck, stripChecks, translateConcept, translationOf, defaultSnomedEdition, withSnomedEdition, hasCoding,
   validateCodeInValueSet, validateCodeInSystem, issueCounts, issueSummary,
   IPS_BUNDLE_PROFILE, CHECK_EXTENSION, TRANSLATION_EXTENSION, MAX_CHECKS_PER_DOCUMENT, MAX_CACHED_ANSWERS
 };

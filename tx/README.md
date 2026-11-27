@@ -65,6 +65,7 @@ Add the `tx` section to your `config.json`:
 | `enabled`                       | boolean | Yes      | Whether the module is enabled                                                                           |
 | `cacheTimeout`                  | integer | No       | How many minutes to keep client side caches (for cache-id parameter). Default: 30                       |
 | `cacheMaxConcepts`              | integer | No       | Concepts one client side cache (cache-id) may hold. Default: 250000, about 10x the largest IG Publisher session measured on build.fhir.org (24,048). A request that would take a cache over it is not performed: the server drops the cache and answers 404, an OperationOutcome with one issue coded `tx-issue-type#cache-id-unknown` (message id `CACHE_ID_DISCARDED_TOO_BIG`, saying the cache grew too large), as for any cache that is gone. The client starts a new cache and sends the request again; later requests with the old id get the same 404 `cache-id-unknown`, saying why it was dropped (`CACHE_ID_DISCARDED`). A request whose own resources hold more than this, so that no cache could take them, is refused instead (422 too-costly) and the cache is kept, as is a new cache too big to start. 0 = no limit |
+| `cacheMaxConceptsLoggedIn`      | integer | No       | Concepts one client side cache may hold when the request that adds to it (or starts it) comes from someone logged in: an API token, any account ([library/auth](../library/auth/README.md#login-for-expensive-operations)). Default: `cacheMaxConcepts`; never less. The limit is the request's: a cache that grew past `cacheMaxConcepts` with a login is dropped by a request without one that adds to it. A client not logged in that meets `cacheMaxConcepts` is told, in the same issue, that it could have this many with a token. 0 = no limit |
 | `cacheMaxTotalConcepts`         | integer | No       | Concepts all the client side caches of an endpoint may hold between them (about 250 bytes of heap each). Default: 1000000, 4 full caches, about 40x the largest session measured (24,048). The least recently used caches are dropped to stay under it; a request with a dropped cache-id gets a 404 `cache-id-unknown`, saying it was dropped to make room. 0 = no limit |
 | `usageTrackerMaxCodes`          | integer | No       | Distinct codes the usage tracker (`usage-count` expansion property) keeps, when it is on (it is off for now: nothing uses the counts yet, and `usage-count` is 0). Default: 1000000, 2x the about 500,000 codes the value sets of a full library list. Codes beyond it aren't counted (no error); codes already tracked still are. 0 = no limit |
 | `usageTrackerMaxCodeLength`     | integer | No       | Longest code, in characters, the usage tracker keeps. Default: 100, 2.5x the longest code those value sets list (40). Longer codes aren't counted (no error). 0 = no limit |
@@ -75,6 +76,7 @@ Add the `tx` section to your `config.json`:
 | `expansionCacheMaxCodes`        | integer | No       | Most codes the expansion caches of all the endpoints hold between them; the least recently used expansions are dropped to stay under it. Default: a quarter of the heap limit at 1 KB a code (about 1 million codes with a 4 GB heap) |
 | (`adminPassword`)               |         |          | No longer used: the server's administrators, logged in ([library/auth](../library/auth/README.md)), empty the caches on the caches page (`/{path}/caches`) |
 | `xmlCacheMB`                    | integer | No       | Most XML and JSON, in MB, kept per process for large resources (a CodeSystem's concepts, an expansion's contains), so a resource asked for again isn't serialised again. An array is kept when it took at least 50 ms to serialise, the second time it does; the least recently used are dropped to stay under this, and all of it while the memory guard is refusing requests. XML is kept encoded (UTF-8), as it is sent, so the budget counts its bytes; JSON is kept as text, and the budget counts its characters (two bytes each, when the text is outside Latin-1). 0: none. Default: 256 |
+| `xmlConverter`                  | string  | No       | How XML is written and read. `model`: the converter the rest module uses (library/fhir-xml.js), driven by the core package's StructureDefinitions (hl7.fhir.r4.core for R3 and R4, hl7.fhir.r5.core for R5; fetched through the package cache, and the model derived from it is kept in the terminology cache). It streams large resources and uses the same fragment cache (`xmlCacheMB`). `legacy`: the classes in tx/xml, as before. `compare`: writes and reads with the classes, and also with the converter after the response is sent, logging a warning naming each difference - for trying the converter on real traffic. If the model can't be loaded, that endpoint uses the classes. Default: model |
 | `loincConnections`              | integer | No       | How many connections to the LOINC database the requests share. A connection runs one query at a time, so there are several; a connection is given one query at a time, and the others wait for the first that is free. 0: each request opens a connection of its own and closes it at the end, as it used to (if the shared ones can't be opened, that is what happens too). In a cluster, each process has its own. Default: 4 |
 | `librarySource`                 | string  | Yes      | Path to the YAML file that defines the terminology sources to load                                      |
 | `publishLibrarySource`          | boolean | No       | Publish that YAML file at `/{path}/library`. Default: false                                             |
@@ -709,6 +711,29 @@ Use `url/cs` to load only CodeSystem resources from the package (same as `npm/cs
 
 The URL must point to a `.tgz` file in standard FHIR NPM package format. Downloaded packages are cached locally by URL.
 
+#### `rest` - A rest module endpoint's terminology
+
+Publishes the CodeSystems, ValueSets and ConceptMaps stored in a rest module endpoint, named by
+its path in `modules.rest.endpoints` (tx/rest/rest-source.js):
+
+```yaml
+- rest:/fhir/r4=r4store     # with an id prefix, so the ids stay the same if the sources change
+```
+
+- **What**: the current version of each resource of those types that isn't deleted (its
+  `version` element is its version, not its history). They are read as the endpoint's FHIR
+  version, and converted.
+- **Precedence**: they take precedence over everything else: the endpoint's value set or code
+  system with a url (and version) is the one used, whatever the packages say.
+- **Changes**: a new or changed code system is picked up within a minute (the code system list
+  update); value sets and concept maps a few seconds after the endpoint writes one, when a request
+  next uses one. Every tx process reads the endpoint's database itself, read only, so it doesn't
+  matter which processes run the rest module. Until the rest module has made the database, the
+  source is empty, and it tries again every 30 seconds.
+- **Who can see them**: they are as public as the tx server: anyone who can use it can read and
+  use them, whatever the endpoint's own access rules. The endpoint passes its own terminology
+  requests on to the tx server when its `txServer` is set (rest/README.md, Terminology).
+
 ### Default Marker (`!`)
 
 When multiple versions of the same code system are loaded, append `!` to mark one as the default:
@@ -816,6 +841,11 @@ All errors are returned as FHIR OperationOutcome resources:
   }]
 }
 ```
+
+A JSON body (application/fhir+json or application/json) with a property more than once in
+the same object is refused with a 400: parsing keeps only one of them, so the request isn't
+the one that was sent. The issues are like the Java validator's (message id
+`DUPLICATE_JSON_PROPERTY_REJECTED`, in the request's Accept-Language; `library/json-duplicates.js`).
 
 ## Notes
 

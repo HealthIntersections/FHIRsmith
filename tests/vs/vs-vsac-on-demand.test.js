@@ -178,6 +178,34 @@ describe('VSAC value sets read on demand', () => {
     expect(tracker.usages('http://snomed.info/sct').get('73211009').count).toBe(2);
   });
 
+  test('a scan reads on a connection of its own, and close() closes it', async () => {
+    // sqlite3 serialises a connection: a scan's long reads on the one connection everything
+    // else uses kept the main thread waiting on its mutex (the problems page, tx.fhir.org)
+    provider = await makeProvider([vs(URL1, '20240101'), vs(URL2, '20200101')]);
+    const seen = [];
+    await provider.scanAllValueSets(async (v) => { seen.push(v.url); });
+    expect(seen).toEqual([URL1, URL2]);
+    const scanDb = await provider.database._scanDbPromise;
+    expect(scanDb).toBeTruthy();
+    expect(scanDb).not.toBe(provider.database._writeDb);
+    // ordinary reads still work alongside it
+    expect((await provider.fetchValueSet(URL1)).jsonObj.version).toBe('20240101');
+    await provider.database.close();
+    expect(provider.database._scanDbPromise).toBeNull();
+    // the closed connection refuses work
+    await expect(new Promise((resolve, reject) => scanDb.get('SELECT 1', (err) => err ? reject(err) : resolve()))).rejects.toThrow();
+  });
+
+  test('scanSignature moves with the generation and the last sync', async () => {
+    provider = await makeProvider([vs(URL1, '20240101')]);
+    const before = await provider.scanSignature();
+    await provider.database.bumpGeneration();
+    const bumped = await provider.scanSignature();
+    expect(bumped).not.toBe(before);
+    provider.lastRefresh = new Date();
+    expect(await provider.scanSignature()).not.toBe(bumped);
+  });
+
   test('a scan falls back to the version before a rejected latest one', async () => {
     provider = await makeProvider([vs(URL1, '20240101'), vs(URL1, '20250601', { status: 'bogus' })]);
     const seen = [];

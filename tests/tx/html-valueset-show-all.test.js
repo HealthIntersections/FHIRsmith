@@ -59,11 +59,11 @@ describe('value set page: show all codes', () => {
     expect(out).not.toContain('more codes');
   });
 
-  test('in a bundle, the link goes to the value set\'s own page', async () => {
+  test('in a bundle (search results), 20 codes, and a link to the value set\'s own page', async () => {
     const { html } = build();
     const out = await html.render(big(600), get('/tx/r4/ValueSet?_format=html&_showAll=true'), true);
-    expect(rows(out)).toBe(500);
-    expect(out).toContain('<a href="/tx/r4/ValueSet/big?_format=html&amp;_showAll=true">Show all</a>');
+    expect(rows(out)).toBe(20);
+    expect(out).toContain('… and 580 more codes.</i> <a href="/tx/r4/ValueSet/big?_format=html">See them on its page</a>');
   });
 
   test('a page that came from a POST says how many more, without a link', async () => {

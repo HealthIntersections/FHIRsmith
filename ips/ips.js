@@ -44,6 +44,8 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const fhirJson = require('../library/fhir-json');
+const { duplicatesOutcome } = require('../library/json-duplicates');
 const scripts = require('./scripts');
 const assets = require('./assets');
 const { minimalIpsProblems } = require('./minimal');
@@ -69,7 +71,9 @@ const render = require('./render');
 const patientComments = require('./patient-comments');
 const exporter = require('./export');
 const { TxClient } = require('./tx-client');
-const { STEPS, stripChecks, withTimeout, generateNarrative } = require('./pipeline');
+const { STEPS, stripChecks, withTimeout, generateNarrative, lookupDisplays } = require('./pipeline');
+// how long the clinical profile page waits for its codes' displays
+const PROFILE_LOOKUP_TIMEOUT_MS = 5000;
 const signatures = require('./signatures');
 const { KeyStoreKeyProvider } = require('./signature-keys');
 const keystore = require('../library/keystore');
@@ -127,7 +131,7 @@ function documentParameters(req) {
     // a parser in front of the module may have left it as it came
     if (Buffer.isBuffer(b)) {
       try {
-        b = JSON.parse(b.toString('utf8'));
+        b = fhirJson.parse(b.toString('utf8'));
       } catch {
         b = null;
       }
@@ -775,7 +779,8 @@ class IpsModule {
     const r = this.router;
     const h = (name, fn) => (req, res) => this.handle(req, res, name, () => fn(req, res));
     const posting = this.submissionLimiters();
-    const json = express.json({ limit: Math.max(2 * 1024 * 1024, Math.ceil(this.maxSize * 1.5)) });
+    // (numbers in the documents and models kept as they were written: library/fhir-json)
+    const json = express.json({ limit: Math.max(2 * 1024 * 1024, Math.ceil(this.maxSize * 1.5)), reviver: fhirJson.reviver });
     r.get('/assets/*file', assets.handler);
     r.get('/doc-actions.js', scripts.handler('doc-actions.js'));
     r.get('/compose', ...this.web, h('compose', (req, res) => this.sendComposeChoice(req, res)));
@@ -853,7 +858,7 @@ class IpsModule {
     r.get('/:code/compose/general', project, ...this.web, h('compose', (req, res) => this.sendCompose(req, res)));
     r.get('/:code/compose/patient', project, ...this.web, h('compose', (req, res) => this.sendPatientEditor(req, res)));
     r.get('/:code/lookup', project, ...this.lookups, h('lookup', (req, res) => this.lookup(req, res)));
-    r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb' }), auth.csrfIfLoggedIn, h('compose', (req, res) => this.compose(req, res)));
+    r.post('/:code/compose', project, this.sameOrigin, ...posting, this.session, express.json({ limit: '2mb', reviver: fhirJson.reviver }), auth.csrfIfLoggedIn, h('compose', (req, res) => this.compose(req, res)));
     r.post('/:code/submit', project, this.sameOrigin, ...posting, this.session, this.bigForm, auth.csrfIfLoggedIn, h('submit', (req, res) => this.submitForm(req, res)));
     r.get('/:code/settings', project, this.session, this.csrf, manager, h('settings', (req, res) => this.sendSettings(req, res)));
     // the reports (reports.js), for this project's documents
@@ -1309,7 +1314,7 @@ class IpsModule {
     const notes = [];
     // the analysed copy starts as the master, and the steps adorn it; whatever they managed
     // is kept, even when one of them fails
-    row.analysed = stripChecks(structuredClone(row.bundle));
+    row.analysed = stripChecks(fhirJson.clone(row.bundle));
     this.store.clearResults(row.id);
     for (const step of this.steps) {
       this.store.saveStepStatus(row.id, step.name, 'waiting');
@@ -1439,7 +1444,7 @@ class IpsModule {
   }
 
   sendJson(res, status, body) {
-    res.status(status).set('Content-Type', FHIR_JSON).send(JSON.stringify(body, null, 2));
+    res.status(status).set('Content-Type', FHIR_JSON).send(fhirJson.stringify(body, null, 2));
   }
 
   sendOutcome(res, status, code, messages) {
@@ -1584,8 +1589,8 @@ class IpsModule {
     if (problem) {
       return this.sendView(req, res, `${project.name}: ${problem.message}`, problem.status);
     }
-    const bundle = structuredClone(doc.bundle);
-    if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > this.maxSize) {
+    const bundle = fhirJson.clone(doc.bundle);
+    if (Buffer.byteLength(fhirJson.stringify(bundle), 'utf8') > this.maxSize) {
       return this.sendView(req, res, `Documents can't be bigger than ${this.maxSize} bytes`, 413);
     }
     const problems = validateDocument(bundle);
@@ -1777,7 +1782,7 @@ class IpsModule {
     if (format === 'json') {
       return this.sendJson(res, 200, out);
     }
-    const json = JSON.stringify(out, null, 2);
+    const json = fhirJson.stringify(out, null, 2);
     if (format === 'zip') {
       res.set('Content-Disposition', `attachment; filename="${name}.zip"`);
       return res.status(200).type('application/zip').send(exporter.zip([{ name: `${name}.json`, data: json }]));
@@ -1858,7 +1863,7 @@ class IpsModule {
       }
     }
     if (wanted.narrative) {
-      doc = structuredClone(doc);
+      doc = fhirJson.clone(doc);
       try {
         await generateNarrative(doc, this);
       } catch (e) {
@@ -1956,7 +1961,7 @@ class IpsModule {
     }
     let signed;
     try {
-      signed = await withTimeout(signatures.sign(structuredClone(doc), { user, system }, { log: this.log }),
+      signed = await withTimeout(signatures.sign(fhirJson.clone(doc), { user, system }, { log: this.log }),
         this.signTimeoutMs || SIGN_TIMEOUT_MS, `it took more than ${(this.signTimeoutMs || SIGN_TIMEOUT_MS) / 1000} seconds`);
     } catch (e) {
       throw err(422, `The document could not be signed: ${e.message}`);
@@ -2330,15 +2335,28 @@ class IpsModule {
       if (req.body.length > this.maxSize) {
         return this.sendOutcome(res, 413, 'too-costly', `Documents can't be bigger than ${this.maxSize} bytes`);
       }
+      const text = req.body.toString('utf8');
       try {
-        bundle = JSON.parse(req.body.toString('utf8'));
+        bundle = fhirJson.parse(text);
       } catch (e) {
         return this.sendOutcome(res, 400, 'structure', 'The body is not valid JSON: ' + e.message);
+      }
+      // a property more than once in an object: parsing kept only the last, so what was sent
+      // would be lost before the document is stored and checked
+      const duplicates = duplicatesOutcome(text, { acceptLanguage: req.get('Accept-Language'), resourceType: bundle?.resourceType });
+      if (duplicates) {
+        return this.sendJson(res, 400, duplicates);
       }
     } else if (req.body && typeof req.body === 'object' && !Array.isArray(req.body)) {
       bundle = req.body;
       if (Buffer.byteLength(JSON.stringify(bundle), 'utf8') > this.maxSize) {
         return this.sendOutcome(res, 413, 'too-costly', `Documents can't be bigger than ${this.maxSize} bytes`);
+      }
+      // (parsed in front of the module: its text, if that was kept, can still be checked)
+      const duplicates = Buffer.isBuffer(req.rawBody)
+        ? duplicatesOutcome(req.rawBody.toString('utf8'), { acceptLanguage: req.get('Accept-Language'), resourceType: bundle.resourceType }) : null;
+      if (duplicates) {
+        return this.sendJson(res, 400, duplicates);
       }
     } else {
       return this.sendOutcome(res, 400, 'structure', 'No document was found in the body');
@@ -2533,13 +2551,13 @@ class IpsModule {
       const base = this.baseUrl(req);
       const entry = list.map(p => this.store.profile(p.id)).filter(Boolean).map(sd => ({ fullUrl: `${base}/StructureDefinition/${sd.id}`, resource: sd, search: { mode: 'match' } }));
       res.type('application/fhir+json');
-      return res.send(JSON.stringify({ resourceType: 'Bundle', type: 'searchset', total: entry.length, entry }));
+      return res.send(fhirJson.stringify({ resourceType: 'Bundle', type: 'searchset', total: entry.length, entry }));
     }
     this.sendHtml(res, 'Clinical Profiles', render.renderProfiles(list, this.ctx(req, res)), Date.now(), req);
   }
 
   /** A clinical profile: the page, the StructureDefinition, or the StructureDefinition as a download. */
-  profileRead(req, res) {
+  async profileRead(req, res) {
     const sd = req.profile;
     if (req.query.download !== undefined) {
       res.setHeader('Content-Disposition', `attachment; filename="${sd.name || 'profile'}.json"`);
@@ -2550,7 +2568,16 @@ class IpsModule {
       res.type('application/fhir+json');
       return res.send(JSON.stringify(sd));
     }
-    const ctx = { ...this.ctx(req, res), valueSetTitle: (url) => this.valueSetTitle(url), profileTitle: (url) => this.profileTitle(url) };
+    // the rules say system and code; the page shows the code's display after it, when the
+    // terminology server has one (asked in parallel, cached; a slow server doesn't hold the page)
+    let displays = new Map();
+    try {
+      displays = await withTimeout(lookupDisplays(this, render.profileCodings(profiles.constraintsOf(sd))), PROFILE_LOOKUP_TIMEOUT_MS, 'the terminology server took too long');
+    } catch (e) {
+      this.log.warn(`IPS module: no displays for clinical profile ${sd.id}: ${e.message}`);
+    }
+    const codeDisplay = (system, code, version) => displays.get(version ? `${system}|${version}|${code}` : `${system}|${code}`) || null;
+    const ctx = { ...this.ctx(req, res), valueSetTitle: (url) => this.valueSetTitle(url), profileTitle: (url) => this.profileTitle(url), codeDisplay };
     // the administrator edits the rows in place, a row at a time
     const editor = ctx.user?.isAdmin ? {
       constraints: this.editorConstraints(sd), guides: profiles.guidesOf(sd),
@@ -2856,7 +2883,7 @@ class IpsModule {
     if (minimal.length > 0) {
       return minimal;
     }
-    const size = Buffer.byteLength(JSON.stringify(bundle), 'utf8');
+    const size = Buffer.byteLength(fhirJson.stringify(bundle), 'utf8');
     return size > this.maxSize ? [`The document is ${size} bytes; documents can't be bigger than ${this.maxSize} bytes`] : [];
   }
 
@@ -2873,7 +2900,7 @@ class IpsModule {
     if (!built.bundle) {
       return res.json({ bundle: null, problems: built.problems });
     }
-    res.json({ bundle: built.bundle, problems: [...built.problems, ...this.editorProblems(built.bundle)] });
+    res.type('json').send(fhirJson.stringify({ bundle: built.bundle, problems: [...built.problems, ...this.editorProblems(built.bundle)] }));
   }
 
   /** Whether a document is ready for the editors' actions: what's wrong with it ([] if nothing). */
@@ -3094,7 +3121,7 @@ class IpsModule {
     if (problems.length > 0) {
       return res.status(400).json({ error: 'The document could not be built', problems });
     }
-    const text = JSON.stringify(built.bundle);
+    const text = fhirJson.stringify(built.bundle);
     if (Buffer.byteLength(text, 'utf8') > this.maxSize) {
       return res.status(413).json({ error: `Documents can't be bigger than ${this.maxSize} bytes` });
     }
@@ -3120,9 +3147,14 @@ class IpsModule {
     }
     let bundle;
     try {
-      bundle = JSON.parse(text);
+      bundle = fhirJson.parse(text);
     } catch (e) {
       return this.sendSubmit(req, res, { error: 'The document is not valid JSON: ' + e.message, bundle: text }, 400);
+    }
+    const duplicates = duplicatesOutcome(text, { acceptLanguage: req.get('Accept-Language'), resourceType: bundle?.resourceType });
+    if (duplicates) {
+      const where = duplicates.issue.map(i => `${i.details.text} (${i.expression[0]}, line ${i.extension[0].valueInteger})`);
+      return this.sendSubmit(req, res, { error: where.join('. '), bundle: text }, 400);
     }
     const problems = validateDocument(bundle);
     if (problems.length > 0) {
@@ -3408,7 +3440,7 @@ class IpsModule {
       link: links,
       entry: results.rows.map(row => ({
         fullUrl: `${base}/Bundle/${row.id}`,
-        resource: JSON.parse(row.json),
+        resource: fhirJson.parse(row.json),
         search: { mode: 'match' }
       }))
     };

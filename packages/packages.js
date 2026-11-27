@@ -752,9 +752,6 @@ class PackagesModule {
     if (this.npmCheckConfig().enabled) {
       content += '<p><a href="/packages/npm-check" class="btn btn-secondary mb-2">Check an npm Registry</a></p>';
     }
-    if (this.config.crawler.enabled) {
-      content += '<p><button onclick="triggerCrawl()" class="btn btn-warning mb-2">Manual Crawl</button></p>';
-    }
     content += '</div>';
     content += '</div>';
     content += '</div>';
@@ -765,9 +762,10 @@ class PackagesModule {
 
   async initialize(config) {
     this.config = config;
-    auth.defineRoles('packages', [{ role: 'crawl', label: 'Start a crawl', description: 'POST /packages/crawl, usually with an API token from a scheduled job' }], { title: 'Packages', path: '/packages' });
+    auth.defineModule('packages', { title: 'Packages', path: '/packages' });
+    auth.addAdminPage('packages', { label: 'Crawler', path: '/packages/log', description: 'the last crawl\'s log; start a crawl' });
     if (this.config.crawlToken) {
-      pckLog.warn('modules.packages.crawlToken is no longer used: /packages/crawl is for users with the packages "crawl" role, with an API token');
+      pckLog.warn('modules.packages.crawlToken is no longer used: an administrator, logged in, starts a crawl on /packages/log');
     }
 
     // Set default masterUrl if not configured
@@ -1571,7 +1569,9 @@ class PackagesModule {
       }
     });
 
-    this.router.get('/log', async (req, res) => {
+    // the session (library/auth), so the page can offer an administrator "Start a crawl"; rate
+    // limited for requests that bring a login
+    this.router.get('/log', rateLimit(auth.credentialLimits()), auth.session, auth.csrfIfLoggedIn, async (req, res) => {
       const start = Date.now();
       try {
         try {
@@ -1610,7 +1610,12 @@ class PackagesModule {
               htmlServer.loadTemplate('packages', templatePath);
             }
 
-            const content = this.buildLogPageContent(status, logData, summary);
+            const user = auth.currentUser(req);
+            const content = this.buildLogPageContent(status, logData, summary, {
+              isAdmin: !!(user && user.isAdmin), csrf: res.locals._csrf || '',
+              loginUrl: auth.loginUrl(req, req.originalUrl), message: typeof req.query.started === 'string' ? 'started' : null
+            });
+            res.setHeader('Cache-Control', 'no-store');
             const stats = await this.gatherPackageStatistics();
             stats.processingTime = Date.now() - startTime;
 
@@ -1805,42 +1810,33 @@ class PackagesModule {
       }
     });
 
-    // Manual crawler trigger. A crawl is a long, network-heavy job that anyone could
-    // otherwise start at will, so it is for a user with the packages "crawl" role (or an
-    // administrator) - software sends an API token (Authorization: Bearer {token}; the
-    // x-crawl-token header, as before, works too)
-    // rate limited for requests that bring a token (library/auth)
-    this.router.post('/crawl', rateLimit(auth.credentialLimits()), (req, res, next) => {
-      const legacy = req.headers['x-crawl-token'];
-      if (typeof legacy === 'string' && legacy && !auth.presentsToken(req)) {
-        req.headers.authorization = 'Bearer ' + legacy;
-      }
-      next();
-    }, auth.requireApi(p => p.has('packages', 'crawl'), (req, res, status, message) => {
-      if (status === 401) {
-        pckLog.warn('Rejected /crawl: no valid API token (from ' + req.ip + ')');
-      }
-      res.status(status).json({ error: (status === 401 ? 'unauthorized: ' : 'forbidden: ') + message });
-    }), async (req, res) => {
-      const start = Date.now();
-      try {
+    // Start a crawl now: for the server's administrators, logged in, from the button on the log
+    // page (a form post: same origin, session, CSRF token). The crawl runs in the background, and
+    // the post goes back to the log page; while a crawl is running, another isn't started
+    this.router.post('/crawl', rateLimit(auth.credentialLimits()), auth.sameOrigin, auth.session, auth.form, auth.csrf,
+      auth.requireAdmin((req, res, status, message) => htmlServer.sendErrorResponse(res, 'packages', new Error(message), status)),
+      (req, res) => {
+        const start = Date.now();
         try {
-          await this.runCrawler();
-          res.json({
-            message: 'Crawler completed successfully',
-            timestamp: new Date().toISOString()
-          });
-          pckLog.info('Serve Crawler');
-        } catch (error) {
-          pckLog.error('Manual crawler failed:', error);
-          res.status(500).json({
-            error: 'Crawler failed',
-            message: error.message
-          });
+          if (this.crawlerRunning) {
+            res.redirect(303, '/packages/log');
+            return;
+          }
+          pckLog.info(`Crawl started by ${req.user.login}`);
+          // runCrawler logs its own failure, and keeps the log of the failed run for the log page
+          this.runCrawler().catch(() => {});
+          res.redirect(303, '/packages/log?started');
+        } finally {
+          this.stats.countRequest('crawl', Date.now() - start);
         }
-      } finally {
-        this.stats.countRequest('crawl', Date.now() - start);
+      });
+    // a form post with a missing or wrong CSRF token: lusca passes on an error, which is the
+    // poster's problem, not the server's
+    this.router.use('/crawl', (err, req, res, next) => {
+      if (err && typeof err.message === 'string' && err.message.startsWith('CSRF token')) {
+        return res.status(403).type('text/plain').send('The form has expired or did not come from this site - go back, reload the page and try again');
       }
+      next(err);
     });
 
     // Crawler statistics endpoint (existing)
@@ -3763,10 +3759,26 @@ class PackagesModule {
     return content;
   }
 
-  buildLogPageContent(status, logData, summary) {
+  /**
+   * @param {{isAdmin?: boolean, csrf?: string, loginUrl?: string, message?: string}} [page] who is
+   *   asking: an administrator gets "Start a crawl" (a form post to /packages/crawl)
+   */
+  buildLogPageContent(status, logData, summary, page = {}) {
     let content = '<div class="row mb-4">';
     content += '<div class="col-12">';
+    if (page.message === 'started') {
+      content += '<div class="alert alert-success">Crawl started</div>';
+    }
     content += `<div class="alert ${this.crawlerRunning ? 'alert-info' : 'alert-secondary'}">${escape(status)}</div>`;
+    if (page.isAdmin) {
+      if (!this.crawlerRunning) {
+        content += '<form method="post" action="/packages/crawl">' +
+          `<input type="hidden" name="_csrf" value="${escape(page.csrf || '')}"/>` +
+          '<button type="submit" class="btn btn-primary">Start a crawl</button></form>';
+      }
+    } else if (page.loginUrl) {
+      content += `<p><small>The server's administrators can start a crawl here: <a href="${escape(page.loginUrl)}">log in</a>.</small></p>`;
+    }
     content += '</div>';
     content += '</div>';
 
@@ -3820,9 +3832,6 @@ class PackagesModule {
       content += '<div class="alert alert-info">';
       content += '<h4>No Log Data Available</h4>';
       content += '<p>The crawler hasn\'t run yet or the log data is not available.</p>';
-      if (this.config.crawler.enabled) {
-        content += '<p><button onclick="triggerCrawl()" class="btn btn-primary">Start Manual Crawl</button></p>';
-      }
       content += '</div>';
     }
 

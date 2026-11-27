@@ -99,15 +99,36 @@ const WHEN_PATHS = [
   'issued', 'dateAsserted', 'recordedOn', 'created', 'date', 'meta.lastUpdated'
 ];
 
-/** When a resource happened: a good try, not a rule. HTML, escaped. */
-function whenOf(r) {
+// where to look for when a resource was recorded, best first (R4 and R5 names): when it was
+// recorded, asserted, issued, authored or written, else when the record was last changed
+const RECORD_PATHS = ['recordedDate', 'recorded', 'dateAsserted', 'recordedOn', 'issued', 'authoredOn', 'authored', 'created', 'date', 'meta.lastUpdated'];
+
+/** When a resource was recorded, as { path, value } (value as written), or null if it doesn't say. */
+function recordedOf(r) {
+  for (const p of RECORD_PATHS) {
+    const v = p.split('.').reduce((o, k) => (isObject(o) ? o[k] : undefined), r);
+    if (typeof v === 'string' && v) {
+      return { path: p, value: v };
+    }
+  }
+  return null;
+}
+
+/** When a resource happened, as written: a good try, not a rule. '' if there's no date. */
+function whenValue(r) {
   for (const p of WHEN_PATHS) {
     const v = p.split('.').reduce((o, k) => (isObject(o) ? o[k] : undefined), r);
     if (text(v)) {
-      return dateText(v);
+      return text(v);
     }
   }
   return '';
+}
+
+/** When a resource happened: a good try, not a rule. HTML, escaped. */
+function whenOf(r) {
+  const v = whenValue(r);
+  return v ? dateText(v) : '';
 }
 
 /**
@@ -244,4 +265,4 @@ function flatten(node, depth = 0, parent = null, out = []) {
   return out;
 }
 
-module.exports = { structureTree, flatten, referencesIn, whatOf, whenOf, iconOf, isObject, text };
+module.exports = { structureTree, flatten, referencesIn, whatOf, whenOf, whenValue, recordedOf, RECORD_PATHS, iconOf, isObject, text };

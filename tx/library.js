@@ -143,6 +143,15 @@ class Library {
   lastTime = null;
   totalDownloaded = 0;
   vsacCfg = undefined;
+
+  /**
+   * {Object[]} modules.rest.endpoints, for `rest:` sources (set by tx.js); restDatabasesDir:
+   * where their relative SQLite files are; restDatabases: open databases to use instead, by
+   * endpoint path (tests)
+   */
+  restEndpoints = [];
+  restDatabasesDir = null;
+  restDatabases = null;
   /**
    * {string|null} with several processes on one data directory (cluster.md), a name every
    * process in the cluster shares (the master's role): the folder-source-* caches are the
@@ -250,6 +259,8 @@ class Library {
     this.valueSetProviders = [];
     this.conceptMapProviders = [];
     this.oclProviderSets = new Map();
+    // rest: sources (loadRest), by endpoint path
+    this.restProviderSets = new Map();
     this.oclConfig = {};
     this.ignored = new Set();
 
@@ -521,6 +532,10 @@ class Library {
         await this.loadFile(details, isDefault, mode);
         break;
 
+      case 'rest':
+        await this.loadRest(details, isDefault, mode);
+        break;
+
       default:
         throw new Error(`Unknown source type: ${type}`);
     }
@@ -636,10 +651,51 @@ class Library {
         this.valueSetProviders.push(providerSet.valueSetProvider);
         providerSet.vsRegistered = true;
       }
+      // Load the value sets now, as the library loads, not on the first request: that reads
+      // every cached compose (thousands of files) and, but in a cluster follower, lists the
+      // collections from OCL - a minute or more, during which the first requests for OCL value
+      // sets went to OCL themselves and timed out. A failure here isn't fatal: the provider is
+      // initialized again on demand, as before
+      if (!providerSet.vsInitialized) {
+        const started = Date.now();
+        try {
+          await providerSet.valueSetProvider.initialize();
+          providerSet.vsInitialized = true;
+          this.log.info(`OCL value sets loaded at startup in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+        } catch (error) {
+          this.log.warn(`OCL value sets not loaded at startup (they will be on first use): ${error.message}`);
+        }
+      }
       if (!providerSet.cmRegistered) {
         this.conceptMapProviders.push(providerSet.conceptMapProvider);
         providerSet.cmRegistered = true;
       }
+    }
+  }
+
+  /**
+   * A rest module endpoint's CodeSystems, ValueSets and ConceptMaps (source syntax:
+   * `rest:<endpoint path>`), read from its database (tx/rest/rest-source.js). They take
+   * precedence over those from any other source.
+   */
+  // eslint-disable-next-line no-unused-vars
+  async loadRest(details, isDefault, mode) {
+    const key = String(details || '').trim().replace(/\/+$/, '');
+    let set = this.restProviderSets.get(key);
+    if (!set) {
+      const { restProviders } = require('./rest/rest-source');
+      set = restProviders(details, this.restEndpoints, { databasesDir: this.restDatabasesDir, log: this.log, db: this.restDatabases && this.restDatabases[key] });
+      set.registered = { cs: false, npm: false };
+      this.restProviderSets.set(key, set);
+    }
+    if (mode === 'cs' && !set.registered.cs) {
+      this.codeSystemProviders.push(set.codeSystems);
+      set.registered.cs = true;
+    }
+    if (mode === 'npm' && !set.registered.npm) {
+      this.valueSetProviders.push(set.valueSets);
+      this.conceptMapProviders.push(set.conceptMaps);
+      set.registered.npm = true;
     }
   }
 
@@ -1509,9 +1565,13 @@ class Library {
     provider.externalSources = this.externalSources;
 
 
-    // Now add the existing value set providers after the FHIR core packages
-    provider.valueSetProviders.push(...this.valueSetProviders);
-    provider.conceptMapProviders.push(...this.conceptMapProviders);
+    // Now add the existing value set providers after the FHIR core packages - but those that
+    // take precedence (a rest: source's) before everything
+    const first = (p) => !!p.takesPrecedence;
+    provider.valueSetProviders.unshift(...this.valueSetProviders.filter(first));
+    provider.valueSetProviders.push(...this.valueSetProviders.filter(p => !first(p)));
+    provider.conceptMapProviders.unshift(...this.conceptMapProviders.filter(first));
+    provider.conceptMapProviders.push(...this.conceptMapProviders.filter(p => !first(p)));
     await provider.applyTHOPrecedence();
 
     // bind UCUM common value set

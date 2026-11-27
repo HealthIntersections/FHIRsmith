@@ -117,8 +117,9 @@ with `--role`). Their settings are in `server.cluster`, documented with the arra
 [cluster.md](cluster.md): the launcher's (`workers`, `maxOutstanding`, `queueSeconds`,
 `recycleSeconds`, the fast lane, ...) under
 [The launcher](cluster.md#the-launcher-clusterjs), and what the processes share
-(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`, and `workerModules`, for
-workers that serve the rest module too) under
+(`sharedCache`, `cacheAffinity`, `sharedCacheMaxMB`, `sharedClosure`, `workerModules`, for
+workers that serve the rest module too, and `jobsProcess`, for the rest module's jobs process)
+under
 [Options](cluster.md#options). With no role, `server.cluster` is ignored.
 The status panel's snapshot of every process (`statusSeconds`) is under
 [Status](cluster.md#status).
@@ -304,7 +305,7 @@ The modules' own logins, users and passwords are gone: the server has one login 
 
 1. add the `auth` block (above): `sessionSecret`, and yourself in `administrators`
 2. set your password (*Forgotten your password?*, or `node server.js --password-link {email}`), or log in with GitHub or Google
-3. give users the modules' roles on `/auth/admin/users` (IPS project managers also on the IPS projects page), and make API tokens for the software that used the old shared tokens (packages crawl, testing submissions and deletes, `/shl/create`, folder uploads, a secured registry's clients)
+3. give users the modules' roles on `/auth/admin/users` (IPS project managers also on the IPS projects page), and make API tokens for the software that used the old shared tokens (testing submissions and deletes, `/shl/create`, folder uploads, a secured registry's clients)
 4. take the old settings out. Until then they are warnings in the log and in `--check`, and the old shared tokens are no longer accepted - but a registry with `security.apiToken` or `users`, and a testing module with `token`, stay closed rather than open
 
 The table of old settings and what replaces each is in [library/auth/README.md](library/auth/README.md#upgrading).
@@ -370,6 +371,11 @@ has the detail.
 - **`pruneTerminologyCache`** (new, default false): delete the databases, caches and packages
   in `terminology-cache` that the library no longer uses. Turn it on for a server that has the
   data directory to itself.
+- **XML** in the tx module is now written and read by the converter the rest module uses,
+  driven by the core StructureDefinitions (fetched through the package cache: hl7.fhir.r4.core
+  and hl7.fhir.r5.core). **`xmlConverter`** (new, default `model`) can go back to the old
+  classes (`legacy`), or use them and log where the converter differs (`compare`). See
+  tx/README.md.
 - **`instanceCode`** is checked at startup, and a cluster master needs one.
 - **VSAC** (`vsacCfg`): the default `baseUrl` is https (an http one is logged as a warning);
   value sets are read from the database when asked for, with a cache sized by `valueSetCacheMB`

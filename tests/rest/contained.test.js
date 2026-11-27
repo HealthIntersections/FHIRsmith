@@ -77,6 +77,11 @@ describe.each(engines())('contained resources (%s)', (engine) => {
     expect(await found('/r4/Observation?subject:Patient.organization.name=acme')).toEqual([id]);
     expect(await found('/r4/Observation?subject:Patient.organization.name=other')).toEqual([]);
     expect(await found(`/r4/Observation?subject:Patient.organization=Organization/${org}`)).toEqual([id]);
+    // parameters that use resolve() (Observation.patient: subject.where(resolve() is Patient))
+    // follow the reference into the contained resource too
+    expect(await found('/r4/Observation?patient.name=smith')).toEqual([id]);
+    expect(await found('/r4/Observation?patient.general-practitioner.name=platypus')).toEqual([id]);
+    expect(await found('/r4/Observation?patient.name=jones')).toEqual([]);
     // each contained resource once, however often it is referred to
     expect((await containedRows()).map(c => c.LocalId)).toEqual(['gp', 'p']);
   });

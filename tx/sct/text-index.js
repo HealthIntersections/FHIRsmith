@@ -648,7 +648,7 @@ async function rankMatches(sct, index, ordinals, query, langCode, lang, includeI
     // every word in one description: each candidate is checked
     const scored = [];
     for (let i = 0; i < kept.length; i++) {
-      if (opContext && (i & 0x3FF) === 0x3FF) {
+      if (opContext && (i & 0x3F) === 0x3F) {
         await opContext.checkAndYield('sct:searchFilter');
       }
       const entry = rate(kept[i]);
@@ -690,7 +690,18 @@ async function rankMatches(sct, index, ordinals, query, langCode, lang, includeI
     }
   }
 
-  const scored = head.map(rate).map(entry => ({ ...entry, base: Math.max(entry.base, 10) }));
+  // Every concept with the cutoff's word count is in the head, so it can be far more than
+  // RANK_REFINE_LIMIT: rating each stems its descriptions, and on tx.fhir.org (2026-11-25)
+  // "Penicillin" on the allergy value set held the event loop for 2.5 s here. So it yields
+  const scored = [];
+  for (let i = 0; i < head.length; i++) {
+    if (opContext && (i & 0x3F) === 0x3F) {
+      await opContext.checkAndYield('sct:searchFilter');
+    }
+    const entry = rate(head[i]);
+    entry.base = Math.max(entry.base, 10);
+    scored.push(entry);
+  }
   scored.sort(byRank);
 
   const matches = scored.map(toMatch);

@@ -6,6 +6,7 @@ const { BaseCSServices } = require('../cs/cs-base');
 const { CodeSystem } = require('../library/codesystem');
 const { SearchFilterText } = require('../library/designations');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MARKER_EXTENSION } = require('./shared/constants');
+const { sizeProbe, sleep, withSizeProbeSlot } = require('./shared/size-probe');
 const { baseChecksum } = require('./shared/checksum');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
@@ -1215,7 +1216,7 @@ class OCLSourceCodeSystemProvider extends BaseCSServices {
     return filterContext;
   }
 
-  async filter(filterContext, prop, op, value) {
+  async filter(filterContext, forIteration, prop, op, value) {
     const normalizedProp = String(prop || '').trim().toLowerCase();
     const normalizedOp = String(op || '').trim().toLowerCase();
 
@@ -1945,8 +1946,13 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
     const key = this.#resourceKey();
     const jobKey = `cs:${key}`;
+    // a request (lookup, page or concept miss) needs the source now; the proactive warm-up doesn't
+    const userRequested = reason !== 'proactive-warm';
 
     if (OCLBackgroundJobQueue.isQueuedOrRunning(jobKey)) {
+      if (userRequested) {
+        OCLBackgroundJobQueue.prioritize(jobKey);
+      }
       return;
     }
 
@@ -1963,7 +1969,8 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
         resolveJobSize: async () => {
           queuedJobSize = await this.#fetchConceptCountFromHeaders();
           return queuedJobSize;
-        }
+        },
+        userRequested
       }
     );
   }
@@ -2235,16 +2242,31 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       return null;
     }
 
-    try {
-      const response = await this.httpClient.get(this.meta.conceptsUrl, {
-        params: {
-          limit: 1
+    // The proactive warm-up queues every source at once, and each one asks OCL for its size
+    // here: without a limit that's ~1,800 requests together, some of them fail, and a source
+    // whose size wasn't found is queued last (UNKNOWN_JOB_SIZE) - on tx.mangaradigital.org's
+    // test task (2026-11-26), BRAldeia (8,519 concepts) behind hundreds of larger sources.
+    const attempts = sizeProbe.retryDelaysMs.length + 1;
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      if (attempt > 0) {
+        await sleep(sizeProbe.retryDelaysMs[attempt - 1]);
+      }
+      try {
+        const response = await withSizeProbeSlot(() => this.httpClient.get(this.meta.conceptsUrl, {
+          params: {
+            limit: 1
+          }
+        }));
+        const count = this.#extractNumFoundFromHeaders(response?.headers);
+        if (count != null) {
+          return count;
         }
-      });
-      return this.#extractNumFoundFromHeaders(response?.headers);
-    } catch (error) {
-      return null;
+        return null; // OCL answered without num_found: asking again won't change that
+      } catch (error) {
+        // a timeout or an error in the burst: try again, then give up (size unknown)
+      }
     }
+    return null;
   }
 
   #extractNumFoundFromHeaders(headers) {

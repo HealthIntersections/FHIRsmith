@@ -15,7 +15,17 @@
  * NFC (macOS file systems don't tell NFC and NFD apart), and case is ignored (macOS and Windows
  * file systems don't tell Package.json from package.json). org.hl7.fhir.core's NpmPackage
  * (entryNameKey) normalises the same way.
+ *
+ * Two files in the example folders (package/examples, package/example, and folders in them) of
+ * exactly the same name - case and all - are let off: which of them a reader ends up with doesn't
+ * matter, and published packages have them (de.basisprofil.r4#0.9.13 has two
+ * package/examples/Example-observation-bmi.json). Names there that differ in case are still
+ * refused: unpacked onto a file system that ignores case, they're one file. org.hl7.fhir.core's
+ * NpmPackage (checkDuplicateName) does the same. The npm registry check is strict: a package
+ * being published can't have any duplicates, examples or not.
  */
+
+const EXAMPLE_FOLDERS = ['examples', 'example'];
 
 /**
  * The name a file in a package is compared by
@@ -23,10 +33,14 @@
  * @returns {string}
  */
 function entryNameKey(name) {
+  return normalisedName(name).toLowerCase();
+}
+
+/** entryNameKey, but keeping the case */
+function normalisedName(name) {
   return String(name).normalize('NFC')
     .replace(/\\/g, '/')
-    .split('/').filter(s => s !== '' && s !== '.').join('/')
-    .toLowerCase();
+    .split('/').filter(s => s !== '' && s !== '.').join('/');
 }
 
 /**
@@ -44,20 +58,29 @@ function pathProblem(name) {
  * The files of one package, as it is read, noting any name that duplicates an earlier one
  */
 class EntryNames {
-  constructor() {
+  /**
+   * @param {{strict?: boolean}} [options] - strict: two examples of exactly the same name are
+   *   duplicates too (the npm registry check: a package being published can't have them)
+   */
+  constructor(options = {}) {
+    this.strict = !!options.strict;
     this.seen = new Map();
     this.duplicates = [];
   }
 
   /**
    * @param {string} name - a file in the package (not a directory)
-   * @returns {string|null} a message, if the name is a duplicate of one seen before
+   * @returns {string|null} a message, if the name is a duplicate of one seen before (unless strict,
+   *   never for a second example of exactly the same name)
    */
   add(name) {
     const key = entryNameKey(name);
     const earlier = this.seen.get(key);
     if (earlier === undefined) {
       this.seen.set(key, name);
+      return null;
+    }
+    if (!this.strict && EXAMPLE_FOLDERS.some(f => key.startsWith(`package/${f}/`)) && normalisedName(earlier) === normalisedName(name)) {
       return null;
     }
     const message = earlier === name ? `the package has more than one file named ${name}`

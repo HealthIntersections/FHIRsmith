@@ -27,6 +27,8 @@ function str(v) {
   return typeof v === 'string' ? v.trim() : '';
 }
 
+const fhirJson = require('../library/fhir-json');
+
 // the words of a name that aren't the person's: titles
 const TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'mx', 'dr', 'prof', 'sir', 'dame', 'rev']);
 
@@ -103,7 +105,7 @@ const LOCAL_REFERENCES = ['generalPractitioner', 'managingOrganization', 'link']
  */
 function mergePatient(previous, incoming, id, lastUpdated) {
   const out = { resourceType: 'Patient', id: String(id), meta: { lastUpdated } };
-  const src = isObject(incoming) ? JSON.parse(JSON.stringify(incoming)) : {};
+  const src = isObject(incoming) ? fhirJson.clone(incoming) : {};
   for (const [k, v] of Object.entries(src)) {
     if (!['resourceType', 'id', 'meta', 'text', ...LOCAL_REFERENCES].includes(k)) {
       out[k] = v;

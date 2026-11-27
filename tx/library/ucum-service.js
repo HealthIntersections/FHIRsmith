@@ -62,7 +62,7 @@ class UcumService {
 
     try {
       const term = new ExpressionParser(this.model).parse(unit);
-      const convertedTerm = new Converter(this.model, this.handlers).convert(term);
+      const convertedTerm = new Converter(this.model, this.handlers, true).convert(term);
       return new ExpressionComposer().compose(convertedTerm, false);
     } catch (e) {
       e.message = `Error processing ${unit}: ${e.message}`;
@@ -145,6 +145,15 @@ class UcumService {
       throw new UcumException("UCUM service not initialized - call init() first");
     }
 
+    // a temperature on a scale with an offset (Cel, [degF], [degRe]), alone: in kelvin first
+    const offset = this.offsetHandler(code);
+    if (offset) {
+      if (pair.getValue() === null || pair.getValue() === undefined) {
+        return this.getCanonicalForm(new Pair(null, offset.getUnits()));
+      }
+      return this.getCanonicalForm(new Pair(this.fromOffsetUnit(offset, pair.getValue()), offset.getUnits()));
+    }
+
     const term = new ExpressionParser(this.model).parse(code);
     const c = new Converter(this.model, this.handlers).convert(term);
 
@@ -164,6 +173,31 @@ class UcumService {
     }
 
     return p;
+  }
+
+  /**
+   * The handler of a unit that is a special unit with an offset from zero (Cel, [degF],
+   * [degRe]) and nothing else, or null
+   * @param {string} code
+   * @return {SpecialUnitHandler|null}
+   */
+  offsetHandler(code) {
+    const c = typeof code === 'string' ? code.trim() : code;
+    if (!this.handlers.exists(c)) {
+      return null;
+    }
+    const h = this.handlers.get(c);
+    return h.hasOffset() ? h : null;
+  }
+
+  /**
+   * A value in a unit with an offset, in the handler's units: (value + offset) * factor
+   * @param {SpecialUnitHandler} handler
+   * @param {Decimal} value
+   * @return {Decimal}
+   */
+  fromOffsetUnit(handler, value) {
+    return value.add(handler.getOffset()).multiply(handler.getValue());
   }
 
   /**
@@ -247,6 +281,23 @@ class UcumService {
 
     if (sourceUnit === destUnit) {
       return value;
+    }
+
+    // temperatures on scales with an offset (Cel, [degF], [degRe]): through kelvin
+    const srcOffset = this.offsetHandler(sourceUnit);
+    const dstOffset = this.offsetHandler(destUnit);
+    if (srcOffset || dstOffset) {
+      let v = value;
+      let src = sourceUnit;
+      if (srcOffset) {
+        v = this.fromOffsetUnit(srcOffset, v);
+        src = srcOffset.getUnits();
+      }
+      if (dstOffset) {
+        const k = this.convert(v, src, dstOffset.getUnits());
+        return k.divide(dstOffset.getValue()).subtract(dstOffset.getOffset());
+      }
+      return this.convert(v, src, destUnit);
     }
 
     const src = new Converter(this.model, this.handlers).convert(

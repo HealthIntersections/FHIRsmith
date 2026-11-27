@@ -113,11 +113,36 @@ describe('the analysis', () => {
       entry({ resourceType: 'Appointment', id: 'b', start: '2027-02-01T10:00:00Z' }),
       entry({ resourceType: 'Immunization', id: 'c', status: 'completed', patient: { reference: 'urn:uuid:p' }, occurrenceDateTime: '2026-11-01T09:00:00+10:00', protocolApplied: [{ doseNumberString: '2028' }] })), { now: NOW });
     // a note's text is not a date, whatever it looks like
-    expect(texts(out.items.e3)).toEqual(['A date in the future: Condition.onsetDateTime = 2027-01', 'No narrative']);
+    expect(texts(out.items.e3)).toEqual(['A date in the future: Condition.onsetDateTime = 2027-01',
+      'Condition.onsetDateTime (2027-01) is after the date it was recorded (Condition.recordedDate = 2026-10-31)', 'No narrative']);
     expect(kinds(out.items.e3)[0]).toBe('attention');
     expect(kinds(out.items.e4)).toEqual(['ok', 'narrative']);
     // 9am in Brisbane is 23:00 UTC the day before: not the future; a dose number of 2028 is not a date
     expect(kinds(out.items.e5)).toEqual(['ok', 'narrative']);
+  });
+
+  test('clinical dates after the date it was recorded', async () => {
+    const out = await analyseDocument(doc(section(['a', 'b', 'c', 'd', 'e', 'f', 'g']),
+      // an onset after it was recorded; a reaction too
+      entry({ resourceType: 'AllergyIntolerance', id: 'a', patient: { reference: 'urn:uuid:p' }, onsetDateTime: '2026-05-02', recordedDate: '2026-05-01',
+        reaction: [{ onset: '2026-04-01' }, { onset: '2026-06-01' }] }),
+      // an observation issued before it was made
+      entry({ resourceType: 'Observation', id: 'b', status: 'final', subject: { reference: 'urn:uuid:p' }, effectiveDateTime: '2026-03-01T10:00:00Z', issued: '2026-03-01T09:00:00Z' }),
+      // the same day, partial dates, and no time zone: the benefit of the doubt
+      entry({ resourceType: 'Condition', id: 'c', subject: { reference: 'urn:uuid:p' }, onsetDateTime: '2026-05-01T23:00:00', recordedDate: '2026-05-01' }),
+      entry({ resourceType: 'Condition', id: 'd', subject: { reference: 'urn:uuid:p' }, onsetDateTime: '2026-05', recordedDate: '2026-05-01' }),
+      // a period's end can be after; a statement of what's intended may be
+      entry({ resourceType: 'MedicationStatement', id: 'e', status: 'active', subject: { reference: 'urn:uuid:p' }, effectivePeriod: { start: '2026-01-01', end: '2026-12-01' }, dateAsserted: '2026-02-01' }),
+      entry({ resourceType: 'MedicationStatement', id: 'f', status: 'intended', subject: { reference: 'urn:uuid:p' }, effectivePeriod: { start: '2026-03-01' }, dateAsserted: '2026-02-01' }),
+      // no record date: nothing to compare
+      entry({ resourceType: 'Condition', id: 'g', subject: { reference: 'urn:uuid:p' }, onsetDateTime: '2026-05-02' })), { now: NOW });
+    const after = (k) => out.items[k].filter(f => f.kind === 'attention').map(f => f.text);
+    expect(after('e3')).toEqual(['AllergyIntolerance.onsetDateTime (2026-05-02) is after the date it was recorded (AllergyIntolerance.recordedDate = 2026-05-01)',
+      'AllergyIntolerance.reaction[1].onset (2026-06-01) is after the date it was recorded (AllergyIntolerance.recordedDate = 2026-05-01)']);
+    expect(after('e4')).toEqual(['Observation.effectiveDateTime (2026-03-01T10:00:00Z) is after the date it was recorded (Observation.issued = 2026-03-01T09:00:00Z)']);
+    for (const k of ['e5', 'e6', 'e7', 'e8', 'e9']) {
+      expect(after(k)).toEqual([]);
+    }
   });
 
   test('dates about the future by their nature: period ends, expiry and due dates, schedules; and only real dates', async () => {

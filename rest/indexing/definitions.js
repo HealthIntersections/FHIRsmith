@@ -10,10 +10,11 @@
  * plus custom SearchParameters stored on the endpoint.
  *
  * Search parameter expressions are compiled once, with fhirpath.js and the model for the
- * endpoint's version. fhirpath.js has no resolve(); the core search parameters only use it
- * as `where(resolve() is X)`, which needs just the target's type, so a resolve() is
- * supplied that returns a stub of the right type: from the reference (Patient/123, or the
- * type in an absolute URL), from Reference.type, or the contained resource itself for #id.
+ * endpoint's version. fhirpath.js's resolve() only runs asynchronously (it fetches); the
+ * core search parameters only use it as `where(resolve() is X)`, which needs just the target's
+ * type, so a resolve() is supplied that returns a stub of the right type: from the reference
+ * (Patient/123, or the type in an absolute URL), from Reference.type, or the contained
+ * resource itself for #id.
  *
  * Loading a core package's StructureDefinitions takes time, so what is derived from the
  * packages is kept in the cache folder, by package list (deriveDefinitions / cache).
@@ -25,6 +26,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const fhirpath = require('fhirpath');
+const { deriveXmlModel, XmlModel } = require('../xml');
 
 // the parameters the search handles itself, not through the index tables
 const SPECIAL_PARAMS = new Set(['_id', '_lastUpdated', '_tag', '_profile', '_security', '_text', '_content', '_list',
@@ -32,7 +34,7 @@ const SPECIAL_PARAMS = new Set(['_id', '_lastUpdated', '_tag', '_profile', '_sec
   '_contained', '_containedType', '_total', '_format', '_pretty', '_offset', '_getpages']);
 
 // the shape of what deriveDefinitions makes: a change makes the cached copies be derived again
-const DERIVED_FORMAT = 2;
+const DERIVED_FORMAT = 3;
 
 const INDEXED_TYPES = new Set(['string', 'token', 'date', 'number', 'quantity', 'reference', 'uri', 'composite']);
 
@@ -99,7 +101,11 @@ function referenceType(ref) {
 function fhirpathOptions(model) {
   // fhirpath.js doesn't export ResourceNode, but every typed result is one
   const ResourceNode = fhirpath.evaluate({ resourceType: 'Patient' }, 'Patient', null, model, { resolveInternalTypes: false })[0].constructor;
+  // internalStructures: fhirpath.js gives the function the ResourceNodes, not just their values,
+  // so a '#id' reference can be followed up to the resource that holds it (without it, the
+  // inputs are bare values, and a contained resource is never found)
   const resolve = {
+    internalStructures: true,
     fn: function (inputs) {
       const out = [];
       for (const input of inputs) {
@@ -239,7 +245,8 @@ function readPackage(folder, types) {
 
 /**
  * The definitions an endpoint needs, from its packages, in a plain form that can be cached:
- * { fhirVersion, resourceTypes, searchParameters, compartments, summary, mandatory }.
+ * { fhirVersion, resourceTypes, searchParameters, compartments, summary, mandatory, xml } (xml:
+ * the model for converting resources to and from XML: ../xml.js).
  * @param {string[]} folders - package folders, core first
  * @param {string} fhirVersion
  */
@@ -249,13 +256,17 @@ function deriveDefinitions(folders, fhirVersion) {
   const compartments = [];
   const summary = {};
   const mandatory = {};
+  const structures = [];
   for (const folder of folders) {
     for (const r of readPackage(folder, new Set(['SearchParameter', 'CompartmentDefinition', 'StructureDefinition']))) {
       if (r.resourceType === 'SearchParameter') {
         searchParameters.push(slimSearchParameter(r));
       } else if (r.resourceType === 'CompartmentDefinition') {
         compartments.push({ code: r.code, url: r.url, resource: (r.resource || []).map(x => ({ code: x.code, param: x.param || [] })) });
-      } else if (r.kind === 'resource' && r.derivation !== 'constraint' && !r.abstract && r.type) {
+      } else {
+        structures.push(r);
+      }
+      if (r.resourceType === 'StructureDefinition' && r.kind === 'resource' && r.derivation !== 'constraint' && !r.abstract && r.type) {
         if (!resourceTypes.includes(r.type)) {
           resourceTypes.push(r.type);
         }
@@ -277,7 +288,7 @@ function deriveDefinitions(folders, fhirVersion) {
       }
     }
   }
-  return { fhirVersion, resourceTypes: resourceTypes.sort(), searchParameters, compartments, summary, mandatory };
+  return { fhirVersion, resourceTypes: resourceTypes.sort(), searchParameters, compartments, summary, mandatory, xml: deriveXmlModel(structures) };
 }
 
 function slimSearchParameter(r) {
@@ -322,9 +333,16 @@ async function loadDerived(options) {
   return derived;
 }
 
+// Bumped when what resolve() finds changes, so the parameters that use it are reindexed (2: it
+// finds contained resources, '#id')
+const RESOLVE_VERSION = 2;
+
 function hashOf(sp) {
-  return crypto.createHash('sha256').update(JSON.stringify([sp.type, [...(sp.base || [])].sort(), sp.expression,
-    sp.component || [], [...(sp.target || [])].sort()])).digest('hex').substring(0, 32);
+  const parts = [sp.type, [...(sp.base || [])].sort(), sp.expression, sp.component || [], [...(sp.target || [])].sort()];
+  if (/resolve\s*\(/.test(JSON.stringify([sp.expression, sp.component || []]))) {
+    parts.push(RESOLVE_VERSION);
+  }
+  return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex').substring(0, 32);
 }
 
 /**
@@ -344,6 +362,8 @@ class Definitions {
     this.ResourceNode = fp.ResourceNode;
     this.fhirpathOptions = fp.options;
     this.resourceTypes = new Set(derived.resourceTypes);
+    // converting to and from XML (null: definitions derived before XML was supported)
+    this.xml = derived.xml ? new XmlModel(derived.xml) : null;
     this.summary = new Map(Object.entries(derived.summary || {}).map(([k, v]) => [k, new Set(v)]));
     this.mandatory = new Map(Object.entries(derived.mandatory || {}).map(([k, v]) => [k, new Set(v)]));
     this.byUrl = new Map();
@@ -499,4 +519,4 @@ class Definitions {
   }
 }
 
-module.exports = { CONTAINERS, forEvaluation, splitUnion, Definitions, deriveDefinitions, loadDerived, corePackage, majorMinor, referenceType, SPECIAL_PARAMS, modelFor };
+module.exports = { CONTAINERS, forEvaluation, splitUnion, Definitions, deriveDefinitions, loadDerived, corePackage, majorMinor, referenceType, SPECIAL_PARAMS, modelFor, fhirpathOptions };

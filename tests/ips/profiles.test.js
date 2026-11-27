@@ -236,7 +236,8 @@ describe('guided input', () => {
   const guides = () => [
     { section: { system: L, code: '11450-4' }, questions: [{ text: 'Any problems?', type: 'boolean' }, { text: 'Which?', type: 'choice', definition: 'Condition.code', answers: [{ system: S, code: '38341003', display: 'Hypertension' }] }],
       resource: 'Condition:problem', code: { system: S, code: '38341003' } },
-    { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', units: [{ system: U, code: 'kg' }] }], resource: 'Observation:vitals' },
+    { section: { system: L, code: '8716-3' }, questions: [{ text: 'Weighed?', type: 'boolean' }, { text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', units: [{ system: U, code: 'kg' }] }],
+      resource: 'Observation:vitals', code: { system: L, code: '29463-7' } },
     { section: { system: 'http://example.org/cs', code: 'z' }, questions: [{ text: 'Read this', type: 'display' }] }
   ];
   const made = () => {
@@ -249,10 +250,10 @@ describe('guided input', () => {
     const sd = made();
     const q = sd.contained[0];
     expect(q).toMatchObject({ resourceType: 'Questionnaire', id: 'Q', status: 'active' });
-    expect(q.item.map(i => i.type)).toEqual(['boolean', 'choice', 'quantity', 'display']);
+    expect(q.item.map(i => i.type)).toEqual(['boolean', 'choice', 'boolean', 'quantity', 'display']);
     expect(q.item[1]).toEqual({ linkId: q.item[1].linkId, definition: 'http://hl7.org/fhir/StructureDefinition/Condition#Condition.code', text: 'Which?', type: 'choice',
       answerOption: [{ valueCoding: { system: S, code: '38341003', display: 'Hypertension' } }] });
-    expect(q.item[2].extension).toEqual([{ url: profiles.UNIT_OPTION, valueCoding: { system: U, code: 'kg' } }]);
+    expect(q.item[3].extension).toEqual([{ url: profiles.UNIT_OPTION, valueCoding: { system: U, code: 'kg' } }]);
     expect(q.item.every(i => /^q[0-9a-f]{8}$/.test(i.linkId))).toBe(true);
     expect(sd.extension.map(e => e.url)).toEqual([profiles.INPUT_GUIDE, profiles.INPUT_GUIDE, profiles.INPUT_GUIDE]);
     expect(sd.extension[0].extension).toEqual([
@@ -265,7 +266,7 @@ describe('guided input', () => {
     expect(sd.extension[2].extension.map(e => e.url)).toEqual(['questionnaire', 'question', 'section']);
     // read back as the editor has it: definitions as paths
     const back = profiles.guidesOf(sd);
-    expect(back[1].questions[0]).toEqual({ linkId: q.item[2].linkId, text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', answers: [], units: [{ system: U, code: 'kg' }] });
+    expect(back[1].questions[1]).toEqual({ linkId: q.item[3].linkId, text: 'Weight', type: 'quantity', definition: 'Observation.value[x]', answers: [], units: [{ system: U, code: 'kg' }] });
     // none: no Questionnaire, no extensions
     const plain = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Plain', constraints: [] });
     expect(plain.contained).toBeUndefined();
@@ -296,17 +297,28 @@ describe('guided input', () => {
       'Input guide 1, question 1 has no text', 'Input guide 1, question 1 has no type (display, boolean, quantity, date, choice)',
       'Input guide 1, question 2 is a choice, but has no answers to choose from',
       'Input guide 1, question 3 has answers, but only a choice can have them', 'Input guide 1, question 3 has units, but only a quantity can have them',
-      "Input guide 1, question 4's definition is not a path in a resource, like Condition.onset[x]"
+      "Input guide 1, question 4's definition is not a path in a resource, like Condition.onset[x]",
+      "Input guide 1's first question must be a yes/no question: it is the one the answers depend on",
+      'Input guide 1 has a yes/no question, so it needs a code: what the answer is about'
     ]);
+    // questions to answer need a resource, a yes/no question first, and (with a yes/no question) a code; display-only needs nothing
+    const rules = (g) => profiles.checkGuides([{ section: { system: L, code: '1' }, ...g }]).problems;
+    expect(rules({ questions: [{ text: 'Smoker?', type: 'boolean' }] })).toEqual([
+      'Input guide 1 has questions to answer, so it needs a resource for the answers to make', 'Input guide 1 has a yes/no question, so it needs a code: what the answer is about']);
+    expect(rules({ resource: 'Condition:problem', code: { system: S, code: '1' }, questions: [{ text: 'Note', type: 'display' }, { text: 'Smoker?', type: 'boolean' }] }))
+      .toEqual(["Input guide 1's first question must be a yes/no question: it is the one the answers depend on"]);
+    expect(rules({ resource: 'Condition:problem', code: { system: S, code: '1' }, questions: [{ text: 'Smoker?', type: 'boolean' }, { text: 'Since', type: 'date' }, { text: 'Note', type: 'display' }] })).toEqual([]);
+    expect(rules({ questions: [{ text: 'Read this', type: 'display' }] })).toEqual([]);
     expect(profiles.checkGuides([{ section: { system: L, code: '1' }, code: { system: S, code: '2' }, questions: [{ text: 'x', type: 'date' }] }]).problems)
-      .toEqual(["Input guide 1 has a code, but no resource: the code is the resource's"]);
+      .toEqual(["Input guide 1 has a code, but no resource: the code is the resource's", 'Input guide 1 has questions to answer, so it needs a resource for the answers to make',
+        "Input guide 1's first question must be a yes/no question: it is the one the answers depend on"]);
   });
 
   test('an upload keeps its guided input (with new linkIds), and anything more is refused', () => {
     const sd = made();
     const up = profiles.fromUpload(sd);
     expect(up.problems).toEqual([]);
-    expect(up.input.guides.map(g => g.questions.map(q => q.text))).toEqual([['Any problems?', 'Which?'], ['Weight'], ['Read this']]);
+    expect(up.input.guides.map(g => g.questions.map(q => q.text))).toEqual([['Any problems?', 'Which?'], ['Weighed?', 'Weight'], ['Read this']]);
     expect(up.input.guides[0].questions[0].linkId).toBeUndefined();
     const refused = (change) => {
       const x = structuredClone(sd);
@@ -354,5 +366,6 @@ describe('the editor\'s guidance from a profile', () => {
     expect(g.guides.map(x => x.sectionTitle)).toEqual(['Problem List', 'Patient Story', 'Travel']);
     expect(g.guides[0]).toMatchObject({ key: guides[0].questions.map(q => q.linkId).join('+'), resource: 'MedicationStatement' });
     expect(g.guides[0].questions.map(q => q.type)).toEqual(['boolean', 'display']);
+    expect(g.guides[0].questions[0]).toEqual({ linkId: guides[0].questions[0].linkId, text: 'Anticoagulants?', type: 'boolean', definition: '', answers: [], units: [] });
   });
 });

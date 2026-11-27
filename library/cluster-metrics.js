@@ -24,7 +24,7 @@ class ClusterMetrics {
     this.sharedCache = sharedCache;
     this.total = [];
     this.series = new Map(procs.map(p => [p.code, {
-      id: p.code, label: `${p.role === 'master' ? 'Master' : 'Worker'} ${p.code}`,
+      id: p.code, label: `${p.role === 'master' ? 'Master' : p.role === 'jobs' ? 'Jobs' : 'Worker'} ${p.code}`,
       role: p.role, servesTx: p.servesTx, status: 'starting', restarts: 0,
       startedAt: null, intervalMs: null, history: []
     }]));

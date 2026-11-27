@@ -914,6 +914,7 @@ class Registry {
 
     this.register(new CelsiusHandler());
     this.register(new FahrenheitHandler());
+    this.register(new ReaumurHandler());
     this.register(new HoldingHandler("[p'diop]", "deg"));
     this.register(new HoldingHandler("%[slope]", "deg"));
     this.register(new HoldingHandler("[hp_X]", "1"));
@@ -981,7 +982,10 @@ class SpecialUnitHandler {
   }
 
   /**
-   * get the conversion offset value
+   * get the conversion offset value: what is added to a value in this unit before it is
+   * multiplied by getValue() to give it in getUnits(), so units = (value + offset) * getValue().
+   * For a temperature, the unit's value at absolute zero, negated: 273.15 for Cel, 459.67
+   * for [degF]
    * @return {Decimal}
    * @throws {UcumException}
    */
@@ -1005,7 +1009,7 @@ class CelsiusHandler extends SpecialUnitHandler {
   }
 
   getOffset() {
-    return new Decimal("-273.15", 24);
+    return new Decimal("273.15", 24);
   }
 
   hasOffset() {
@@ -1025,7 +1029,8 @@ class FahrenheitHandler extends SpecialUnitHandler {
 
   getValue() {
     try {
-      return new Decimal("5").divide(new Decimal("9"));
+      // (divide works to the digits it is given: 5 / 9 alone would be 0.6)
+      return new Decimal("5.000000000000000000000000").divide(new Decimal("9"));
     } catch (e) {
       // won't happen
       return null;
@@ -1033,7 +1038,30 @@ class FahrenheitHandler extends SpecialUnitHandler {
   }
 
   getOffset() {
-    return new Decimal("32", 24);
+    return new Decimal("459.67", 24);
+  }
+
+  hasOffset() {
+    return true;
+  }
+}
+
+// Réaumur Handler: [degRe] = 5/4 K, with 0 °Ré at 273.15 K
+class ReaumurHandler extends SpecialUnitHandler {
+  getCode() {
+    return "[degRe]";
+  }
+
+  getUnits() {
+    return "K";
+  }
+
+  getValue() {
+    return new Decimal("1.250000000000000000000000");
+  }
+
+  getOffset() {
+    return new Decimal("218.52", 24);
   }
 
   hasOffset() {

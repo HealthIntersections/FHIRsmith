@@ -23,14 +23,15 @@
  *   }
  *
  * Like the tx module, it mounts each endpoint on the app at its path, and runs under the
- * cluster: every process serves requests; only the master migrates the schema and runs the
- * background jobs.
+ * cluster: every process serves requests; only the master migrates the schema, and one
+ * process runs the background jobs and the queues (queue/runner.js): the jobs process
+ * (--role=jobs), or the master when there is none.
  *
  * @module rest/rest
  */
 
 const rateLimit = require('express-rate-limit');
-const { RestAdmin, VALUESETS } = require('./admin');
+const { RestAdmin, VALUESETS, PACKAGES } = require('./admin');
 const auth = require('../library/auth');
 const folders = require('../library/folder-setup');
 const { PackageManager } = require('../library/package-manager');
@@ -58,8 +59,9 @@ class RestModule {
   /**
    * @param {Object} config - modules.rest
    * @param {Function} app - the express app: each endpoint is mounted at its path
-   * @param {Object} [options] - { hostName, master (default true), maxBody, derived (tests),
-   *   principal (tests: who a request is) }
+   * @param {Object} [options] - { hostName, master (default true), jobs (default: as master),
+   *   localBase (a jobs process: the front door's URL), maxBody, derived (tests), principal
+   *   (tests: who a request is) }
    */
   async initialize(config, app, options = {}) {
     this.config = config || {};
@@ -90,11 +92,13 @@ class RestModule {
     ], { title: 'FHIR REST', path: list.length ? list[0].path : '/' });
 
     // the package cache is the tx module's: the core packages are often there already
-    const packageManager = options.derived ? null : new PackageManager(this.config.packageServers || PACKAGE_SERVERS, folders.subDir('terminology-cache'));
+    const packageManager = options.packageManager || (options.derived ? null : new PackageManager(this.config.packageServers || PACKAGE_SERVERS, folders.subDir('terminology-cache')));
     for (const e of list) {
       const ep = new Endpoint(e, {
         databasesDir: folders.databasesDir(),
         master: options.master !== false,
+        jobs: options.jobs,
+        localBase: options.localBase,
         log: this.log,
         packageManager,
         cacheFolder: options.derived ? null : folders.subDir('rest'),
@@ -103,7 +107,9 @@ class RestModule {
         hostName: options.hostName,
         maxBody: options.maxBody,
         stats: this.stats,
-        principal: options.principal || ((req) => auth.principal(req))
+        principal: options.principal || ((req) => auth.principal(req)),
+        // the user an async request runs as, when it runs (queue/async.js)
+        principalById: options.principalById || ((id) => auth.principalById(Number(id)))
       });
       await ep.open();
       const router = require('express').Router();
@@ -113,6 +119,7 @@ class RestModule {
       router.use(ep.router());
       auth.addAdminPage(MODULE, { label: `Value sets for searching (${ep.path})`, path: `${ep.path}${VALUESETS}`,
         description: 'value sets too big to expand, searched by membership' });
+      auth.addAdminPage(MODULE, { label: `Packages (${ep.path})`, path: `${ep.path}${PACKAGES}`, description: 'load a package\'s resources into the endpoint' });
       app.use(ep.path, router);
       this.endpoints.push(ep);
     }
@@ -120,6 +127,15 @@ class RestModule {
 
   scopeValues() {
     return this.endpoints.map(ep => ({ value: ep.path, label: `${ep.path} (${ep.settings ? ep.settings.name : ''})` }));
+  }
+
+  /**
+   * The background work of the endpoints whose jobs this process runs (the status page):
+   * [{path, tasks, queues}], or null if it runs none
+   */
+  jobStatus() {
+    const list = this.endpoints.map(ep => ep.jobStatus()).filter(Boolean);
+    return list.length ? list : null;
   }
 
   /** The paths of the endpoints (for the cluster's routing) */

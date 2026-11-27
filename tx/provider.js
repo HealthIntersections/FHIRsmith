@@ -24,9 +24,22 @@ const { VirtualCodeSystemProvider } = require("./cs/cs-virtual");
 const RESOLVE_CODES_CONCURRENCY = 8;
 
 /**
+ * How long resolveCodes() goes before it lets other work run (a real turn of the event loop).
+ * A code system held in memory (LOINC, CodeSystem resources) locates a code without any I/O,
+ * so its awaits resolve at once, and the codes of a whole include - with ?_showAll=true, tens
+ * of thousands of them - were located in one unbroken piece of compute: 4.4 s on tx.fhir.org
+ * (2026-11-24). As the renderer's RENDER_YIELD_MS
+ */
+const RESOLVE_CODES_YIELD_MS = 25;
+
+/**
  * fn over items, at most `limit` at a time, with the results in the order of the items.
  */
 async function mapConcurrently(items, limit, fn) {
+  // a real array: its length is its items', not a value someone sent
+  if (!Array.isArray(items)) {
+    throw new TypeError('mapConcurrently: items must be an array');
+  }
   const results = new Array(items.length);
   let next = 0;
   const worker = async () => {
@@ -722,7 +735,25 @@ class Provider {
       cs = this.codeSystems.get(vurlMM);
     }
 
+    // one pause for all the workers: each with its own setImmediate, they'd resume one after
+    // another in the same turn, each computing another RESOLVE_CODES_YIELD_MS before the event
+    // loop got round to anything else
+    let lastYield = performance.now();
+    let pause = null;
+    const yieldIfDue = () => {
+      if (!pause && performance.now() - lastYield >= RESOLVE_CODES_YIELD_MS) {
+        pause = new Promise(resolve => setImmediate(resolve)).then(() => {
+          pause = null;
+          lastYield = performance.now();
+        });
+      }
+      return pause;
+    };
     return mapConcurrently(codes, RESOLVE_CODES_CONCURRENCY, async (code) => {
+      const due = yieldIfDue();
+      if (due) {
+        await due;
+      }
       if (csp) {
         const located = await csp.locate(code);
         const c = located ? located.context : null;
@@ -913,6 +944,21 @@ class Provider {
    * deleteCodeSystem).
    */
   addCodeSystem(cs) {
+    // one that takes precedence (a rest: source's, tx/rest/rest-source.js) is the default for
+    // its url, and its url|version, whatever else provides them; the others only fill gaps
+    const current = this.codeSystems.get(cs.url);
+    if (cs.takesPrecedence || (current && current.takesPrecedence)) {
+      if (cs.takesPrecedence && (!current || !current.takesPrecedence || current.vurl === cs.vurl || cs.isMoreRecent(current))) {
+        this.codeSystems.set(cs.url, cs);
+      }
+      if (cs.version) {
+        const v = this.codeSystems.get(cs.vurl);
+        if (cs.takesPrecedence || !v) {
+          this.codeSystems.set(cs.vurl, cs);
+        }
+      }
+      return;
+    }
     if (Provider.#isTHOPackage(cs.sourcePackage)) {
       // THO's code system takes over the default from a core one; the core versions stay
       const t = this.codeSystems.get(cs.url);
@@ -971,9 +1017,11 @@ class Provider {
     // THO precedence (see addCodeSystem): while a THO version survives, a core one
     // can't become the default, however recent its (reset) version looks
     const survivors = [...new Set(this.codeSystems.values())].filter(t => t.url === cs.url);
+    // (one that takes precedence first: see addCodeSystem)
+    const first = survivors.filter(t => t.takesPrecedence);
     const tho = survivors.filter(t => Provider.#isTHOPackage(t.sourcePackage));
     let existing = null;
-    for (let t of (tho.length > 0 ? tho : survivors)) {
+    for (let t of (first.length > 0 ? first : tho.length > 0 ? tho : survivors)) {
       if (!existing || t.isMoreRecent(existing)) {
         existing = t;
       }
