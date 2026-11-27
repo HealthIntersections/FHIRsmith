@@ -20,6 +20,7 @@ const { LoincServicesFactory } = require('../../tx/cs/cs-loinc');
 const { RxNormServicesFactory } = require('../../tx/cs/cs-rxnorm');
 const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SqliteV2Factory } = require('../../tx/sqlite-v2/provider');
+const { importSnomedTestCache } = require('./sqlite-v2-sct-test-cache');
 const { SnomedV2Factory } = require('../../tx/sqlite-v2/snomed');
 
 const LOINC = 'http://loinc.org';
@@ -60,14 +61,14 @@ beforeAll(async () => {
   } finally { quiet.mockRestore(); }
   await importLoincV2({ source: path.join(DATA, 'loinc'), dest: path.join(dir, 'loinc.db'), version: LOINC_VERSION, overwrite: true, log: () => {} });
   await importRxNormV2({ source: rxnorm, dest: path.join(dir, 'rxnorm.db'), version: RXNORM_VERSION, overwrite: true, log: () => {} });
-  // an old-format cache (no modules, no definition status): enough for the version, which is all
-  // this needs
-  await importSnomedV2FromCache({ source: path.join(DATA, 'snomed-testing.cache'), dest: path.join(dir, 'sct.db'), overwrite: true, force: true, log: () => {} });
+  // main's cache, imported in this run from the RF2 test subset
+  const sctCache = await importSnomedTestCache(path.join(dir, 'sct.cache'));
+  await importSnomedV2FromCache({ source: sctCache, dest: path.join(dir, 'sct.db'), overwrite: true, force: true, log: () => {} });
 
   const load = async (f) => { await f.load(); return f; };
   loaded[LOINC] = { main: await load(new LoincServicesFactory(op.i18n, path.join(dir, 'loinc-classic.db'))), v2: await load(new SqliteV2Factory(op.i18n, path.join(dir, 'loinc.db'))) };
   loaded[RXNORM] = { main: await load(new RxNormServicesFactory(op.i18n, path.join(dir, 'rxnorm_' + RXNORM_VERSION + '.db'))), v2: await load(new SqliteV2Factory(op.i18n, path.join(dir, 'rxnorm.db'))) };
-  loaded[SCT] = { main: await load(new SnomedServicesFactory(op.i18n, path.join(DATA, 'snomed-testing.cache'))), v2: await load(new SnomedV2Factory(op.i18n, path.join(dir, 'sct.db'))) };
+  loaded[SCT] = { main: await load(new SnomedServicesFactory(op.i18n, sctCache)), v2: await load(new SnomedV2Factory(op.i18n, path.join(dir, 'sct.db'))) };
 }, 180000);
 
 afterAll(() => {

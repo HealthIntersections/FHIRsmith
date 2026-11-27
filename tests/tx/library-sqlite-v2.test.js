@@ -11,7 +11,6 @@ const { Library } = require('../../tx/library');
 const folders = require('../../library/folder-setup');
 
 const SRC = path.resolve(__dirname, '../../tx/data/snomed');
-// the terminology-cache name records the file format: a file of an earlier format is not reused
 const NAME = 'library-sqlite-v2-tx1-test.db';
 
 const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.isDirectory() ? walk(path.join(d, e.name)) : [path.join(d, e.name)]));
@@ -38,13 +37,12 @@ let tmpDir;
 beforeAll(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lib-sqlite-v2-'));
   const target = path.join(folders.subDir('terminology-cache'), NAME);
-  if (!fs.existsSync(target)) {
-    mergeSnapshot(SRC, path.join(tmpDir, 'Snapshot'));
-    const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
-    await importSnomedV2({ source: path.join(tmpDir, 'Snapshot'), dest: path.join(tmpDir, NAME), edition: '31000003106', version: '20250909',
-      versionUri: 'http://snomed.info/xsct/31000003106/version/20250909', overwrite: true, log: () => {} });
-    fs.copyFileSync(path.join(tmpDir, NAME), target);
-  }
+  // imported in every run, over what an earlier run left there
+  mergeSnapshot(SRC, path.join(tmpDir, 'Snapshot'));
+  const { importSnomedV2 } = require('../../tx/importers/import-sct-v2.module');
+  await importSnomedV2({ source: path.join(tmpDir, 'Snapshot'), dest: path.join(tmpDir, NAME), edition: '31000003106', version: '20250909',
+    versionUri: 'http://snomed.info/xsct/31000003106/version/20250909', overwrite: true, log: () => {} });
+  fs.copyFileSync(path.join(tmpDir, NAME), target);
 });
 
 afterAll(() => {

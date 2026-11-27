@@ -1,7 +1,7 @@
 'use strict';
 
 // SNOMED CT on sqlite-v2 against main's provider (tx/cs/cs-snomed.js) through the real router,
-// both over the repo's SNOMED CT test cache (tx/data/snomed-testing.cache): code spellings main
+// both over the SNOMED CT test edition, imported in the run from tx/data/snomed: code spellings main
 // reads as a concept id (cs-snomed.js stringToIdOrZero: BigInt), a text filter of digits only,
 // and an unknown concept in a `concept in` / `not-in` filter.
 
@@ -15,7 +15,7 @@ const { SnomedServicesFactory } = require('../../tx/cs/cs-snomed');
 const { SnomedV2Factory } = require('../../tx/sqlite-v2/snomed');
 
 const SCT = 'http://snomed.info/sct';
-const CACHE = path.resolve(__dirname, '../../tx/data/snomed-testing.cache');
+const { importSnomedTestCache } = require('./sqlite-v2-sct-test-cache');
 let app, tx, dir, v2, classic;
 
 function use(f) {
@@ -51,6 +51,8 @@ beforeAll(async () => {
   app = await getTestApp();
   tx = getTxModule();
   dir = fs.mkdtempSync(path.join(process.env.SQLITE_V2_TEST_TMP || os.tmpdir(), 'sqlite-v2-sct-http-'));
+  // main's cache, imported in this run from the RF2 test subset; the v2 file from that cache
+  const CACHE = await importSnomedTestCache(path.join(dir, 'sct.cache'));
   await importSnomedV2FromCache({ source: CACHE, dest: path.join(dir, 'sct.db'), overwrite: true, force: true, normalForms: false, log: () => {} });
   v2 = new SnomedV2Factory(tx.i18n, path.join(dir, 'sct.db'));
   await v2.load();
