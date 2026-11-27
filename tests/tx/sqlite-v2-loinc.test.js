@@ -1,7 +1,5 @@
 'use strict';
 
-const T0 = process.hrtime.bigint(); // TEMPORARY, with timed() below
-
 // LOINC on sqlite-v2: the importer (tx/importers/import-loinc-v2.module.js) and the LOINC
 // dialect (tx/sqlite-v2/dialects.js) over the LOINC test fixture in tx/data/loinc, the one the
 // classic tests use (tests/cs/cs-loinc.test.js). Each request runs twice through the real
@@ -126,35 +124,23 @@ function flatParams(body) {
   return sorted((body.parameter || []).map((p) => (p.resource ? p.name + ':' + JSON.stringify(p.resource.issue || p.resource) : one(p))));
 }
 
-// TEMPORARY (remove once a CI run has explained this suite's 100 s of setup): the time of each
-// step of the hooks, written to stderr, which SUPPRESS_LOGS does not silence
-const steps = [];
-async function timed(name, fn) {
-  const t = process.hrtime.bigint();
-  const r = await fn();
-  steps.push(`${name} ${(Number(process.hrtime.bigint() - t) / 1e9).toFixed(1)} s`);
-  return r;
-}
-
 beforeAll(async () => {
-  steps.push(`requires ${(Number(process.hrtime.bigint() - T0) / 1e9).toFixed(1)} s`);
-  app = await timed('getTestApp', () => getTestApp());
+  app = await getTestApp();
   tx = getTxModule();
   dir = fs.mkdtempSync(path.join(process.env.SQLITE_V2_TEST_TMP || os.tmpdir(), 'sqlite-v2-loinc-'));
-  await timed('fixture', () => buildFixture(path.join(dir, 'src')));
-  await timed('importLoincV2', () => importLoincV2({ source: path.join(dir, 'src'), dest: path.join(dir, 'v2.db'), version: VERSION, overwrite: true, log: () => {} }));
-  await timed('LoincDataMigrator', () => new LoincDataMigrator().migrate(path.join(dir, 'src'), path.join(dir, 'classic.db'), VERSION, { verbose: false, mainOnly: false }));
-  v2 = await timed('v2 load', () => loadSqliteV2Factory(tx.i18n, path.join(dir, 'v2.db')));
+  buildFixture(path.join(dir, 'src'));
+  await importLoincV2({ source: path.join(dir, 'src'), dest: path.join(dir, 'v2.db'), version: VERSION, overwrite: true, log: () => {} });
+  await new LoincDataMigrator().migrate(path.join(dir, 'src'), path.join(dir, 'classic.db'), VERSION, { verbose: false, mainOnly: false });
+  v2 = await loadSqliteV2Factory(tx.i18n, path.join(dir, 'v2.db'));
   classic = new LoincServicesFactory(tx.i18n, path.join(dir, 'classic.db'));
-  await timed('classic load', () => classic.load());
+  await classic.load();
   use(v2);
 }, 180000);
 
 afterAll(async () => {
-  await timed('shutdownTestApp', () => shutdownTestApp());
+  await shutdownTestApp();
   if (v2) v2.store.close();
   if (dir) fs.rmSync(dir, { recursive: true, force: true });
-  process.stderr.write(`sqlite-v2-loinc.test.js hooks: ${steps.join(', ')}\n`);
 });
 
 // ---- the importer -------------------------------------------------------------------------
@@ -720,8 +706,8 @@ describe('LOINC v2 provider filter API against main\'s', () => {
   let p2, pc;
   beforeAll(async () => {
     const op = new OperationContext('en', tx.i18n);
-    p2 = await timed('v2 build', () => v2.build(op, []));
-    pc = await timed('classic build', () => classic.build(op, []));
+    p2 = await v2.build(op, []);
+    pc = await classic.build(op, []);
   });
 
   test('designations of every code in main\'s order (a part\'s DisplayName before its PartName variants)', async () => {
