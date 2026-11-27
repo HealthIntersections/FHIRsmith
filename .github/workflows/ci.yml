@@ -53,9 +53,20 @@ jobs:
           echo "The tests come from tx-ecosystem PR #$open, branch '$BRANCH'"
           echo "FHIRSMITH_TX_TESTS_VERSION=current\$$BRANCH" >> "$GITHUB_ENV"
 
+      # The terminology files the tx tests load (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and
+      # LOINC) are downloaded into data/terminology-cache when a test first needs them. Kept between
+      # runs, so the test step doesn't wait on the download; a changed file list starts from the
+      # last cache and downloads only what is new
+      - name: Cache terminology test files
+        uses: actions/cache@v4
+        with:
+          path: data/terminology-cache
+          key: tx-test-files-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: tx-test-files-
+
       - name: Run tests
         run: npm run test:ci
-        timeout-minutes: 30
+        timeout-minutes: 45
         env:
           SUPPRESS_LOGS: 'true'
           NODE_OPTIONS: "--max-old-space-size=14000"
@@ -75,11 +86,3 @@ jobs:
           name: server-logs
           path: ./data/logs/
           if-no-files-found: ignore
-
-      # Coverage is informational: a failed upload (codecov down, TLS trouble) mustn't fail the build
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v5
-        continue-on-error: true
-        with:
-          directory: ./coverage/
-          token: ${{ secrets.CODECOV_TOKEN }}
