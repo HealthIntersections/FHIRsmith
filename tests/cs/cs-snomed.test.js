@@ -1818,6 +1818,23 @@ describe('SNOMED CT implicit value set urls', () => {
     expect(factory.implicitValueSetForm('http://snomed.info/sct?fhir_vsx')).toBeNull();
   });
 
+  test('?fhir_vs=refset lists every reference set of the edition', async () => {
+    const vs = await factory.buildKnownValueSet('http://snomed.info/sct?fhir_vs=refset', null);
+    expect(vs.name).toBe('SNOMEDCTReferenceSetList');
+    const codes = vs.compose.include[0].concept.map(c => c.code);
+    const sct = provider.sct;
+    const expected = [];
+    for (let i = 0; i < sct.refSetIndex.count(); i++) {
+      expected.push(String(sct.concepts.getConceptId(sct.refSetIndex.getReferenceSet(i).definition)));
+    }
+    expect(expected.length).toBeGreaterThan(0);
+    expect(codes).toEqual(expected);
+    // each code is a concept id, and refset/<that code> is a value set of its own
+    expect(codes).toContain('723264001');
+    expect(codes.every(c => typeof c === 'string' && /^[0-9]+$/.test(c))).toBe(true);
+    expect(() => JSON.stringify(vs)).not.toThrow(); // the value set is sent as JSON
+  });
+
   test('ecl/ takes a URL-encoded expression, or one already decoded', async () => {
     for (const url of ['http://snomed.info/sct?fhir_vs=ecl/%3C%3C%2016763008', 'http://snomed.info/sct?fhir_vs=ecl/<< 16763008']) {
       const vs = await factory.buildKnownValueSet(url, null);
