@@ -26,7 +26,7 @@ const CONCEPT_PROPERTIES = 'http://hl7.org/fhir/concept-properties#';
 // The properties a filter can use whether or not the code system declares them (unless it
 // declares the code for a property of its own), and the operators they support
 const KNOWN_PROPERTIES = ['notSelectable', 'status', 'inactive', 'deprecated'];
-const KNOWN_PROPERTY_OPS = ['=', 'in', 'not-in', 'exists'];
+const KNOWN_PROPERTY_OPS = ['=', 'in', 'not-in', 'exists', 'regex'];
 
 // The text index of each code system (text-match.js), built the first time it is searched, and
 // dropped with the code system: {size, promise of a NameIndex}
@@ -289,35 +289,6 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
-   * The codes this code system uses for one of the standard concept properties
-   * (http://hl7.org/fhir/concept-properties#<name>). A property declared with the
-   * standard uri counts whatever local code it was given. A code that the code
-   * system declares with a different uri is a different property, and does not
-   * count. A code the code system doesn't declare (or declares with no uri) is
-   * recognised by the code alone - the standard code, and any legacy aliases
-   *
-   * @param {string} name - the standard property code (e.g. notSelectable)
-   * @param {string[]} aliases - legacy codes also recognised when not declared otherwise
-   * @returns {Set<string>} the local codes for the property
-   */
-  standardPropertyCodes(name, aliases = []) {
-    const uri = CONCEPT_PROPERTIES + name;
-    const defs = this.propertyDefinitions() || [];
-    const codes = new Set();
-    for (const d of defs) {
-      if (d.uri === uri) {
-        codes.add(d.code);
-      }
-    }
-    for (const c of [name, ...aliases]) {
-      if (!defs.some(d => d.code === c && d.uri && d.uri !== uri)) {
-        codes.add(c);
-      }
-    }
-    return codes;
-  }
-
-  /**
    * Whether the code system declares the code of a standard concept property for a
    * property of its own (with a different uri), so that the code is not the standard one
    * @param {string} name - the standard property code
@@ -554,8 +525,7 @@ class FhirCodeSystemProvider extends BaseCSServices {
 
     // Check for the notSelectable property, by whatever code this code system gives it
     if (ctxt.concept.property && Array.isArray(ctxt.concept.property)) {
-      const codes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
-      const abstractProp = ctxt.concept.property.find(p => codes.has(p.code));
+      const abstractProp = ctxt.concept.property.find(p => this._isNotSelectableProperty(p.code));
       if (abstractProp && abstractProp.valueBoolean) {
         return true;
       }
@@ -565,49 +535,109 @@ class FhirCodeSystemProvider extends BaseCSServices {
   }
 
   /**
-   * @param {string|FhirCodeSystemProviderContext} context - Code or context
-   * @returns {Promise<boolean>} If the concept is inactive
+   * Whether a concept property code is this code system's code for one of the standard concept
+   * properties (http://hl7.org/fhir/concept-properties#<name>). A property declared with the
+   * standard uri counts whatever code it was given; one declared with a different uri is a
+   * different property, whatever its code; otherwise (not declared, or declared with no uri) the
+   * standard code, and any aliases, are recognised by the code alone. Same as core's
+   * CodeSystemUtilities.isStandardProperty
+   * @param {string} code - the concept property's code
+   * @param {string} name - the standard property code
+   * @param {string[]} aliases - legacy codes also recognised when not declared otherwise
+   * @returns {boolean}
    */
-  async isInactive(context) {
-    
-    const ctxt = await this.#ensureContext(context);
-    if (!ctxt) {
+  isStandardProperty(code, name, aliases = []) {
+    if (!code) {
       return false;
     }
-
-    if (ctxt.concept.property && Array.isArray(ctxt.concept.property)) {
-      for (const p of ctxt.concept.property) {
-        // Check inactive property with boolean value
-        if (p.code === 'inactive' && p.valueBoolean === true) {
-          return true;
-        }
-        // Check inactive property with code value 'true'
-        if (p.code === 'inactive' && p.valueCode === 'true') {
-          return true;
-        }
-        // Check status property for inactive or retired
-        if (p.code === 'status') {
-          const value = p.valueCode || p.valueString || (p.value && p.value.toString());
-          if (value === 'inactive' || value === 'retired') {
-            return true;
-          }
-        }
-      }
+    const d = (this.propertyDefinitions() || []).find(d => d.code === code);
+    if (d && d.uri) {
+      return d.uri === CONCEPT_PROPERTIES + name;
     }
+    return code === name || aliases.includes(code);
+  }
 
-    // Check standards-status extension for withdrawn
-    if (ctxt.concept.extension && Array.isArray(ctxt.concept.extension)) {
-      const standardsStatus = ctxt.concept.extension.find(e =>
-        e.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
-      );
-      if (standardsStatus) {
-        const value = standardsStatus.valueCode || standardsStatus.valueString || '';
-        if (value.toLowerCase() === 'withdrawn') {
+  /**
+   * Whether a concept property code is this code system's notSelectable property (or its legacy
+   * aliases abstract and not-selectable)
+   * @private
+   */
+  _isNotSelectableProperty(code) {
+    return this.isStandardProperty(code, 'notSelectable', ['abstract', 'not-selectable']);
+  }
+
+  /**
+   * The concept's standards-status extension value (lower case), or null
+   * @private
+   */
+  _standardsStatus(concept) {
+    const ext = (concept.extension || []).find(
+      e => e.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
+    );
+    const v = ext ? (ext.valueCode || ext.valueString) : null;
+    return v ? v.toLowerCase() : null;
+  }
+
+  /**
+   * Whether the concept is inactive: its inactive property is true, its status property is
+   * inactive or retired (unless ignoreStatus), or its standards-status is withdrawn. All of these
+   * are looked at - the order of the properties makes no difference. Same as core's
+   * CodeSystemUtilities.isInactive
+   * @private
+   */
+  _isInactive(concept, ignoreStatus) {
+    if (this._standardsStatus(concept) === 'withdrawn') {
+      return true;
+    }
+    for (const p of concept.property || []) {
+      if (this.isStandardProperty(p.code, 'inactive') && (p.valueBoolean === true || p.valueCode === 'true')) {
+        return true;
+      }
+      if (!ignoreStatus && this.isStandardProperty(p.code, 'status')) {
+        const value = getValuePrimitive(p);
+        if (value === 'inactive' || value === 'retired') {
           return true;
         }
       }
     }
     return false;
+  }
+
+  /**
+   * Whether the concept is deprecated - its use is discouraged, though it is still valid: its
+   * status property is deprecated (unless ignoreStatus), its deprecationDate (or the older
+   * deprecated property, which means the same thing) has passed, the legacy boolean deprecated
+   * property is true, or its standards-status is deprecated. A retired concept is inactive, not
+   * deprecated. Same as core's CodeSystemUtilities.isDeprecated
+   * @private
+   */
+  _isDeprecated(concept, ignoreStatus) {
+    for (const p of concept.property || []) {
+      if (!ignoreStatus && this.isStandardProperty(p.code, 'status') && getValuePrimitive(p) === 'deprecated') {
+        return true;
+      }
+      if (this.isStandardProperty(p.code, 'deprecationDate') || this.isStandardProperty(p.code, 'deprecated')) {
+        if (p.valueDateTime && new Date(p.valueDateTime) < new Date()) {
+          return true;
+        }
+        if (p.valueBoolean === true) { // legacy
+          return true;
+        }
+      }
+    }
+    return this._standardsStatus(concept) === 'deprecated';
+  }
+
+  /**
+   * @param {string|FhirCodeSystemProviderContext} context - Code or context
+   * @returns {Promise<boolean>} If the concept is inactive
+   */
+  async isInactive(context) {
+    const ctxt = await this.#ensureContext(context);
+    if (!ctxt) {
+      return false;
+    }
+    return this._isInactive(ctxt.concept, false);
   }
 
   /**
@@ -615,78 +645,51 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @returns {Promise<boolean>} If the concept is deprecated
    */
   async isDeprecated(context) {
-    
     const ctxt = await this.#ensureContext(context);
     if (!ctxt) {
       return false;
     }
-
-    // Check for deprecated property or status
-    if (ctxt.concept.property && Array.isArray(ctxt.concept.property)) {
-      const deprecatedProp = ctxt.concept.property.find(p =>
-        p.code === 'deprecated' ||
-        p.uri === 'http://hl7.org/fhir/concept-properties#deprecated'
-      );
-      if (deprecatedProp && deprecatedProp.valueBoolean) {
-        return true;
-      }
-
-      // Check status property
-      const statusProp = ctxt.concept.property.find(p =>
-        p.code === 'status' ||
-        p.uri === 'http://hl7.org/fhir/concept-properties#status'
-      );
-      if (statusProp && (statusProp.valueCode === 'deprecated' || statusProp.valueCode === 'retired')) {
-        return true;
-      }
-    }
-
-    return false;
+    return this._isDeprecated(ctxt.concept, false);
   }
 
   /**
+   * The concept's status. A standards-status of deprecated or withdrawn, or else its status
+   * property. If it has neither, what its other properties say: retired, inactive or deprecated
+   * (if more than one, the later stage). Failing that, any other standards-status it has
+   * (trial-use, normative...). null if nothing says. Same as core's CodeSystemUtilities.getStatus
    * @param {string|FhirCodeSystemProviderContext} context - Code or context
    * @returns {Promise<string|null>} Status
    */
   async getStatus(context) {
-
     const ctxt = await this.#ensureContext(context);
     if (!ctxt) {
       return null;
     }
-
-    for (let cp of ctxt.concept.property || []) {
-      if (cp.code === 'status' || cp.uri === 'http://hl7.org/fhir/concept-properties#status') {
-        return getValuePrimitive(cp);
+    const concept = ctxt.concept;
+    const ss = this._standardsStatus(concept);
+    if (ss === 'deprecated' || ss === 'withdrawn') {
+      return ss;
+    }
+    for (const p of concept.property || []) {
+      if (this.isStandardProperty(p.code, 'status')) {
+        const v = getValuePrimitive(p);
+        if (v !== null && v !== undefined && v !== '') {
+          return String(v);
+        }
       }
     }
-
-    // Second pass: check various deprecation/inactive/retired patterns
-    for (let cp of ctxt.concept.property || []) {
-      if (cp.code === 'deprecated') {
-        if (cp.valueBoolean === true) return 'deprecated';
-        if (getValuePrimitive(cp) === 'true') return 'deprecated';
-      }
-      if (cp.code === 'deprecationDate' && cp.valueDateTime) {
-        if (new Date(cp.valueDateTime) < new Date()) return 'deprecated';
-      }
-      if (cp.code === 'inactive') {
-        if (cp.valueBoolean === true) return 'inactive';
-        if (getValuePrimitive(cp) === 'true') return 'inactive';
-      }
-      if (cp.code === 'retired') {
-        if (cp.valueBoolean === true) return 'retired';
-        if (getValuePrimitive(cp) === 'true') return 'retired';
+    for (const p of concept.property || []) {
+      if (p.code === 'retired' && (p.valueBoolean === true || getValuePrimitive(p) === 'true')) { // legacy: not a standard property
+        return 'retired';
       }
     }
-    const ext = (ctxt.concept.extension || []).find(
-      e => e.url === 'http://hl7.org/fhir/StructureDefinition/structuredefinition-standards-status'
-    );
-    if (ext) {
-      return ext.valueCode || ext.valueString || '';
+    if (this._isInactive(concept, true)) {
+      return 'inactive';
     }
-
-    return null;
+    if (this._isDeprecated(concept, true)) {
+      return 'deprecated';
+    }
+    return ss;
   }
 
   /**
@@ -1831,10 +1834,10 @@ class FhirCodeSystemProvider extends BaseCSServices {
    * @private
    */
   async _knownPropertyValue(concept, prop) {
+    // status, inactive and deprecated are the same as getStatus, isInactive and isDeprecated say
     switch (prop) {
       case 'notSelectable': {
-        const nsCodes = this.standardPropertyCodes('notSelectable', ['abstract', 'not-selectable']);
-        const abstractProp = (concept.property || []).find(p => nsCodes.has(p.code));
+        const abstractProp = (concept.property || []).find(p => this._isNotSelectableProperty(p.code));
         if (!abstractProp) {
           return null;
         }
@@ -1846,9 +1849,9 @@ class FhirCodeSystemProvider extends BaseCSServices {
         return status === null || status === undefined ? null : String(status);
       }
       case 'inactive':
-        return String(await this.isInactive(new FhirCodeSystemProviderContext(concept.code, concept)));
+        return String(this._isInactive(concept, false));
       case 'deprecated':
-        return String(await this.isDeprecated(new FhirCodeSystemProviderContext(concept.code, concept)));
+        return String(this._isDeprecated(concept, false));
       default:
         return null;
     }
@@ -1857,8 +1860,9 @@ class FhirCodeSystemProvider extends BaseCSServices {
   /**
    * Handle known property filters (notSelectable, status, inactive, deprecated). The operators
    * are the same for all four: = and in select the concepts whose value is (one of) those
-   * given, not-in those whose value isn't - including a concept with no value - and exists
-   * true / false the concepts that do / don't have a value
+   * given, not-in those whose value isn't - including a concept with no value - exists
+   * true / false the concepts that do / don't have a value, and regex those whose value matches.
+   * Same as core's KnownProperties
    * @param {FilterExecutionContext} filterContext - Filter context
    * @param {string} prop - Property name
    * @param {string} op - Filter operator
@@ -1873,7 +1877,16 @@ class FhirCodeSystemProvider extends BaseCSServices {
     }
     const results = new FhirCodeSystemProviderFilterContext();
     const allConcepts = this.codeSystem.getAllConcepts();
-    const values = (op === 'in' || op === 'not-in') ? String(value).split(',').map(v => v.trim()) : null;
+    const hasValue = value !== null && value !== undefined;
+    const values = (op === 'in' || op === 'not-in') && hasValue ? String(value).split(',').map(v => v.trim()) : null;
+    let regex = null;
+    if (op === 'regex' && hasValue) {
+      try {
+        regex = regexUtilities.compile('^(?:' + value + ')$'); // the whole value: a|b is ^(?:a|b)$, not ^a|b$
+      } catch (error) {
+        regex = null; // an invalid regex matches nothing, as for the code system's own properties
+      }
+    }
 
     for (const concept of allConcepts) {
       this.opContext.deadCheck('cs:knownPropertyFilter');
@@ -1884,13 +1897,16 @@ class FhirCodeSystemProvider extends BaseCSServices {
           matches = v !== null && v === value;
           break;
         case 'in':
-          matches = v !== null && values.includes(v);
+          matches = v !== null && values !== null && values.includes(v);
           break;
         case 'not-in':
-          matches = v === null || !values.includes(v);
+          matches = v === null || values === null || !values.includes(v);
           break;
         case 'exists':
           matches = value === 'true' ? v !== null : value === 'false' ? v === null : false;
+          break;
+        case 'regex':
+          matches = v !== null && regex !== null && regex.test(v);
           break;
       }
       if (matches) {
