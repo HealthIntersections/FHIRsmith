@@ -1214,7 +1214,7 @@ class OCLSourceCodeSystemProvider extends BaseCSServices {
     return filterContext;
   }
 
-  async filter(filterContext, prop, op, value) {
+  async filter(filterContext, forIteration, prop, op, value) {
     const normalizedProp = String(prop || '').trim().toLowerCase();
     const normalizedOp = String(op || '').trim().toLowerCase();
 
