@@ -144,6 +144,19 @@ class Language {
     const parts = this.code.split('-');
     let index = 0;
 
+    // '*' is a language range (RFC 4647), used alone for Accept-Language; it is not a
+    // subtag, so it cannot be part of a longer tag.
+    if (parts.length > 1 && parts.includes('*')) {
+      throw new Error("The wildcard '*' is not allowed in the language code "+this.code);
+    }
+
+    // A tag may consist entirely of private use subtags (RFC 5646 section 2.2.7).
+    if (parts[0].toLowerCase() === 'x') {
+      this.language = '';
+      this._parsePrivateUse(parts, 1);
+      return;
+    }
+
     // Language (required)
     if (index < parts.length) {
       this.language = fold ? parts[index].toLowerCase() : parts[index];
@@ -198,43 +211,82 @@ class Language {
       }
     }
 
-    // Variant (5-8 chars or 4 chars starting with digit)
-    if (index < parts.length) {
-      const part = parts[index];
-      if ((part.length >= 5 && part.length <= 8) ||
-        (part.length === 4 && /^[0-9]/.test(part))) {
-        const key = part.toLowerCase();
-        if (this.options.checkCombinations && languageDefinitions) {
-          // The variant is the one subtag whose existence was never checked at all -
-          // 'en-abcdef' parsed happily with variant 'abcdef'.
-          if (!languageDefinitions.variants.has(key)) {
-            throw new Error("The variant '"+part+"' in the code '"+this.code+"' is not valid");
-          }
-          this._checkPrefix(languageDefinitions.variants.get(key), 'variant', part);
-        }
-        this.variant = key;
-        index++;
-      }
-    }
-
-    // Extensions and private use
+    // Variants (5-8 alphanumerics, or 4 starting with a digit), any number of them, none
+    // repeated (RFC 5646 section 2.2.5): 'sl-rozaj-biske-1994'. this.variant keeps them
+    // joined with '-', in order.
+    const variants = [];
     while (index < parts.length) {
       const part = parts[index];
-      if (part === 'x') {
-        // Private use
-        index++;
-        while (index < parts.length) {
-          this.privateUse.push(parts[index]);
-          index++;
-        }
-      } else if (part.length === 1 && part !== 'x') {
-        // Extension
-        this.extension = part + '-' + parts.slice(index + 1).join('-');
-        index++;
+      if (!/^([a-zA-Z0-9]{5,8}|[0-9][a-zA-Z0-9]{3})$/.test(part)) {
         break;
-      } else {
-        throw new Error("Unable to recognised '"+parts[index]+"' as a valid part in the language code "+this.code);
       }
+      const key = part.toLowerCase();
+      if (variants.includes(key)) {
+        throw new Error("The variant '"+part+"' is repeated in the code '"+this.code+"'");
+      }
+      if (this.options.checkCombinations && languageDefinitions) {
+        // The variant is the one subtag whose existence was never checked at all -
+        // 'en-abcdef' parsed happily with variant 'abcdef'.
+        if (!languageDefinitions.variants.has(key)) {
+          throw new Error("The variant '"+part+"' in the code '"+this.code+"' is not valid");
+        }
+        this._checkPrefix(languageDefinitions.variants.get(key), 'variant', part);
+      }
+      variants.push(key);
+      this.variant = variants.join('-');
+      index++;
+    }
+
+    // Extensions (RFC 5646 section 2.2.6): one singleton at a time, never 'x', never
+    // repeated, each followed by one or more subtags of 2-8 alphanumerics.
+    const singletons = [];
+    const extensions = [];
+    while (index < parts.length && /^[a-wyzA-WYZ0-9]$/.test(parts[index])) {
+      const singleton = parts[index];
+      if (singletons.includes(singleton.toLowerCase())) {
+        throw new Error("The extension '"+singleton+"' is repeated in the code '"+this.code+"'");
+      }
+      singletons.push(singleton.toLowerCase());
+      const subtags = [];
+      index++;
+      while (index < parts.length && /^[a-zA-Z0-9]{2,8}$/.test(parts[index])) {
+        subtags.push(parts[index]);
+        index++;
+      }
+      if (subtags.length === 0) {
+        throw new Error("The extension '"+singleton+"' in the code '"+this.code+"' needs at least one subtag of 2 to 8 letters or digits");
+      }
+      extensions.push([singleton, ...subtags].join('-'));
+    }
+    this.extension = extensions.join('-');
+
+    // Private use, last
+    if (index < parts.length && parts[index].toLowerCase() === 'x') {
+      this._parsePrivateUse(parts, index + 1);
+      return;
+    }
+    if (index < parts.length) {
+      throw new Error("Unable to recognised '"+parts[index]+"' as a valid part in the language code "+this.code);
+    }
+  }
+
+  /**
+   * Read the private use subtags after the 'x' singleton: one or more, each 1-8 letters or
+   * digits (RFC 5646 section 2.2.7).
+   *
+   * @param {string[]} parts - the subtags of the code
+   * @param {number} index - the position just after 'x'
+   * @private
+   */
+  _parsePrivateUse(parts, index) {
+    if (index >= parts.length) {
+      throw new Error("The private use section of the code '"+this.code+"' needs at least one subtag");
+    }
+    for (; index < parts.length; index++) {
+      if (!/^[a-zA-Z0-9]{1,8}$/.test(parts[index])) {
+        throw new Error("The private use subtag '"+parts[index]+"' in the code '"+this.code+"' is not 1 to 8 letters or digits");
+      }
+      this.privateUse.push(parts[index]);
     }
   }
 
@@ -259,6 +311,7 @@ class Language {
       .concat(this.extLang.map(e => e.toLowerCase()))
       .concat(this.script ? [this.script.toLowerCase()] : [])
       .concat(this.region ? [this.region.toLowerCase()] : [])
+      .concat(this.variant ? [this.variant] : []) // earlier variants: 1994 has Prefix sl-rozaj-biske
       .join('-');
     const ok = entry.prefixes.some(prefix => soFar === prefix || soFar.startsWith(prefix + '-'));
     if (!ok) {
@@ -1070,8 +1123,10 @@ class LanguageDefinitions {
         parts.push(`Region=${this.getDisplayForRegion(lang.region, 0)}`);
       }
       if (lang.variant) {
-        const variant = this.variants.get(lang.variant);
-        const variantDisplay = variant && variant.displays[0] ? variant.displays[0] : lang.variant;
+        const variantDisplay = lang.variant.split('-').map((code) => {
+          const variant = this.variants.get(code);
+          return variant && variant.displays[0] ? variant.displays[0] : code;
+        }).join(', ');
         parts.push(`Variant=${variantDisplay}`);
       }
     }

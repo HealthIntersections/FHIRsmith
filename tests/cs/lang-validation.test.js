@@ -418,4 +418,42 @@ describe('IETF language code validation', () => {
       expect(await reason('')).toBe('Empty code');
     });
   });
+
+  // RFC 5646 section 2.1: langtag = language ["-" script] ["-" region] *("-" variant)
+  // *("-" extension) ["-" privateuse]; extension = singleton 1*("-" 2*8alphanum);
+  // privateuse = "x" 1*("-" 1*8alphanum); a whole tag may be private use.
+  describe('variants, extensions and private use (RFC 5646)', () => {
+    test.each([
+      ['en-a', 'a singleton needs a following subtag'],
+      ['en-u', 'a singleton needs a following subtag'],
+      ['tlh-a-b-foo', 'the RFC example: singleton followed by a singleton'],
+      ['en-a-bbb-a-ccc', 'the RFC example: repeated singleton'],
+      ['en-a-!!', 'extension subtags are 2-8 alphanumerics'],
+      ['en-a-b', 'extension subtags are at least 2 characters'],
+      ['en-a-abcdefghi', 'extension subtags are at most 8 characters'],
+      ['fr-x-', 'private use subtags are 1-8 alphanumerics'],
+      ['fr-x', 'private use needs at least one subtag'],
+      ['fr-x-abcdefghi', 'private use subtags are at most 8 characters'],
+      ['x-', 'a private use tag needs a subtag'],
+      ['*-US', 'the * wildcard is a language range, not a tag'],
+      ['en-*', 'the * wildcard is a language range, not a tag'],
+      ['sl-rozaj-rozaj', 'a variant may not be repeated']
+    ])('%s is not valid (%s)', async (code) => {
+      expect(await valid(code)).toBe(false);
+    });
+
+    test.each([
+      ['en-a-bbb', 'one extension'],
+      ['en-a-bbb-b-ccc-ddd', 'two extensions, the second with two subtags'],
+      ['de-DE-u-co-phonebk', 'a Unicode locale extension'],
+      ['en-a-bbb-x-a-ccc', 'an extension then private use, which may repeat a singleton'],
+      ['fr-x-1', 'private use subtags may be one character'],
+      ['x-foo', 'a whole private use tag'],
+      ['x-a-b', 'a whole private use tag with several subtags'],
+      ['sl-rozaj-biske', 'two registered variants, biske has Prefix sl-rozaj'],
+      ['sl-rozaj-biske-1994', 'the RFC 3.1.8 example: three variants']
+    ])('%s is valid (%s)', async (code) => {
+      expect(await valid(code)).toBe(true);
+    });
+  });
 });
