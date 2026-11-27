@@ -521,6 +521,52 @@ function buildPaginationControls(count, offset, baseUrl, queryParams, loginUrlFo
 // Is a list filtered (anything that chooses its rows, not just the page)? Someone not logged in
 // sees only the first page of a filtered list, when auth.loginForExpensive is on: a crawler on
 // 78,000 addresses paged through every combination of the filters (npm.fhir.org, 2026-11)
+// ---- Filter values the XIG doesn't have ----
+//
+// A crawler on npm.fhir.org (2026-11) asked for lists with misspelt resource types
+// (rt=Iemunization, Immunizatign, ... 153 different values in 10 minutes): each a list the cache
+// hadn't seen, so each one counted and queried from scratch. A value that isn't one the XIG has
+// can't match anything, so the database isn't asked.
+
+// the list types (?type=): newCache.maps.types
+const LIST_TYPES = ['rp', 'dp', 'ext', 'lm', 'cs', 'vs', 'cm'];
+// the sets an rt can come from, depending on the type; a value from any of them is accepted
+// whatever the type (a link made for one type keeps its rt when the type is changed)
+const RT_SETS = ['resourceTypes', 'profileResources', 'profileTypes', 'extensionContexts', 'txSources'];
+
+/**
+ * The first filter value of the list (ver, type, realm, auth, rt) that the XIG doesn't have, as
+ * {name, value}, or null when they are all ones it has (or the values aren't loaded yet: then
+ * nothing is refused). text, pkg and onlyUsed are searched, not looked up, so are never illegal
+ * @param {Object} queryParams
+ */
+function illegalFilter(queryParams) {
+  if (!configCache.loaded) {
+    return null;
+  }
+  // known, or a set not loaded (an older database doesn't have every one)
+  const known = (table, value) => !configCache.maps[table] || hasCachedValue(table, value);
+  const checks = [
+    ['ver', v => VERSION_COLUMNS.includes(v)],
+    ['type', v => LIST_TYPES.includes(v)],
+    ['realm', v => known('realms', v)],
+    ['auth', v => known('authorities', v)],
+    ['rt', v => {
+      const sets = RT_SETS.filter(t => configCache.maps[t]);
+      return sets.length === 0 || sets.some(t => hasCachedValue(t, v));
+    }]
+  ];
+  for (const [name, ok] of checks) {
+    const value = queryValue(queryParams[name]);
+    if (value && !ok(value)) {
+      return { name, value };
+    }
+  }
+  return null;
+}
+
+const FILTER_NAMES = { ver: 'FHIR version', type: 'list type', realm: 'realm', auth: 'authority', rt: 'resource type' };
+
 function isFiltered(queryParams) {
   return ['ver', 'auth', 'realm', 'type', 'rt', 'text', 'pkg', 'onlyUsed'].some(k => queryParams[k]);
 }
@@ -2394,6 +2440,18 @@ router.get('/', async (req, res) => {
       // ── Format negotiation ──────────────────────────────────────
       const fmt = getRequestedFormat(req);
 
+      // a filter value the XIG doesn't have matches nothing: the database isn't asked
+      const illegal = illegalFilter(queryParams);
+      if (illegal) {
+        const message = `The XIG has no ${FILTER_NAMES[illegal.name]} '${illegal.value}' (${illegal.name})`;
+        res.status(404);
+        if (fmt === 'json' || fmt === 'csv') {
+          return res.type('application/json').send(JSON.stringify({ error: message }));
+        }
+        return res.send(renderPage('FHIR Resources',
+          `<div class="alert alert-warning">${escape(message)}. <a href="/xig">Start again</a></div>`));
+      }
+
       // someone not logged in sees only the first page of a filtered list (auth.loginForExpensive)
       const firstPageOnly = isFiltered(queryParams) && await auth.mustLogIn(req);
       if (firstPageOnly && offset > 0) {
@@ -3542,6 +3600,10 @@ function shutdown() {
 module.exports = {
   router,
   SITEMAP_SIZE,
+  // the cached lookup sets (realms, resourceTypes, ...) as given, or none (null)
+  setConfigCacheForTests: (maps) => {
+    configCache = maps ? { loaded: true, lastUpdated: new Date(), maps } : { loaded: false, lastUpdated: null, maps: {} };
+  },
   setSitemapSizeForTests: (n) => { sitemapSize = n; sitemapCache = { db: null, boundaries: null, files: new Map() }; },
   setXigSettings,
   updateXigDatabase,
@@ -3605,6 +3667,7 @@ module.exports = {
 
   // SQL filter functions
   buildResourceFilter,
+  illegalFilter,
   buildSecureResourceQuery,
   buildSecureResourceCountQuery,
   hasTerminologySource,
