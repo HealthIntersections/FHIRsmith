@@ -1,0 +1,27 @@
+# tx/fixtures/test-cases.yml with LOINC and SNOMED CT served by the sqlite-v2 providers. The three
+# -v2 files are not downloaded: tx/tests/prepare-v2-test-files.js imports them, at the start of
+# the run, from the files test-cases.yml downloads (the same releases), into the terminology cache.
+# Run the tx tests over it with FHIRSMITH_TX_TESTS_LIBRARY=tx/fixtures/test-cases-v2.yml.
+# Everything else is as in test-cases.yml, and has to stay so.
+base:
+  url: https://storage.googleapis.com/tx-fhir-org
+
+sources:
+  - internal:lang
+  - internal:country
+  - internal:currency
+  - internal:areacode
+  - internal:mimetypes
+  - internal:usstates
+  - internal:hgvs
+  - internal:urls
+  - ndc:ndc-20261117.db
+  - ucum:tx/data/ucum-essence.xml
+  - loinc-v2!:Loinc_2.83f.v2.db
+  - snomed-v2!:sct_intl_20260701-21.v2.db
+  - snomed-v2:sct_test_20250909-21.v2.db
+  - omop:omop_v20250227.db
+  - icd11:icd11-2026-01-c.db
+  - npm:hl7.terminology=tho
+  - npm:fhir.tx.support=tx
+  - npm:fhir.tx.support.tests
