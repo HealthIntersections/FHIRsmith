@@ -141,8 +141,11 @@ const CollectionStatus = Object.freeze({
   UNORDERED: 'UNORDERED'
 });
 
-/** As Java's Utilities.escapeFhirPathString */
-function escapeFhirPathString(s) {
+/**
+ * As Java's Utilities.escapeFhirPathString. With backtick, a backtick is escaped too, for a name
+ * written in backticks (escaped here with the rest, so that a backslash before it is escaped first)
+ */
+function escapeFhirPathString(s, backtick = false) {
   if (s == null) {
     return '';
   }
@@ -151,6 +154,7 @@ function escapeFhirPathString(s) {
     switch (c) {
       case '\\': b += '\\\\'; break;
       case '\'': b += '\\\''; break;
+      case '`': b += backtick ? '\\`' : '`'; break;
       case '\r': b += '\\r'; break;
       case '\n': b += '\\n'; break;
       case '\t': b += '\\t'; break;
@@ -172,7 +176,7 @@ const PLAIN_NAME = /^(\$this|\$index|\$total|[A-Za-z_][A-Za-z0-9_]*)$/;
 
 /** A name as it is written: in backticks if it isn't a plain identifier */
 function writeName(name) {
-  return PLAIN_NAME.test(name) ? name : '`' + escapeFhirPathString(name).replace(/`/g, '\\`') + '`';
+  return PLAIN_NAME.test(name) ? name : '`' + escapeFhirPathString(name, true) + '`';
 }
 
 /** A source location: line and column, both from 1 */
