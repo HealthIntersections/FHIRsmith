@@ -51,6 +51,16 @@ describe('Iso4217Services', () => {
       }
     });
 
+    test('should locate codes in the current ISO 4217 list (published 2026-09-17)', async () => {
+      const current = { SLE: 2, UYW: 4, VED: 2, VES: 2, XAD: 2, XCG: 2, ZWG: 2 };
+
+      for (const [code, decimals] of Object.entries(current)) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeTruthy();
+        expect(result.context.decimals).toBe(decimals);
+      }
+    });
+
     test('should return error for invalid codes', async () => {
       const result = await provider.locate('ZZZ');
       expect(result.context).toBeNull();
