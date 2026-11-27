@@ -61,16 +61,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The terminology files the tx tests load (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and
-      # LOINC) are downloaded into data/terminology-cache when a test first needs them. Kept between
-      # runs, so the test step doesn't wait on the download; a changed file list starts from the
-      # last cache and downloads only what is new
+      # What the tests download when they first need it - the terminology files the tx tests load
+      # (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and LOINC) and FHIR packages, in
+      # data/terminology-cache, and the packages in ~/.fhir/packages - is kept between runs, so the
+      # test step doesn't wait on the downloads; a changed file list starts from the last cache and
+      # downloads only what is new. Not CI builds (#current, #current$<branch>: the tx-ecosystem
+      # tests): the package manager uses a cached one without asking whether it is still current,
+      # so a cached copy would be tested against for ever
       - name: Cache terminology test files
         uses: actions/cache@v4
         with:
-          path: data/terminology-cache
-          key: tx-test-files-${{ hashFiles('tx/fixtures/*.yml') }}
-          restore-keys: tx-test-files-
+          path: |
+            data/terminology-cache
+            !data/terminology-cache/*#current*
+            ~/.fhir/packages
+            !~/.fhir/packages/*#current*
+          # (renamed from tx-test-files-, whose caches can hold a #current package)
+          key: test-downloads-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: test-downloads-
 
       - name: Run tests
         run: npm run test:ci
