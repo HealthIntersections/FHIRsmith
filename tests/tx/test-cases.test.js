@@ -249,6 +249,78 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex-none"}, "4.0");
   });
 
+  it("simple-expand-prop-exists-true" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-true" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "4.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "4.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "5.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "4.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "4.0");
+  });
+
   it("simple-lookup-1" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-lookup-1"}, "5.0");
   });
@@ -5263,6 +5335,267 @@ describe('notSelectable', () => {
 
   it("notSelectable-prop-false-false-param-false" + 'R4', async () => {
     await runTest({"suite":"notSelectable","test":"notSelectable-prop-false-false-param-false"}, "4.0");
+  });
+
+});
+
+describe('known-properties', () => {
+  // Filters on the properties with a built-in meaning - notSelectable, status, inactive and deprecated - with =, in, not-in and exists. A concept with no value for the property is selected by not-in and exists false, and by nothing else. notSelectable and status have a value only when something says what it is; inactive and deprecated always have one (true or false)
+
+  it("known-properties-expand-ns-eq" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-eq" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-eq"}, "4.0");
+  });
+
+  it("known-properties-expand-ns-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-in"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-in"}, "4.0");
+  });
+
+  it("known-properties-expand-ns-not-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-not-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-not-in"}, "4.0");
+  });
+
+  it("known-properties-expand-ns-exists-true" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-exists-true" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-true"}, "4.0");
+  });
+
+  it("known-properties-expand-ns-exists-false" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-exists-false" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-false"}, "4.0");
+  });
+
+  it("known-properties-expand-status-eq" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-status-eq" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-eq"}, "4.0");
+  });
+
+  it("known-properties-expand-status-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-in"}, "5.0");
+  });
+
+  it("known-properties-expand-status-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-in"}, "4.0");
+  });
+
+  it("known-properties-expand-status-not-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-status-not-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-not-in"}, "4.0");
+  });
+
+  it("known-properties-expand-status-exists-true" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-status-exists-true" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-true"}, "4.0");
+  });
+
+  it("known-properties-expand-status-exists-false" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-status-exists-false" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-false"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-eq" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-eq" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-eq-uc" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq-uc"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-eq-uc" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq-uc"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-in"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-in"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-not-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-not-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-not-in"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-exists-true" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-exists-true" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-true"}, "4.0");
+  });
+
+  it("known-properties-expand-inactive-exists-false" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-exists-false" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-false"}, "4.0");
+  });
+
+  it("known-properties-expand-deprecated-eq" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-eq" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-eq"}, "4.0");
+  });
+
+  it("known-properties-expand-deprecated-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-in"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-in"}, "4.0");
+  });
+
+  it("known-properties-expand-deprecated-not-in" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-not-in" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-not-in"}, "4.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-true" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-true" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-true"}, "4.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-false" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-false" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-false"}, "4.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-good"}, "5.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-good"}, "4.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-bad" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-bad" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-bad"}, "4.0");
+  });
+
+  it("known-properties-validate-status-exists-false-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-good"}, "5.0");
+  });
+
+  it("known-properties-validate-status-exists-false-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-good"}, "4.0");
+  });
+
+  it("known-properties-validate-status-exists-false-bad" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-status-exists-false-bad" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-bad"}, "4.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-good"}, "5.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-good"}, "4.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-bad" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-bad" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-bad"}, "4.0");
+  });
+
+  it("known-properties-validate-deprecated-in-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-in-good"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-in-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-in-good"}, "4.0");
+  });
+
+  it("known-properties-validate-deprecated-not-in-bad" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-not-in-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-not-in-bad" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-not-in-bad"}, "4.0");
+  });
+
+  it("known-properties-validate-deprecated-status-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-good"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-status-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-good"}, "4.0");
+  });
+
+  it("known-properties-validate-deprecated-status-bad" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-status-bad" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-bad"}, "4.0");
+  });
+
+  it("known-properties-validate-deprecated-flag-good" + 'R5', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-flag-good"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-flag-good" + 'R4', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-flag-good"}, "4.0");
   });
 
 });
@@ -15287,6 +15620,42 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex-none"}, "5.0");
   });
 
+  it("simple-expand-prop-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "5.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "5.0");
+  });
+
   it("simple-lookup-1" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-lookup-1"}, "5.0");
   });
@@ -17833,6 +18202,139 @@ describe('notSelectable', () => {
 
   it("notSelectable-prop-false-false-param-false" + 'R5-cached', async () => {
     await runTest({"suite":"notSelectable","test":"notSelectable-prop-false-false-param-false"}, "5.0");
+  });
+
+});
+
+describe('known-properties', () => {
+  // Filters on the properties with a built-in meaning - notSelectable, status, inactive and deprecated - with =, in, not-in and exists. A concept with no value for the property is selected by not-in and exists false, and by nothing else. notSelectable and status have a value only when something says what it is; inactive and deprecated always have one (true or false)
+
+  it("known-properties-expand-ns-eq" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-in"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-ns-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-ns-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-status-eq" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-status-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-in"}, "5.0");
+  });
+
+  it("known-properties-expand-status-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-status-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-status-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-status-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-eq" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-eq-uc" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-eq-uc"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-in"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-inactive-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-inactive-exists-false"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-eq" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-eq"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-in"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-not-in"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-true"}, "5.0");
+  });
+
+  it("known-properties-expand-deprecated-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-expand-deprecated-exists-false"}, "5.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-good"}, "5.0");
+  });
+
+  it("known-properties-validate-ns-exists-false-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-ns-exists-false-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-status-exists-false-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-good"}, "5.0");
+  });
+
+  it("known-properties-validate-status-exists-false-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-status-exists-false-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-good"}, "5.0");
+  });
+
+  it("known-properties-validate-inactive-not-in-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-inactive-not-in-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-in-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-in-good"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-not-in-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-not-in-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-status-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-good"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-status-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-status-bad"}, "5.0");
+  });
+
+  it("known-properties-validate-deprecated-flag-good" + 'R5-cached', async () => {
+    await runTest({"suite":"known-properties","test":"known-properties-validate-deprecated-flag-good"}, "5.0");
   });
 
 });

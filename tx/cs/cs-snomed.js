@@ -1004,14 +1004,28 @@ class SnomedServices {
   // members. Members are kept as reference set member records ({ref}), which is what every
   // consumer of set.members reads, so a plain concept is wrapped the same way; and each
   // concept appears once, however many times it is named or reached.
+  //
+  // A big reference set (tx.fhir.org, 2026-11: $expand of
+  // ?fhir_vs=refset/900000000000497000 with count=3 stopped the server for 3s, making the
+  // records of every one of its members to show 3) is read as refs only (getMemberRefs), and
+  // what it comes to is kept (refSetInCache) for the next request. The members array is shared
+  // between the filters that use it: not to be changed
   filterIn(idList) {
     const result = new SnomedFilterContext();
+    const cached = this.#refSetInCache.get(idList);
+    if (cached) {
+      // most recently used last
+      this.#refSetInCache.delete(idList);
+      this.#refSetInCache.set(idList, cached);
+      result.members = cached;
+      return result;
+    }
     const members = [];
     const seen = new Set();
-    const add = (member) => {
-      if (!seen.has(member.ref)) {
-        seen.add(member.ref);
-        members.push(member);
+    const add = (ref) => {
+      if (!seen.has(ref)) {
+        seen.add(ref);
+        members.push({ ref });
       }
     };
     for (let id of idList.split(',')) {
@@ -1027,15 +1041,37 @@ class SnomedServices {
 
       const refSetIndex = this.getConceptRefSet(conceptResult.index, false);
       if (refSetIndex === 0) {
-        add({ ref: conceptResult.index });
+        add(conceptResult.index);
       } else {
-        for (const member of this.refSetMembers.getMembers(refSetIndex) || []) {
-          add(member);
+        for (const ref of this.refSetMembers.getMemberRefs(refSetIndex)) {
+          add(ref);
         }
       }
     }
     result.members = members;
+    this.#rememberRefSetIn(idList, members);
     return result;
+  }
+
+  // filterIn results kept: the big ones only (a small one is quickly made again), at most
+  // REF_SET_IN_CACHE_MEMBERS members in all, the least recently used going first
+  static REF_SET_IN_CACHE_MIN = 10000;
+  static REF_SET_IN_CACHE_MEMBERS = 2000000;
+  #refSetInCache = new Map();
+  #refSetInCacheSize = 0;
+
+  #rememberRefSetIn(idList, members) {
+    const max = SnomedServices.REF_SET_IN_CACHE_MEMBERS;
+    if (members.length < SnomedServices.REF_SET_IN_CACHE_MIN || members.length > max) {
+      return;
+    }
+    while (this.#refSetInCacheSize + members.length > max && this.#refSetInCache.size > 0) {
+      const [oldest, gone] = this.#refSetInCache.entries().next().value;
+      this.#refSetInCache.delete(oldest);
+      this.#refSetInCacheSize -= gone.length;
+    }
+    this.#refSetInCache.set(idList, members);
+    this.#refSetInCacheSize += members.length;
   }
 
   filterInactive(state) {

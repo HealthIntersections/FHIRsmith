@@ -61,9 +61,28 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # What the tests download when they first need it - the terminology files the tx tests load
+      # (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and LOINC) and FHIR packages, in
+      # data/terminology-cache, and the packages in ~/.fhir/packages - is kept between runs, so the
+      # test step doesn't wait on the downloads; a changed file list starts from the last cache and
+      # downloads only what is new. Not CI builds (#current, #current$<branch>: the tx-ecosystem
+      # tests): the package manager uses a cached one without asking whether it is still current,
+      # so a cached copy would be tested against for ever
+      - name: Cache terminology test files
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/terminology-cache
+            !data/terminology-cache/*#current*
+            ~/.fhir/packages
+            !~/.fhir/packages/*#current*
+          # (renamed from tx-test-files-, whose caches can hold a #current package)
+          key: test-downloads-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: test-downloads-
+
       - name: Run tests
         run: npm run test:ci
-        timeout-minutes: 30
+        timeout-minutes: 45
         env:
           SUPPRESS_LOGS: 'true'
           # as in ci.yml: the suites run in one process (jest maxWorkers 1), which outgrows
@@ -76,14 +95,6 @@ jobs:
         with:
           name: test-results
           path: ./test-results/junit.xml
-
-      # Coverage is informational: a failed upload (codecov down, TLS trouble) mustn't fail the build
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v5
-        continue-on-error: true
-        with:
-          directory: ./coverage/
-          token: ${{ secrets.CODECOV_TOKEN }}
 
   release:
     name: Create Release

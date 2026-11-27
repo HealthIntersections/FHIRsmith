@@ -59,6 +59,25 @@ jobs:
           echo "The tests come from tx-ecosystem PR #$open, branch '$BRANCH'"
           echo "FHIRSMITH_TX_TESTS_VERSION=current\$$BRANCH" >> "$GITHUB_ENV"
 
+      # What the tests download when they first need it - the terminology files the tx tests load
+      # (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and LOINC) and FHIR packages, in
+      # data/terminology-cache, and the packages in ~/.fhir/packages - is kept between runs, so the
+      # test step doesn't wait on the downloads; a changed file list starts from the last cache and
+      # downloads only what is new. Not CI builds (#current, #current$<branch>: the tx-ecosystem
+      # tests): the package manager uses a cached one without asking whether it is still current,
+      # so a cached copy would be tested against for ever
+      - name: Cache terminology test files
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/terminology-cache
+            !data/terminology-cache/*#current*
+            ~/.fhir/packages
+            !~/.fhir/packages/*#current*
+          # (renamed from tx-test-files-, whose caches can hold a #current package)
+          key: test-downloads-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: test-downloads-
+
       - name: Run tests
         run: npm run test:ci -- --shard=${{ matrix.shard }}/2 --testPathIgnorePatterns=tests/tx/test-cases.test.js
         timeout-minutes: 30
@@ -81,15 +100,6 @@ jobs:
           name: server-logs-${{ matrix.shard }}
           path: ./data/logs/
           if-no-files-found: ignore
-
-      # Coverage is informational: a failed upload (codecov down, TLS trouble) mustn't fail the build
-      - name: Upload coverage reports
-        uses: codecov/codecov-action@v5
-        continue-on-error: true
-        with:
-          directory: ./coverage/
-          token: ${{ secrets.CODECOV_TOKEN }}
-          flags: shard-${{ matrix.shard }}
 
   # The HL7 tx-ecosystem test cases, over the standard test library (tx/fixtures/test-cases.yml)
   # and over the same library with LOINC and SNOMED CT on the sqlite-v2 providers
@@ -145,6 +155,27 @@ jobs:
           fi
           echo "The tests come from tx-ecosystem PR #$open, branch '$BRANCH'"
           echo "FHIRSMITH_TX_TESTS_VERSION=current\$$BRANCH" >> "$GITHUB_ENV"
+
+      # What the tests download when they first need it - the terminology files the tx tests load
+      # (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and LOINC) and FHIR packages, in
+      # data/terminology-cache, and the packages in ~/.fhir/packages - is kept between runs, so the
+      # test step doesn't wait on the downloads; a changed file list starts from the last cache and
+      # downloads only what is new. Not CI builds (#current, #current$<branch>: the tx-ecosystem
+      # tests): the package manager uses a cached one without asking whether it is still current,
+      # so a cached copy would be tested against for ever. Not the sqlite-v2 files either: they are
+      # imported in each run
+      - name: Cache terminology test files
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/terminology-cache
+            !data/terminology-cache/*#current*
+            !data/terminology-cache/*.v2.db
+            ~/.fhir/packages
+            !~/.fhir/packages/*#current*
+          # (renamed from tx-test-files-, whose caches can hold a #current package)
+          key: test-downloads-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: test-downloads-
 
       - name: Import the sqlite-v2 files
         if: matrix.library == 'sqlite-v2'

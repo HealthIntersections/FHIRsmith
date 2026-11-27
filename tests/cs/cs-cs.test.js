@@ -678,10 +678,10 @@ describe('FHIR CodeSystem Provider', () => {
         expect(isDeprecated).toBe(false);
       });
 
-      test('should return true for retired concepts', async () => {
+      test('should return false for retired concepts - retired is inactive, not deprecated', async () => {
         // code2 has status=retired property
-        const isDeprecated = await simpleProvider.isDeprecated('code2');
-        expect(isDeprecated).toBe(true);
+        expect(await simpleProvider.isDeprecated('code2')).toBe(false);
+        expect(await simpleProvider.isInactive('code2')).toBe(true);
       });
     });
 
