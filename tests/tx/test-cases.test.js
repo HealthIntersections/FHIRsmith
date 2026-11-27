@@ -249,6 +249,78 @@ describe('simple-cases', () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex-none"}, "4.0");
   });
 
+  it("simple-expand-prop-exists-true" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-true" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "4.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "4.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "5.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "4.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "4.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R5', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R4', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "4.0");
+  });
+
   it("simple-lookup-1" + 'R5', async () => {
     await runTest({"suite":"simple-cases","test":"simple-lookup-1"}, "5.0");
   });
@@ -15285,6 +15357,42 @@ describe('simple-cases', () => {
 
   it("simple-expand-regex-none" + 'R5-cached', async () => {
     await runTest({"suite":"simple-cases","test":"simple-expand-regex-none"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-true" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-true"}, "5.0");
+  });
+
+  it("simple-expand-prop-exists-false" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-exists-false"}, "5.0");
+  });
+
+  it("simple-expand-prop-not-in" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-expand-prop-not-in"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-true-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-true-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-exists-false-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-exists-false-bad"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-good" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-good"}, "5.0");
+  });
+
+  it("simple-validate-prop-not-in-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"simple-cases","test":"simple-validate-prop-not-in-bad"}, "5.0");
   });
 
   it("simple-lookup-1" + 'R5-cached', async () => {

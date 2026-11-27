@@ -35,14 +35,16 @@ const out = {
     .map(c => ({ ...c, resource: c.resource.filter(r => TYPES.includes(r.code)) })),
   summary: Object.fromEntries(Object.entries(d.summary).filter(([k]) => TYPES.includes(k))),
   mandatory: Object.fromEntries(Object.entries(d.mandatory).filter(([k]) => TYPES.includes(k))),
-  // XML: the datatypes, the test types, and the resources the server makes itself
+  // the type model (XML, FHIRPath): the datatypes, the test types, and the resources the server
+  // makes itself
   xml: {
     primitives: d.xml.primitives,
     resources: d.xml.resources.filter(t => XML_RESOURCES.has(t)),
     types: Object.fromEntries(Object.entries(d.xml.types).filter(([k]) => {
       const root = k.split('.')[0];
       return !d.xml.resources.includes(root) || XML_RESOURCES.has(root);
-    }))
+    })),
+    info: Object.fromEntries(Object.entries(d.xml.info).filter(([k]) => !d.xml.resources.includes(k) || XML_RESOURCES.has(k)))
   }
 };
 const file = path.join(__dirname, '..', 'data', 'rest', 'r4-definitions.json');

@@ -5183,7 +5183,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5199,7 +5202,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/address-use|4.0.1"
+      }
+     }
     ],
     [
      "type",
@@ -5207,7 +5216,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/address-type|4.0.1"
+      }
+     }
     ],
     [
      "text",
@@ -5281,7 +5296,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5305,7 +5323,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/quantity-comparator|4.0.1"
+      }
+     }
     ],
     [
      "unit",
@@ -5339,7 +5363,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5356,7 +5383,17 @@
       "Reference",
       "string"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "time",
@@ -5372,7 +5409,10 @@
      [
       "markdown"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Attachment": [
@@ -5382,7 +5422,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5398,7 +5441,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "language",
@@ -5406,7 +5455,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "data",
@@ -5464,7 +5519,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -5488,7 +5546,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -5528,7 +5592,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-event-type"
+      }
+     }
     ],
     [
      "subtype",
@@ -5536,7 +5607,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-event-sub-type"
+      }
+     }
     ],
     [
      "action",
@@ -5544,7 +5621,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-event-action|4.0.1"
+      }
+     }
     ],
     [
      "period",
@@ -5560,7 +5643,10 @@
      [
       "instant"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "outcome",
@@ -5568,7 +5654,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-event-outcome|4.0.1"
+      }
+     }
     ],
     [
      "outcomeDesc",
@@ -5584,7 +5676,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-PurposeOfUse"
+      }
+     }
     ],
     [
      "agent",
@@ -5592,7 +5690,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "source",
@@ -5600,7 +5701,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "entity",
@@ -5618,7 +5722,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5642,7 +5749,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/participation-role-type"
+      }
+     }
     ],
     [
      "role",
@@ -5650,7 +5763,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/security-role-type"
+      }
+     }
     ],
     [
      "who",
@@ -5658,7 +5777,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "altId",
@@ -5682,7 +5813,10 @@
      [
       "boolean"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "location",
@@ -5690,7 +5824,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "policy",
@@ -5706,7 +5847,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/dicm-405-mediatype"
+      }
+     }
     ],
     [
      "network",
@@ -5722,7 +5869,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-PurposeOfUse"
+      }
+     }
     ]
    ],
    "AuditEvent.agent.network": [
@@ -5732,7 +5885,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5764,7 +5920,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/network-type|4.0.1"
+      }
+     }
     ]
    ],
    "AuditEvent.source": [
@@ -5774,7 +5936,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5806,7 +5971,20 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -5814,7 +5992,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-source-type"
+      }
+     }
     ]
    ],
    "AuditEvent.entity": [
@@ -5824,7 +6008,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5848,7 +6035,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -5856,7 +6050,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/audit-entity-type"
+      }
+     }
     ],
     [
      "role",
@@ -5864,7 +6064,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/object-role"
+      }
+     }
     ],
     [
      "lifecycle",
@@ -5872,7 +6078,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/object-lifecycle-events"
+      }
+     }
     ],
     [
      "securityLabel",
@@ -5880,7 +6092,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/security-labels"
+      }
+     }
     ],
     [
      "name",
@@ -5922,7 +6140,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5946,7 +6167,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "value",
@@ -5955,7 +6179,10 @@
       "string",
       "base64Binary"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "BackboneElement": [
@@ -5965,7 +6192,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -5991,7 +6221,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -6015,7 +6248,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "contentType",
@@ -6023,7 +6262,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "securityContext",
@@ -6031,7 +6277,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "data",
@@ -6049,7 +6302,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -6073,7 +6329,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "identifier",
@@ -6089,7 +6351,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/bundle-type|4.0.1"
+      }
+     }
     ],
     [
      "timestamp",
@@ -6139,7 +6408,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6163,7 +6435,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "url",
@@ -6171,7 +6446,10 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Bundle.entry": [
@@ -6181,7 +6459,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6253,7 +6534,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6277,7 +6561,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-entry-mode|4.0.1"
+      }
+     }
     ],
     [
      "score",
@@ -6295,7 +6585,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6319,7 +6612,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/http-verb|4.0.1"
+      }
+     }
     ],
     [
      "url",
@@ -6327,7 +6627,10 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "ifNoneMatch",
@@ -6369,7 +6672,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6393,7 +6699,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "location",
@@ -6435,7 +6744,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -6459,7 +6771,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -6531,7 +6849,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/publication-status|4.0.1"
+      }
+     }
     ],
     [
      "experimental",
@@ -6547,7 +6872,10 @@
      [
       "dateTime"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "publisher",
@@ -6587,7 +6915,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/jurisdiction"
+      }
+     }
     ],
     [
      "purpose",
@@ -6611,7 +6945,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/capability-statement-kind|4.0.1"
+      }
+     }
     ],
     [
      "instantiates",
@@ -6619,7 +6960,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/CapabilityStatement"
+       ]
+      }
+     }
     ],
     [
      "imports",
@@ -6627,7 +6975,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/CapabilityStatement"
+       ]
+      }
+     }
     ],
     [
      "software",
@@ -6651,7 +7006,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/FHIR-version|4.0.1"
+      }
+     }
     ],
     [
      "format",
@@ -6659,7 +7021,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "patchFormat",
@@ -6667,7 +7036,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "implementationGuide",
@@ -6675,7 +7050,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ImplementationGuide"
+       ]
+      }
+     }
     ],
     [
      "rest",
@@ -6709,7 +7091,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6733,7 +7118,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "version",
@@ -6759,7 +7147,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6783,7 +7174,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "url",
@@ -6799,7 +7193,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ]
    ],
    "CapabilityStatement.rest": [
@@ -6809,7 +7210,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6833,7 +7237,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/restful-capability-mode|4.0.1"
+      }
+     }
     ],
     [
      "documentation",
@@ -6885,7 +7296,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/CompartmentDefinition"
+       ]
+      }
+     }
     ]
    ],
    "CapabilityStatement.rest.security": [
@@ -6895,7 +7313,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6927,7 +7348,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/restful-security-service"
+      }
+     }
     ],
     [
      "description",
@@ -6945,7 +7372,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -6969,7 +7399,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
+      }
+     }
     ],
     [
      "profile",
@@ -6977,7 +7414,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ],
     [
      "supportedProfile",
@@ -6985,7 +7429,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ],
     [
      "documentation",
@@ -7009,7 +7460,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/versioning-policy|4.0.1"
+      }
+     }
     ],
     [
      "readHistory",
@@ -7041,7 +7498,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/conditional-read-status|4.0.1"
+      }
+     }
     ],
     [
      "conditionalUpdate",
@@ -7057,7 +7520,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/conditional-delete-status|4.0.1"
+      }
+     }
     ],
     [
      "referencePolicy",
@@ -7065,7 +7534,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/reference-handling-policy|4.0.1"
+      }
+     }
     ],
     [
      "searchInclude",
@@ -7107,7 +7582,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7131,7 +7609,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/type-restful-interaction|4.0.1"
+      }
+     }
     ],
     [
      "documentation",
@@ -7149,7 +7634,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7173,7 +7661,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "definition",
@@ -7181,7 +7672,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/SearchParameter"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -7189,7 +7687,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-param-type|4.0.1"
+      }
+     }
     ],
     [
      "documentation",
@@ -7207,7 +7712,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7231,7 +7739,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "definition",
@@ -7239,7 +7750,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/OperationDefinition"
+       ]
+      }
+     }
     ],
     [
      "documentation",
@@ -7257,7 +7776,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7281,7 +7803,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/system-restful-interaction|4.0.1"
+      }
+     }
     ],
     [
      "documentation",
@@ -7299,7 +7828,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7357,7 +7889,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7381,7 +7916,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/message-transport"
+      }
+     }
     ],
     [
      "address",
@@ -7389,7 +7931,10 @@
      [
       "url"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "CapabilityStatement.messaging.supportedMessage": [
@@ -7399,7 +7944,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7423,7 +7971,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/event-capability-mode|4.0.1"
+      }
+     }
     ],
     [
      "definition",
@@ -7431,7 +7986,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/MessageDefinition"
+       ]
+      }
+     }
     ]
    ],
    "CapabilityStatement.document": [
@@ -7441,7 +8004,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7465,7 +8031,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/document-mode|4.0.1"
+      }
+     }
     ],
     [
      "documentation",
@@ -7481,7 +8054,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ]
    ],
    "CodeableConcept": [
@@ -7491,7 +8072,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7525,7 +8109,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7583,7 +8170,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -7607,7 +8197,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -7655,7 +8251,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-clinical|4.0.1"
+      }
+     }
     ],
     [
      "verificationStatus",
@@ -7663,7 +8265,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-ver-status|4.0.1"
+      }
+     }
     ],
     [
      "category",
@@ -7671,7 +8279,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-category"
+      }
+     }
     ],
     [
      "severity",
@@ -7679,7 +8293,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-severity"
+      }
+     }
     ],
     [
      "code",
@@ -7687,7 +8307,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-code"
+      }
+     }
     ],
     [
      "bodySite",
@@ -7695,7 +8321,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/body-site"
+      }
+     }
     ],
     [
      "subject",
@@ -7703,7 +8335,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Group"
+       ]
+      }
+     }
     ],
     [
      "encounter",
@@ -7711,7 +8352,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Encounter"
+       ]
+      }
+     }
     ],
     [
      "onset",
@@ -7751,7 +8399,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "asserter",
@@ -7759,7 +8417,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "stage",
@@ -7793,7 +8461,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7817,7 +8488,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-stage"
+      }
+     }
     ],
     [
      "assessment",
@@ -7825,7 +8502,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/ClinicalImpression",
+        "http://hl7.org/fhir/StructureDefinition/DiagnosticReport",
+        "http://hl7.org/fhir/StructureDefinition/Observation"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -7833,7 +8519,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-stage-type"
+      }
+     }
     ]
    ],
    "Condition.evidence": [
@@ -7843,7 +8535,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7867,7 +8562,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/manifestation-or-symptom"
+      }
+     }
     ],
     [
      "detail",
@@ -7875,7 +8576,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ]
    ],
    "ContactDetail": [
@@ -7885,7 +8593,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7919,7 +8630,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7935,7 +8649,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/contact-point-system|4.0.1"
+      }
+     }
     ],
     [
      "value",
@@ -7951,7 +8671,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/contact-point-use|4.0.1"
+      }
+     }
     ],
     [
      "rank",
@@ -7977,7 +8703,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -7993,7 +8722,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/contributor-type|4.0.1"
+      }
+     }
     ],
     [
      "name",
@@ -8001,7 +8737,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "contact",
@@ -8019,7 +8758,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8043,7 +8785,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/quantity-comparator|4.0.1"
+      }
+     }
     ],
     [
      "unit",
@@ -8077,7 +8825,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8093,7 +8844,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/all-types|4.0.1"
+      }
+     }
     ],
     [
      "profile",
@@ -8101,7 +8859,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ],
     [
      "subject",
@@ -8110,7 +8875,18 @@
       "CodeableConcept",
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Group"
+       ]
+      },
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/subject-type"
+      }
+     }
     ],
     [
      "mustSupport",
@@ -8160,7 +8936,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8192,7 +8971,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ],
     [
      "code",
@@ -8210,7 +8996,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8254,7 +9043,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8270,7 +9062,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "direction",
@@ -8278,7 +9073,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/sort-direction|4.0.1"
+      }
+     }
     ]
    ],
    "Device": [
@@ -8288,7 +9090,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -8312,7 +9117,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -8360,7 +9171,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/DeviceDefinition"
+       ]
+      }
+     }
     ],
     [
      "udiCarrier",
@@ -8376,7 +9194,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/device-status|4.0.1"
+      }
+     }
     ],
     [
      "statusReason",
@@ -8384,7 +9208,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/device-status-reason"
+      }
+     }
     ],
     [
      "distinctIdentifier",
@@ -8464,7 +9294,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/device-type"
+      }
+     }
     ],
     [
      "specialization",
@@ -8496,7 +9332,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient"
+       ]
+      }
+     }
     ],
     [
      "owner",
@@ -8504,7 +9347,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "contact",
@@ -8520,7 +9370,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "url",
@@ -8552,7 +9409,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Device"
+       ]
+      }
+     }
     ]
    ],
    "Device.udiCarrier": [
@@ -8562,7 +9426,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8626,7 +9493,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/udi-entry-type|4.0.1"
+      }
+     }
     ]
    ],
    "Device.deviceName": [
@@ -8636,7 +9509,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8660,7 +9536,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "type",
@@ -8668,7 +9547,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/device-nametype|4.0.1"
+      }
+     }
     ]
    ],
    "Device.specialization": [
@@ -8678,7 +9564,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8702,7 +9591,10 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "version",
@@ -8720,7 +9612,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8760,7 +9655,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Device.property": [
@@ -8770,7 +9668,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8794,7 +9695,10 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "valueQuantity",
@@ -8820,7 +9724,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8844,7 +9751,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/quantity-comparator|4.0.1"
+      }
+     }
     ],
     [
      "unit",
@@ -8878,7 +9791,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -8902,7 +9818,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -8944,7 +9866,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -8984,7 +9909,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/additional-instruction-codes"
+      }
+     }
     ],
     [
      "patientInstruction",
@@ -9009,7 +9940,13 @@
       "boolean",
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medication-as-needed-reason"
+      }
+     }
     ],
     [
      "site",
@@ -9017,7 +9954,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/approach-site-codes"
+      }
+     }
     ],
     [
      "route",
@@ -9025,7 +9968,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/route-codes"
+      }
+     }
     ],
     [
      "method",
@@ -9033,7 +9982,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/administration-method-codes"
+      }
+     }
     ],
     [
      "doseAndRate",
@@ -9057,7 +10012,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "maxDosePerLifetime",
@@ -9065,7 +10027,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ]
    ],
    "Dosage.doseAndRate": [
@@ -9075,7 +10044,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9091,7 +10063,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/dose-rate-type"
+      }
+     }
     ],
     [
      "dose",
@@ -9100,7 +10078,14 @@
       "Range",
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "rate",
@@ -9110,7 +10095,14 @@
       "Range",
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ]
    ],
    "Duration": [
@@ -9120,7 +10112,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9144,7 +10139,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/quantity-comparator|4.0.1"
+      }
+     }
     ],
     [
      "unit",
@@ -9178,7 +10179,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9196,7 +10200,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9220,7 +10227,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "representation",
@@ -9228,7 +10238,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/property-representation|4.0.1"
+      }
+     }
     ],
     [
      "sliceName",
@@ -9260,7 +10276,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-codes"
+      }
+     }
     ],
     [
      "slicing",
@@ -9657,7 +10679,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9697,7 +10722,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-slicing-rules|4.0.1"
+      }
+     }
     ]
    ],
    "ElementDefinition.slicing.discriminator": [
@@ -9707,7 +10739,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9723,7 +10758,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/discriminator-type|4.0.1"
+      }
+     }
     ],
     [
      "path",
@@ -9731,7 +10773,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ElementDefinition.base": [
@@ -9741,7 +10786,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9757,7 +10805,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "min",
@@ -9765,7 +10816,10 @@
      [
       "unsignedInt"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "max",
@@ -9773,7 +10827,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ElementDefinition.type": [
@@ -9783,7 +10840,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9799,7 +10859,14 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/defined-types"
+      }
+     }
     ],
     [
      "profile",
@@ -9807,7 +10874,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition",
+        "http://hl7.org/fhir/StructureDefinition/ImplementationGuide"
+       ]
+      }
+     }
     ],
     [
      "targetProfile",
@@ -9815,7 +10890,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition",
+        "http://hl7.org/fhir/StructureDefinition/ImplementationGuide"
+       ]
+      }
+     }
     ],
     [
      "aggregation",
@@ -9823,7 +10906,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-aggregation-mode|4.0.1"
+      }
+     }
     ],
     [
      "versioning",
@@ -9831,7 +10920,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/reference-version-rules|4.0.1"
+      }
+     }
     ]
    ],
    "ElementDefinition.example": [
@@ -9841,7 +10936,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9857,7 +10955,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "value",
@@ -9914,7 +11015,10 @@
       "Dosage",
       "Meta"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ElementDefinition.constraint": [
@@ -9924,7 +11028,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -9940,7 +11047,10 @@
      [
       "id"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "requirements",
@@ -9956,7 +11066,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/constraint-severity|4.0.1"
+      }
+     }
     ],
     [
      "human",
@@ -9964,7 +11081,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "expression",
@@ -9988,7 +11108,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ]
    ],
    "ElementDefinition.binding": [
@@ -9998,7 +11125,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10014,7 +11144,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/binding-strength|4.0.1"
+      }
+     }
     ],
     [
      "description",
@@ -10030,7 +11167,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ]
    ],
    "ElementDefinition.mapping": [
@@ -10040,7 +11184,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10056,7 +11203,10 @@
      [
       "id"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "language",
@@ -10064,7 +11214,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "map",
@@ -10072,7 +11228,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "comment",
@@ -10090,7 +11249,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -10114,7 +11276,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -10162,7 +11330,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-status|4.0.1"
+      }
+     }
     ],
     [
      "statusHistory",
@@ -10178,7 +11353,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-ActEncounterCode"
+      }
+     }
     ],
     [
      "classHistory",
@@ -10194,7 +11376,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-type"
+      }
+     }
     ],
     [
      "serviceType",
@@ -10202,7 +11390,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/service-type"
+      }
+     }
     ],
     [
      "priority",
@@ -10210,7 +11404,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-ActPriority"
+      }
+     }
     ],
     [
      "subject",
@@ -10218,7 +11418,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Group"
+       ]
+      }
+     }
     ],
     [
      "episodeOfCare",
@@ -10226,7 +11434,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/EpisodeOfCare"
+       ]
+      }
+     }
     ],
     [
      "basedOn",
@@ -10234,7 +11449,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/ServiceRequest"
+       ]
+      }
+     }
     ],
     [
      "participant",
@@ -10250,7 +11472,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Appointment"
+       ]
+      }
+     }
     ],
     [
      "period",
@@ -10274,7 +11503,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-reason"
+      }
+     }
     ],
     [
      "reasonReference",
@@ -10282,7 +11517,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Condition",
+        "http://hl7.org/fhir/StructureDefinition/Procedure",
+        "http://hl7.org/fhir/StructureDefinition/Observation",
+        "http://hl7.org/fhir/StructureDefinition/ImmunizationRecommendation"
+       ]
+      }
+     }
     ],
     [
      "diagnosis",
@@ -10298,7 +11543,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Account"
+       ]
+      }
+     }
     ],
     [
      "hospitalization",
@@ -10322,7 +11574,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "partOf",
@@ -10330,7 +11589,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Encounter"
+       ]
+      }
+     }
     ]
    ],
    "Encounter.statusHistory": [
@@ -10340,7 +11606,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10364,7 +11633,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-status|4.0.1"
+      }
+     }
     ],
     [
      "period",
@@ -10372,7 +11648,10 @@
      [
       "Period"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Encounter.classHistory": [
@@ -10382,7 +11661,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10406,7 +11688,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-ActEncounterCode"
+      }
+     }
     ],
     [
      "period",
@@ -10414,7 +11703,10 @@
      [
       "Period"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Encounter.participant": [
@@ -10424,7 +11716,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10448,7 +11743,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-participant-type"
+      }
+     }
     ],
     [
      "period",
@@ -10464,7 +11765,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ]
    ],
    "Encounter.diagnosis": [
@@ -10474,7 +11784,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10498,7 +11811,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Condition",
+        "http://hl7.org/fhir/StructureDefinition/Procedure"
+       ]
+      }
+     }
     ],
     [
      "use",
@@ -10506,7 +11828,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/diagnosis-role"
+      }
+     }
     ],
     [
      "rank",
@@ -10524,7 +11852,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10556,7 +11887,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "admitSource",
@@ -10564,7 +11903,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-admit-source"
+      }
+     }
     ],
     [
      "reAdmission",
@@ -10572,7 +11917,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v2-0092"
+      }
+     }
     ],
     [
      "dietPreference",
@@ -10580,7 +11931,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-diet"
+      }
+     }
     ],
     [
      "specialCourtesy",
@@ -10588,7 +11945,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-special-courtesy"
+      }
+     }
     ],
     [
      "specialArrangement",
@@ -10596,7 +11959,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-special-arrangements"
+      }
+     }
     ],
     [
      "destination",
@@ -10604,7 +11973,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "dischargeDisposition",
@@ -10612,7 +11989,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-discharge-disposition"
+      }
+     }
     ]
    ],
    "Encounter.location": [
@@ -10622,7 +12005,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10646,7 +12032,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "status",
@@ -10654,7 +12048,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/encounter-location-status|4.0.1"
+      }
+     }
     ],
     [
      "physicalType",
@@ -10662,7 +12062,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/location-physical-type"
+      }
+     }
     ],
     [
      "period",
@@ -10680,7 +12086,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10712,7 +12121,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/expression-language"
+      }
+     }
     ],
     [
      "expression",
@@ -10738,7 +12154,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10754,7 +12173,11 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "s": "String"
+     }
     ],
     [
      "value",
@@ -10821,7 +12244,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -10845,7 +12271,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -10901,7 +12333,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/group-type|4.0.1"
+      }
+     }
     ],
     [
      "actual",
@@ -10909,7 +12348,10 @@
      [
       "boolean"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "code",
@@ -10917,7 +12359,12 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example"
+      }
+     }
     ],
     [
      "name",
@@ -10941,7 +12388,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole"
+       ]
+      }
+     }
     ],
     [
      "characteristic",
@@ -10967,7 +12424,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -10991,7 +12451,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example"
+      }
+     }
     ],
     [
      "value",
@@ -11003,7 +12469,13 @@
       "Range",
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example"
+      }
+     }
     ],
     [
      "exclude",
@@ -11011,7 +12483,10 @@
      [
       "boolean"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "period",
@@ -11029,7 +12504,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11053,7 +12531,21 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Medication",
+        "http://hl7.org/fhir/StructureDefinition/Substance",
+        "http://hl7.org/fhir/StructureDefinition/Group"
+       ]
+      }
+     }
     ],
     [
      "period",
@@ -11079,7 +12571,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11095,7 +12590,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/name-use|4.0.1"
+      }
+     }
     ],
     [
      "text",
@@ -11153,7 +12654,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11169,7 +12673,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/identifier-use|4.0.1"
+      }
+     }
     ],
     [
      "type",
@@ -11177,7 +12687,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/identifier-type"
+      }
+     }
     ],
     [
      "system",
@@ -11209,7 +12725,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ]
    ],
    "List": [
@@ -11219,7 +12742,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -11243,7 +12769,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -11291,7 +12823,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-status|4.0.1"
+      }
+     }
     ],
     [
      "mode",
@@ -11299,7 +12838,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-mode|4.0.1"
+      }
+     }
     ],
     [
      "title",
@@ -11315,7 +12861,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-example-codes"
+      }
+     }
     ],
     [
      "subject",
@@ -11323,7 +12875,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Group",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "encounter",
@@ -11331,7 +12893,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Encounter"
+       ]
+      }
+     }
     ],
     [
      "date",
@@ -11347,7 +12916,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device"
+       ]
+      }
+     }
     ],
     [
      "orderedBy",
@@ -11355,7 +12934,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-order"
+      }
+     }
     ],
     [
      "note",
@@ -11379,7 +12964,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-empty-reason"
+      }
+     }
     ]
    ],
    "List.entry": [
@@ -11389,7 +12980,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11413,7 +13007,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/list-item-flag"
+      }
+     }
     ],
     [
      "deleted",
@@ -11437,7 +13037,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ]
    ],
    "MarketingStatus": [
@@ -11447,7 +13055,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11471,7 +13082,10 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "jurisdiction",
@@ -11487,7 +13101,10 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "dateRange",
@@ -11495,7 +13112,10 @@
      [
       "Period"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "restoreDate",
@@ -11513,7 +13133,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -11537,7 +13160,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -11585,7 +13214,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medicationrequest-status|4.0.1"
+      }
+     }
     ],
     [
      "statusReason",
@@ -11593,7 +13229,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medicationrequest-status-reason"
+      }
+     }
     ],
     [
      "intent",
@@ -11601,7 +13243,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medicationrequest-intent|4.0.1"
+      }
+     }
     ],
     [
      "category",
@@ -11609,7 +13258,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medicationrequest-category"
+      }
+     }
     ],
     [
      "priority",
@@ -11617,7 +13272,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/request-priority|4.0.1"
+      }
+     }
     ],
     [
      "doNotPerform",
@@ -11634,7 +13295,18 @@
       "boolean",
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "medication",
@@ -11643,7 +13315,19 @@
       "CodeableConcept",
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Medication"
+       ]
+      },
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medication-codes"
+      }
+     }
     ],
     [
      "subject",
@@ -11651,7 +13335,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Group"
+       ]
+      }
+     }
     ],
     [
      "encounter",
@@ -11659,7 +13352,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Encounter"
+       ]
+      }
+     }
     ],
     [
      "supportingInformation",
@@ -11667,7 +13367,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "authoredOn",
@@ -11683,7 +13390,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Device"
+       ]
+      }
+     }
     ],
     [
      "performer",
@@ -11691,7 +13410,20 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/CareTeam"
+       ]
+      }
+     }
     ],
     [
      "performerType",
@@ -11699,7 +13431,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/performer-role"
+      }
+     }
     ],
     [
      "recorder",
@@ -11707,7 +13445,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole"
+       ]
+      }
+     }
     ],
     [
      "reasonCode",
@@ -11715,7 +13461,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/condition-code"
+      }
+     }
     ],
     [
      "reasonReference",
@@ -11723,7 +13475,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Condition",
+        "http://hl7.org/fhir/StructureDefinition/Observation"
+       ]
+      }
+     }
     ],
     [
      "instantiatesCanonical",
@@ -11747,7 +13507,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/CarePlan",
+        "http://hl7.org/fhir/StructureDefinition/MedicationRequest",
+        "http://hl7.org/fhir/StructureDefinition/ServiceRequest",
+        "http://hl7.org/fhir/StructureDefinition/ImmunizationRecommendation"
+       ]
+      }
+     }
     ],
     [
      "groupIdentifier",
@@ -11763,7 +13533,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/medicationrequest-course-of-therapy"
+      }
+     }
     ],
     [
      "insurance",
@@ -11771,7 +13547,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Coverage",
+        "http://hl7.org/fhir/StructureDefinition/ClaimResponse"
+       ]
+      }
+     }
     ],
     [
      "note",
@@ -11811,7 +13595,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/MedicationRequest"
+       ]
+      }
+     }
     ],
     [
      "detectedIssue",
@@ -11819,7 +13610,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/DetectedIssue"
+       ]
+      }
+     }
     ],
     [
      "eventHistory",
@@ -11827,7 +13625,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Provenance"
+       ]
+      }
+     }
     ]
    ],
    "MedicationRequest.dispenseRequest": [
@@ -11837,7 +13642,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11893,7 +13701,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "expectedSupplyDuration",
@@ -11909,7 +13724,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ]
    ],
    "MedicationRequest.dispenseRequest.initialFill": [
@@ -11919,7 +13741,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11943,7 +13768,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "duration",
@@ -11961,7 +13793,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -11986,7 +13821,14 @@
       "boolean",
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-ActSubstanceAdminSubstitutionCode"
+      }
+     }
     ],
     [
      "reason",
@@ -11994,7 +13836,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-SubstanceAdminSubstitutionReason"
+      }
+     }
     ]
    ],
    "Meta": [
@@ -12004,7 +13852,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12044,7 +13895,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ],
     [
      "security",
@@ -12052,7 +13910,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/security-labels"
+      }
+     }
     ],
     [
      "tag",
@@ -12060,7 +13924,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/common-tags"
+      }
+     }
     ]
    ],
    "Money": [
@@ -12070,7 +13940,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12094,7 +13967,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/currencies|4.0.1"
+      }
+     }
     ]
    ],
    "Narrative": [
@@ -12104,7 +13983,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12120,7 +14002,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/narrative-status|4.0.1"
+      }
+     }
     ],
     [
      "div",
@@ -12128,7 +14017,10 @@
      [
       "xhtml"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Observation": [
@@ -12138,7 +14030,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -12162,7 +14057,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -12210,7 +14111,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/CarePlan",
+        "http://hl7.org/fhir/StructureDefinition/DeviceRequest",
+        "http://hl7.org/fhir/StructureDefinition/ImmunizationRecommendation",
+        "http://hl7.org/fhir/StructureDefinition/MedicationRequest",
+        "http://hl7.org/fhir/StructureDefinition/NutritionOrder",
+        "http://hl7.org/fhir/StructureDefinition/ServiceRequest"
+       ]
+      }
+     }
     ],
     [
      "partOf",
@@ -12218,7 +14131,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/MedicationAdministration",
+        "http://hl7.org/fhir/StructureDefinition/MedicationDispense",
+        "http://hl7.org/fhir/StructureDefinition/MedicationStatement",
+        "http://hl7.org/fhir/StructureDefinition/Procedure",
+        "http://hl7.org/fhir/StructureDefinition/Immunization",
+        "http://hl7.org/fhir/StructureDefinition/ImagingStudy"
+       ]
+      }
+     }
     ],
     [
      "status",
@@ -12226,7 +14151,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-status|4.0.1"
+      }
+     }
     ],
     [
      "category",
@@ -12234,7 +14166,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-category"
+      }
+     }
     ],
     [
      "code",
@@ -12242,7 +14180,14 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-codes"
+      }
+     }
     ],
     [
      "subject",
@@ -12250,7 +14195,17 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Group",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "focus",
@@ -12258,7 +14213,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "encounter",
@@ -12266,7 +14228,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Encounter"
+       ]
+      }
+     }
     ],
     [
      "effective",
@@ -12293,7 +14262,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/CareTeam",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "value",
@@ -12319,7 +14300,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/data-absent-reason"
+      }
+     }
     ],
     [
      "interpretation",
@@ -12327,7 +14314,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-interpretation"
+      }
+     }
     ],
     [
      "note",
@@ -12343,7 +14336,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/body-site"
+      }
+     }
     ],
     [
      "method",
@@ -12351,7 +14350,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-methods"
+      }
+     }
     ],
     [
      "specimen",
@@ -12359,7 +14364,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Specimen"
+       ]
+      }
+     }
     ],
     [
      "device",
@@ -12367,7 +14379,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/DeviceMetric"
+       ]
+      }
+     }
     ],
     [
      "referenceRange",
@@ -12383,7 +14403,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Observation",
+        "http://hl7.org/fhir/StructureDefinition/QuestionnaireResponse",
+        "http://hl7.org/fhir/StructureDefinition/MolecularSequence"
+       ]
+      }
+     }
     ],
     [
      "derivedFrom",
@@ -12391,7 +14420,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/DocumentReference",
+        "http://hl7.org/fhir/StructureDefinition/ImagingStudy",
+        "http://hl7.org/fhir/StructureDefinition/Media",
+        "http://hl7.org/fhir/StructureDefinition/QuestionnaireResponse",
+        "http://hl7.org/fhir/StructureDefinition/Observation",
+        "http://hl7.org/fhir/StructureDefinition/MolecularSequence"
+       ]
+      }
+     }
     ],
     [
      "component",
@@ -12409,7 +14450,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12433,7 +14477,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "high",
@@ -12441,7 +14492,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -12449,7 +14507,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/referencerange-meaning"
+      }
+     }
     ],
     [
      "appliesTo",
@@ -12457,7 +14521,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/referencerange-appliesto"
+      }
+     }
     ],
     [
      "age",
@@ -12483,7 +14553,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12507,7 +14580,14 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-codes"
+      }
+     }
     ],
     [
      "value",
@@ -12533,7 +14613,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/data-absent-reason"
+      }
+     }
     ],
     [
      "interpretation",
@@ -12541,7 +14627,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/observation-interpretation"
+      }
+     }
     ],
     [
      "referenceRange",
@@ -12557,7 +14649,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -12581,7 +14676,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -12621,7 +14722,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "OperationOutcome.issue": [
@@ -12631,7 +14735,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12655,7 +14762,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/issue-severity|4.0.1"
+      }
+     }
     ],
     [
      "code",
@@ -12663,7 +14777,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/issue-type|4.0.1"
+      }
+     }
     ],
     [
      "details",
@@ -12671,7 +14792,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/operation-outcome"
+      }
+     }
     ],
     [
      "diagnostics",
@@ -12705,7 +14832,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -12729,7 +14859,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -12785,7 +14921,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/organization-type"
+      }
+     }
     ],
     [
      "name",
@@ -12825,7 +14967,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "contact",
@@ -12841,7 +14990,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Endpoint"
+       ]
+      }
+     }
     ]
    ],
    "Organization.contact": [
@@ -12851,7 +15007,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12875,7 +15034,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/contactentity-type"
+      }
+     }
     ],
     [
      "name",
@@ -12909,7 +15074,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -12933,7 +15101,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/operation-parameter-use|4.0.1"
+      }
+     }
     ],
     [
      "min",
@@ -12965,7 +15140,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/all-types|4.0.1"
+      }
+     }
     ],
     [
      "profile",
@@ -12973,7 +15155,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/StructureDefinition"
+       ]
+      }
+     }
     ]
    ],
    "Parameters": [
@@ -12983,7 +15172,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -13007,7 +15199,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "parameter",
@@ -13025,7 +15223,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13049,7 +15250,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "value",
@@ -13130,7 +15334,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -13154,7 +15361,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -13226,7 +15439,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/administrative-gender|4.0.1"
+      }
+     }
     ],
     [
      "birthDate",
@@ -13259,7 +15478,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/marital-status"
+      }
+     }
     ],
     [
      "multipleBirth",
@@ -13300,7 +15525,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization",
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole"
+       ]
+      }
+     }
     ],
     [
      "managingOrganization",
@@ -13308,7 +15542,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "link",
@@ -13326,7 +15567,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13350,7 +15594,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/patient-contactrelationship"
+      }
+     }
     ],
     [
      "name",
@@ -13382,7 +15632,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/administrative-gender|4.0.1"
+      }
+     }
     ],
     [
      "organization",
@@ -13390,7 +15646,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "period",
@@ -13408,7 +15671,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13432,7 +15698,14 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "preferred",
@@ -13450,7 +15723,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13474,7 +15750,16 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson"
+       ]
+      }
+     }
     ],
     [
      "type",
@@ -13482,7 +15767,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/link-type|4.0.1"
+      }
+     }
     ]
    ],
    "Period": [
@@ -13492,7 +15784,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13526,7 +15821,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13585,7 +15883,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -13609,7 +15910,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -13689,7 +15996,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/administrative-gender|4.0.1"
+      }
+     }
     ],
     [
      "birthDate",
@@ -13721,7 +16034,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ]
    ],
    "Practitioner.qualification": [
@@ -13731,7 +16050,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13763,7 +16085,14 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "example",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v2-2.7-0360"
+      }
+     }
     ],
     [
      "period",
@@ -13779,7 +16108,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ]
    ],
    "ProdCharacteristic": [
@@ -13789,7 +16125,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13903,7 +16242,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13935,7 +16277,10 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "period",
@@ -13943,7 +16288,10 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "specialPrecautionsForStorage",
@@ -13961,7 +16309,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -13985,7 +16336,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/quantity-comparator|4.0.1"
+      }
+     }
     ],
     [
      "unit",
@@ -14019,7 +16376,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14035,7 +16395,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "high",
@@ -14043,7 +16410,14 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ]
    ],
    "Ratio": [
@@ -14053,7 +16427,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14087,7 +16464,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14111,7 +16491,13 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-types"
+      }
+     }
     ],
     [
      "identifier",
@@ -14137,7 +16523,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14153,7 +16542,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/related-artifact-type|4.0.1"
+      }
+     }
     ],
     [
      "label",
@@ -14201,7 +16597,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ]
    ],
    "RelatedPerson": [
@@ -14211,7 +16614,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -14235,7 +16641,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -14291,7 +16703,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Patient"
+       ]
+      }
+     }
     ],
     [
      "relationship",
@@ -14299,7 +16719,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/relatedperson-relationshiptype"
+      }
+     }
     ],
     [
      "name",
@@ -14323,7 +16749,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/administrative-gender|4.0.1"
+      }
+     }
     ],
     [
      "birthDate",
@@ -14373,7 +16805,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14397,7 +16832,14 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "preferred",
@@ -14415,7 +16857,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -14439,7 +16884,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ]
    ],
    "SampledData": [
@@ -14449,7 +16900,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14465,7 +16919,15 @@
      [
       "Quantity"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "p": {
+       "Quantity": [
+        "http://hl7.org/fhir/StructureDefinition/SimpleQuantity"
+       ]
+      }
+     }
     ],
     [
      "period",
@@ -14473,7 +16935,10 @@
      [
       "decimal"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "factor",
@@ -14505,7 +16970,10 @@
      [
       "positiveInt"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "data",
@@ -14523,7 +16991,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -14547,7 +17018,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -14587,7 +17064,10 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "version",
@@ -14603,7 +17083,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "derivedFrom",
@@ -14611,7 +17094,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/SearchParameter"
+       ]
+      }
+     }
     ],
     [
      "status",
@@ -14619,7 +17109,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/publication-status|4.0.1"
+      }
+     }
     ],
     [
      "experimental",
@@ -14659,7 +17156,10 @@
      [
       "markdown"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "useContext",
@@ -14675,7 +17175,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/jurisdiction"
+      }
+     }
     ],
     [
      "purpose",
@@ -14691,7 +17197,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "base",
@@ -14699,7 +17208,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
+      }
+     }
     ],
     [
      "type",
@@ -14707,7 +17223,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-param-type|4.0.1"
+      }
+     }
     ],
     [
      "expression",
@@ -14731,7 +17254,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-xpath-usage|4.0.1"
+      }
+     }
     ],
     [
      "target",
@@ -14739,7 +17268,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/resource-types|4.0.1"
+      }
+     }
     ],
     [
      "multipleOr",
@@ -14763,7 +17298,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-comparator|4.0.1"
+      }
+     }
     ],
     [
      "modifier",
@@ -14771,7 +17312,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/search-modifier-code|4.0.1"
+      }
+     }
     ],
     [
      "chain",
@@ -14797,7 +17344,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14821,7 +17371,15 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/SearchParameter"
+       ]
+      }
+     }
     ],
     [
      "expression",
@@ -14829,7 +17387,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "Signature": [
@@ -14839,7 +17400,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14855,7 +17419,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/signature-type"
+      }
+     }
     ],
     [
      "when",
@@ -14863,7 +17434,10 @@
      [
       "instant"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "who",
@@ -14871,7 +17445,20 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "onBehalfOf",
@@ -14879,7 +17466,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "targetFormat",
@@ -14887,7 +17486,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "sigFormat",
@@ -14895,7 +17500,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/mimetypes|4.0.1"
+      }
+     }
     ],
     [
      "data",
@@ -14913,7 +17524,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -14973,7 +17587,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15007,7 +17624,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15047,7 +17667,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/timing-abbreviation"
+      }
+     }
     ]
    ],
    "Timing.repeat": [
@@ -15057,7 +17683,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15115,7 +17744,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/units-of-time|4.0.1"
+      }
+     }
     ],
     [
      "frequency",
@@ -15155,7 +17790,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/units-of-time|4.0.1"
+      }
+     }
     ],
     [
      "dayOfWeek",
@@ -15163,7 +17804,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/days-of-week|4.0.1"
+      }
+     }
     ],
     [
      "timeOfDay",
@@ -15179,7 +17826,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/event-timing|4.0.1"
+      }
+     }
     ],
     [
      "offset",
@@ -15197,7 +17850,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15213,7 +17869,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/trigger-type|4.0.1"
+      }
+     }
     ],
     [
      "name",
@@ -15232,7 +17895,14 @@
       "date",
       "dateTime"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Schedule"
+       ]
+      }
+     }
     ],
     [
      "data",
@@ -15258,7 +17928,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15274,7 +17947,14 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/usage-context-type"
+      }
+     }
     ],
     [
      "value",
@@ -15285,7 +17965,25 @@
       "Range",
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/PlanDefinition",
+        "http://hl7.org/fhir/StructureDefinition/ResearchStudy",
+        "http://hl7.org/fhir/StructureDefinition/InsurancePlan",
+        "http://hl7.org/fhir/StructureDefinition/HealthcareService",
+        "http://hl7.org/fhir/StructureDefinition/Group",
+        "http://hl7.org/fhir/StructureDefinition/Location",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      },
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/use-context"
+      }
+     }
     ]
    ],
    "ValueSet": [
@@ -15295,7 +17993,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -15319,7 +18020,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -15399,7 +18106,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/publication-status|4.0.1"
+      }
+     }
     ],
     [
      "experimental",
@@ -15455,7 +18169,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/jurisdiction"
+      }
+     }
     ],
     [
      "immutable",
@@ -15505,7 +18225,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15545,7 +18268,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "exclude",
@@ -15561,7 +18287,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15617,7 +18346,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ]
    ],
    "ValueSet.compose.include.concept": [
@@ -15627,7 +18363,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15651,7 +18390,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "display",
@@ -15677,7 +18419,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15701,7 +18446,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "use",
@@ -15709,7 +18460,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/designation-use"
+      }
+     }
     ],
     [
      "value",
@@ -15717,7 +18474,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ValueSet.compose.include.filter": [
@@ -15727,7 +18487,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15751,7 +18514,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "op",
@@ -15759,7 +18525,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/filter-operator|4.0.1"
+      }
+     }
     ],
     [
      "value",
@@ -15767,7 +18540,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ValueSet.expansion": [
@@ -15777,7 +18553,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15809,7 +18588,10 @@
      [
       "dateTime"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "total",
@@ -15851,7 +18633,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15875,7 +18660,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "value",
@@ -15899,7 +18687,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -15985,7 +18776,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -16009,7 +18803,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -16049,7 +18849,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "occurred",
@@ -16066,7 +18874,10 @@
      [
       "instant"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "policy",
@@ -16082,7 +18893,14 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Location"
+       ]
+      }
+     }
     ],
     [
      "reason",
@@ -16090,7 +18908,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://terminology.hl7.org/ValueSet/v3-PurposeOfUse"
+      }
+     }
     ],
     [
      "activity",
@@ -16098,7 +18922,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/provenance-activity-type"
+      }
+     }
     ],
     [
      "agent",
@@ -16106,7 +18936,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "entity",
@@ -16132,7 +18965,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16156,7 +18992,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/provenance-agent-type"
+      }
+     }
     ],
     [
      "role",
@@ -16164,7 +19006,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "example",
+       "valueSet": "http://hl7.org/fhir/ValueSet/security-role-type"
+      }
+     }
     ],
     [
      "who",
@@ -16172,7 +19020,20 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ],
     [
      "onBehalfOf",
@@ -16180,7 +19041,19 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Practitioner",
+        "http://hl7.org/fhir/StructureDefinition/PractitionerRole",
+        "http://hl7.org/fhir/StructureDefinition/RelatedPerson",
+        "http://hl7.org/fhir/StructureDefinition/Patient",
+        "http://hl7.org/fhir/StructureDefinition/Device",
+        "http://hl7.org/fhir/StructureDefinition/Organization"
+       ]
+      }
+     }
     ]
    ],
    "Provenance.entity": [
@@ -16190,7 +19063,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16214,7 +19090,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/provenance-entity-role|4.0.1"
+      }
+     }
     ],
     [
      "what",
@@ -16222,7 +19105,15 @@
      [
       "Reference"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "t": {
+       "Reference": [
+        "http://hl7.org/fhir/StructureDefinition/Resource"
+       ]
+      }
+     }
     ],
     [
      "agent",
@@ -16238,7 +19129,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -16262,7 +19156,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -16342,7 +19242,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/publication-status|4.0.1"
+      }
+     }
     ],
     [
      "experimental",
@@ -16398,7 +19305,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/jurisdiction"
+      }
+     }
     ],
     [
      "purpose",
@@ -16430,7 +19343,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ],
     [
      "hierarchyMeaning",
@@ -16438,7 +19358,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/codesystem-hierarchy-meaning|4.0.1"
+      }
+     }
     ],
     [
      "compositional",
@@ -16462,7 +19388,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/codesystem-content-mode|4.0.1"
+      }
+     }
     ],
     [
      "supplements",
@@ -16470,7 +19403,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/CodeSystem"
+       ]
+      }
+     }
     ],
     [
      "count",
@@ -16512,7 +19452,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16536,7 +19479,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "description",
@@ -16552,7 +19498,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/filter-operator|4.0.1"
+      }
+     }
     ],
     [
      "value",
@@ -16560,7 +19513,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "CodeSystem.property": [
@@ -16570,7 +19526,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16594,7 +19553,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "uri",
@@ -16618,7 +19580,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/concept-property-type|4.0.1"
+      }
+     }
     ]
    ],
    "CodeSystem.concept": [
@@ -16628,7 +19597,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16652,7 +19624,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "display",
@@ -16700,7 +19675,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16724,7 +19702,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "use",
@@ -16732,7 +19716,13 @@
      [
       "Coding"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/designation-use"
+      }
+     }
     ],
     [
      "value",
@@ -16740,7 +19730,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "CodeSystem.concept.property": [
@@ -16750,7 +19743,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -16774,7 +19770,10 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "value",
@@ -16788,7 +19787,10 @@
       "dateTime",
       "decimal"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ]
    ],
    "ConceptMap": [
@@ -16798,7 +19800,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "meta",
@@ -16822,7 +19827,13 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "preferred",
+       "valueSet": "http://hl7.org/fhir/ValueSet/languages"
+      }
+     }
     ],
     [
      "text",
@@ -16902,7 +19913,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/publication-status|4.0.1"
+      }
+     }
     ],
     [
      "experimental",
@@ -16958,7 +19976,13 @@
      [
       "CodeableConcept"
      ],
-     null
+     null,
+     {
+      "b": {
+       "strength": "extensible",
+       "valueSet": "http://hl7.org/fhir/ValueSet/jurisdiction"
+      }
+     }
     ],
     [
      "purpose",
@@ -16983,7 +20007,14 @@
       "uri",
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ],
     [
      "target",
@@ -16992,7 +20023,14 @@
       "uri",
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ValueSet"
+       ]
+      }
+     }
     ],
     [
      "group",
@@ -17010,7 +20048,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -17066,7 +20107,10 @@
      [
       "BackboneElement"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "unmapped",
@@ -17084,7 +20128,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -17134,7 +20181,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -17174,7 +20224,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/concept-map-equivalence|4.0.1"
+      }
+     }
     ],
     [
      "comment",
@@ -17206,7 +20263,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -17230,7 +20290,10 @@
      [
       "uri"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "system",
@@ -17238,7 +20301,14 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/CodeSystem"
+       ]
+      }
+     }
     ],
     [
      "value",
@@ -17246,7 +20316,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "n": 1
+     }
     ],
     [
      "display",
@@ -17264,7 +20337,10 @@
      [
       "string"
      ],
-     null
+     null,
+     {
+      "s": "String"
+     }
     ],
     [
      "extension",
@@ -17288,7 +20364,14 @@
      [
       "code"
      ],
-     null
+     null,
+     {
+      "n": 1,
+      "b": {
+       "strength": "required",
+       "valueSet": "http://hl7.org/fhir/ValueSet/conceptmap-unmapped-mode|4.0.1"
+      }
+     }
     ],
     [
      "code",
@@ -17312,9 +20395,380 @@
      [
       "canonical"
      ],
-     null
+     null,
+     {
+      "t": {
+       "canonical": [
+        "http://hl7.org/fhir/StructureDefinition/ConceptMap"
+       ]
+      }
+     }
     ]
    ]
+  },
+  "info": {
+   "Address": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Age": {
+    "k": "complex",
+    "b": "Quantity"
+   },
+   "Annotation": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Attachment": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "AuditEvent": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "BackboneElement": {
+    "k": "complex",
+    "b": "Element",
+    "a": 1
+   },
+   "base64Binary": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "String"
+   },
+   "Binary": {
+    "k": "resource",
+    "b": "Resource"
+   },
+   "boolean": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "Boolean"
+   },
+   "Bundle": {
+    "k": "resource",
+    "b": "Resource"
+   },
+   "canonical": {
+    "k": "primitive",
+    "b": "uri",
+    "s": "String"
+   },
+   "CapabilityStatement": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "code": {
+    "k": "primitive",
+    "b": "string",
+    "s": "String"
+   },
+   "CodeableConcept": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "CodeSystem": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Coding": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "ConceptMap": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Condition": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "ContactDetail": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "ContactPoint": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Contributor": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Count": {
+    "k": "complex",
+    "b": "Quantity"
+   },
+   "DataRequirement": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "date": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "Date"
+   },
+   "dateTime": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "DateTime"
+   },
+   "decimal": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "Decimal"
+   },
+   "Device": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Distance": {
+    "k": "complex",
+    "b": "Quantity"
+   },
+   "DomainResource": {
+    "k": "resource",
+    "b": "Resource",
+    "a": 1
+   },
+   "Dosage": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "Duration": {
+    "k": "complex",
+    "b": "Quantity"
+   },
+   "Element": {
+    "k": "complex",
+    "a": 1
+   },
+   "ElementDefinition": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "Encounter": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Expression": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Extension": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Group": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "HumanName": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "id": {
+    "k": "primitive",
+    "b": "string",
+    "s": "String"
+   },
+   "Identifier": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "instant": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "DateTime"
+   },
+   "integer": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "Integer"
+   },
+   "List": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "markdown": {
+    "k": "primitive",
+    "b": "string",
+    "s": "String"
+   },
+   "MarketingStatus": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "MedicationRequest": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Meta": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Money": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Narrative": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Observation": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "oid": {
+    "k": "primitive",
+    "b": "uri",
+    "s": "String"
+   },
+   "OperationOutcome": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Organization": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "ParameterDefinition": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Parameters": {
+    "k": "resource",
+    "b": "Resource"
+   },
+   "Patient": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Period": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Population": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "positiveInt": {
+    "k": "primitive",
+    "b": "integer",
+    "s": "String"
+   },
+   "Practitioner": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "ProdCharacteristic": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "ProductShelfLife": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "Provenance": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Quantity": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Range": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Ratio": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "Reference": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "RelatedArtifact": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "RelatedPerson": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Resource": {
+    "k": "resource",
+    "a": 1
+   },
+   "SampledData": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "SearchParameter": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "Signature": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "string": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "String"
+   },
+   "SubstanceAmount": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "time": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "Time"
+   },
+   "Timing": {
+    "k": "complex",
+    "b": "BackboneElement"
+   },
+   "TriggerDefinition": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "unsignedInt": {
+    "k": "primitive",
+    "b": "integer",
+    "s": "String"
+   },
+   "uri": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "String"
+   },
+   "url": {
+    "k": "primitive",
+    "b": "uri",
+    "s": "String"
+   },
+   "UsageContext": {
+    "k": "complex",
+    "b": "Element"
+   },
+   "uuid": {
+    "k": "primitive",
+    "b": "uri",
+    "s": "String"
+   },
+   "ValueSet": {
+    "k": "resource",
+    "b": "DomainResource"
+   },
+   "xhtml": {
+    "k": "primitive",
+    "b": "Element",
+    "s": "String"
+   }
   }
  }
 }
