@@ -629,6 +629,20 @@ How the cache files are loaded is a deployment choice, so it is set in `config.j
 tx module's `snomed` block), not here - see [Loading SNOMED CT](#loading-snomed-ct).
 
 
+#### `snomed-v2`, `loinc-v2`, `rxnorm-v2` - SNOMED CT, LOINC and RxNorm from sqlite-v2 files
+
+Serve one release of SNOMED CT, LOINC or RxNorm from a sqlite-v2 terminology file instead of the
+`snomed`, `loinc` or `rxnorm` file of the same release; each line is chosen on its own, and `!`
+works as on the other types. The format, the importers that build the files (from the release, or
+from the `.cache` / `.db` a server already has) and the known differences from the built-in
+providers are in [sqlite-v2/README.md](sqlite-v2/README.md).
+
+```yaml
+- loinc-v2!:loinc-2.83.db
+- snomed-v2!:sct-intl-20260701.db
+- rxnorm-v2:rxnorm-03022026.db
+```
+
 #### `cpt` - CPT (Current Procedural Terminology)
 
 Loads CPT codes from a SQLite database file.
