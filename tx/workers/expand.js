@@ -1778,24 +1778,16 @@ class ValueSetExpander {
 
         if (cset.concept) {
           this.worker.opContext.log('iterate concepts');
-          const cds = new Designations(this.worker.i18n.languageDefinitions);
-          // a text filter matches designations in one language (see CodeSystemProvider.searchLanguage)
-          const searchLang = filter.isNull ? null : cs.searchLanguage(this.params.requestedLanguages());
           // each listed code is located next: a provider may read them together, and hand back what it read
           const prefetched = await cs.prefetchCodes(cset.concept.map(cc => cc.code), false);
           for (const [ci, cc] of cset.concept.entries()) {
             await this.worker.checkAndYield('processCodes#3');
-            cds.clear();
             Extensions.checkNoModifiers(cc, 'ValueSetExpander.processCodes', path + '.concept[' + ci + ']', vsSrc.vurl);
             const cctxt = await cs.locate(cc.code, prefetched);
+            // a listed code is excluded whatever the text filter: the filter narrows what is
+            // included, so excluding a code it does not match changes nothing
             if (cctxt && cctxt.context && (!this.params.activeOnly || !await cs.isInactive(cctxt.context)) && await this.passesFilters(cs, cctxt.context, prep, filters, 0)) {
-              if (filter.passesDesignations(cds, searchLang, cs.defLang()) || filter.passesCode(cc.code)) {
-                let ov = Extensions.readString(cc, 'http://hl7.org/fhir/StructureDefinition/itemWeight');
-                if (!ov) {
-                  ov = await cs.itemWeight(cctxt.context);
-                }
-                this.excludeCode(cs, await cs.system(), await cs.version(), cc.code, expansion, valueSets);
-              }
+              this.excludeCode(cs, await cs.system(), await cs.version(), cc.code, expansion, valueSets);
             }
           }
         }
