@@ -185,16 +185,13 @@ describe('Iso4217Services', () => {
   });
 
   describe('Filter Support - Decimals', () => {
-    test('should support decimals equals filter', async () => {
-      expect(await provider.doesFilter('decimals', 'equals', '2')).toBe(true);
-      expect(await provider.doesFilter('decimals', 'equals', '0')).toBe(true);
-      expect(await provider.doesFilter('decimals', 'equals', '3')).toBe(true);
+    test('should support decimals = filter', async () => {
+      expect(await provider.doesFilter('decimals', '=', '2')).toBe(true);
+      expect(await provider.doesFilter('decimals', '=', '0')).toBe(true);
+      expect(await provider.doesFilter('decimals', '=', '3')).toBe(true);
     });
 
-    test('should support the FHIR "=" operator for decimals', async () => {
-      // ValueSet.compose.include.filter.op is bound to filter-operator, whose code is "=", not "equals"
-      expect(await provider.doesFilter('decimals', '=', '3')).toBe(true);
-
+    test('should return the 3-decimal currencies for decimals = 3', async () => {
       const ctxt = await provider.getPrepContext(false);
       await provider.filter(ctxt, true, 'decimals', '=', '3');
       const [set] = await provider.executeFilters(ctxt);
@@ -207,6 +204,8 @@ describe('Iso4217Services', () => {
       expect(await provider.doesFilter('decimals', 'contains', '2')).toBe(false);
       expect(await provider.doesFilter('decimals', 'regex', '2')).toBe(false);
       expect(await provider.doesFilter('display', 'equals', 'Dollar')).toBe(false);
+      // "equals" is not a FHIR filter operator (filter-operator uses "=")
+      expect(await provider.doesFilter('decimals', 'equals', '2')).toBe(false);
     });
 
     test('should search the names (text filter)', async () => {
@@ -223,6 +222,9 @@ describe('Iso4217Services', () => {
       await expect(
         provider.filter(ctxt, true, 'symbol', 'equals', '$')
       ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "symbol equals $" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      await expect(
+        provider.filter(ctxt, true, 'decimals', 'equals', '2')
+      ).rejects.toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
@@ -232,7 +234,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '2');
+      await provider.filter(ctxt, true, 'decimals', '=', '2');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -299,7 +301,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '0');
+      await provider.filter(ctxt, true, 'decimals', '=', '0');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -357,7 +359,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '3');
+      await provider.filter(ctxt, true, 'decimals', '=', '3');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -402,7 +404,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '-1');
+      await provider.filter(ctxt, true, 'decimals', '=', '-1');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -444,7 +446,7 @@ describe('Iso4217Services', () => {
   describe('Execute Filters', () => {
     test('should execute single filter', async () => {
       const ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '2');
+      await provider.filter(ctxt, true, 'decimals', '=', '2');
       const results = await provider.executeFilters(ctxt);
 
       expect(results).toBeTruthy();
