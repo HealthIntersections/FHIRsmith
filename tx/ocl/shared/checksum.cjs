@@ -6,9 +6,10 @@
  * source's versions fails or times out, the same content comes with the bare base checksum.
  *
  * Cache decisions about the *content* (is the cold cache still that of the source? is a value
- * set's cached compose still that of the code systems it draws on?) compare the base, so that
- * a discovery run that couldn't resolve the default version doesn't throw away caches whose
- * content hasn't changed.
+ * set's cached compose still that of the code systems it draws on?) use sameChecksum: the same
+ * base, and the suffix either missing from one of the two (a discovery run that couldn't resolve
+ * the default version must not throw away caches whose content hasn't changed) or the same in
+ * both. Two different suffixes are a new default release, and that is a change.
  */
 
 const DEFAULT_SUFFIX = '|default=';
@@ -22,9 +23,33 @@ function baseChecksum(checksum) {
   return i < 0 ? text : text.substring(0, i);
 }
 
+/** The |default=<version> suffix of a checksum, or null when it has none */
+function defaultSuffix(checksum) {
+  if (checksum == null) {
+    return null;
+  }
+  const text = String(checksum);
+  const i = text.indexOf(DEFAULT_SUFFIX);
+  return i < 0 ? null : text.substring(i);
+}
+
+/**
+ * Whether two checksums of a source describe the same content: the same base, and either one
+ * has no |default= suffix (its default version wasn't resolved in that run) or both have the
+ * same one. abc|default=1.0 and abc|default=2.0 differ: the source has a new default release
+ */
+function sameChecksum(a, b) {
+  if (baseChecksum(a) !== baseChecksum(b)) {
+    return false;
+  }
+  const sa = defaultSuffix(a);
+  const sb = defaultSuffix(b);
+  return sa == null || sb == null || sa === sb;
+}
+
 /**
  * Whether two dependency-checksum maps ({ "system|version": checksum }) describe the same
- * content: the same keys, and the same base checksum for each
+ * content: the same keys, and the same checksum for each, as sameChecksum compares them
  */
 function sameDependencyChecksums(current, cached) {
   const a = current || {};
@@ -38,7 +63,7 @@ function sameDependencyChecksums(current, cached) {
     if (aKeys[i] !== bKeys[i]) {
       return false;
     }
-    if (baseChecksum(a[aKeys[i]]) !== baseChecksum(b[bKeys[i]])) {
+    if (!sameChecksum(a[aKeys[i]], b[bKeys[i]])) {
       return false;
     }
   }
@@ -92,4 +117,4 @@ function sameCollectionSignature(current, cached) {
   return true;
 }
 
-module.exports = { baseChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature, DEFAULT_SUFFIX };
+module.exports = { baseChecksum, defaultSuffix, sameChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature, DEFAULT_SUFFIX };

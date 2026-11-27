@@ -7,7 +7,8 @@
  *   downloaded every source from OCL again)
  * - the |default=<version> suffix of a discovery checksum, which comes and goes with whether
  *   discovery resolved the default version in that run, neither invalidates the loaded concepts
- *   nor a value set's cached compose
+ *   nor a value set's cached compose by coming or going; a different suffix (a new default
+ *   release) does
  */
 const fs = require('fs/promises');
 const path = require('path');
@@ -17,7 +18,7 @@ const { OCLSourceCodeSystemFactory } = require('../../tx/ocl/cs-ocl');
 const { OCLBackgroundJobQueue } = require('../../tx/ocl/jobs/background-queue');
 const { CACHE_CS_DIR, getCacheFilePath } = require('../../tx/ocl/cache/cache-paths');
 const { ensureCacheDirectories, atomicWriteFile } = require('../../tx/ocl/cache/cache-utils');
-const { baseChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature } = require('../../tx/ocl/shared/checksum');
+const { baseChecksum, defaultSuffix, sameChecksum, sameDependencyChecksums, collectionPath, sameCollectionSignature } = require('../../tx/ocl/shared/checksum');
 
 const CANONICAL = 'http://example.org/ocl/CodeSystem/cold-cache-checksum';
 const VERSION = '1.0';
@@ -40,11 +41,29 @@ describe('OCL checksums: base and |default= suffix', () => {
     expect(baseChecksum(undefined)).toBe(null);
   });
 
-  it('compares dependency checksums by base', () => {
+  it('finds the suffix', () => {
+    expect(defaultSuffix('abc|default=20250905-RNDS')).toBe('|default=20250905-RNDS');
+    expect(defaultSuffix('abc')).toBe(null);
+    expect(defaultSuffix(null)).toBe(null);
+  });
+
+  it('accepts the suffix missing from one of the two, but not two different ones', () => {
+    expect(sameChecksum('abc|default=1.0', 'abc')).toBe(true);
+    expect(sameChecksum('abc', 'abc|default=1.0')).toBe(true);
+    expect(sameChecksum('abc|default=1.0', 'abc|default=1.0')).toBe(true);
+    expect(sameChecksum('abc', 'abc')).toBe(true);
+    expect(sameChecksum('abc|default=2.0', 'abc|default=1.0')).toBe(false);
+    expect(sameChecksum('xyz|default=1.0', 'abc|default=1.0')).toBe(false);
+    expect(sameChecksum('xyz', 'abc')).toBe(false);
+  });
+
+  it('compares dependency checksums by base and default version', () => {
     const key = 'https://example.org/CodeSystem/x|';
     expect(sameDependencyChecksums({ [key]: 'abc|default=1.0' }, { [key]: 'abc' })).toBe(true);
     expect(sameDependencyChecksums({ [key]: 'abc' }, { [key]: 'abc|default=1.0' })).toBe(true);
-    expect(sameDependencyChecksums({ [key]: 'abc|default=2.0' }, { [key]: 'abc|default=1.0' })).toBe(true);
+    expect(sameDependencyChecksums({ [key]: 'abc|default=1.0' }, { [key]: 'abc|default=1.0' })).toBe(true);
+    // a new default release: a value set over the source with no version given is built again
+    expect(sameDependencyChecksums({ [key]: 'abc|default=2.0' }, { [key]: 'abc|default=1.0' })).toBe(false);
     expect(sameDependencyChecksums({ [key]: 'xyz' }, { [key]: 'abc' })).toBe(false);
     expect(sameDependencyChecksums({ [key]: 'abc' }, {})).toBe(false);
     expect(sameDependencyChecksums({ [key]: 'abc' }, { 'https://example.org/CodeSystem/y|': 'abc' })).toBe(false);
@@ -163,6 +182,28 @@ describe('OCL code system cold cache kept while the source is unchanged', () => 
     expect(factory.isComplete).toBe(false);
   });
 
+  it('keeps a cold cache written with or without the suffix while the default version is the same', async () => {
+    for (const [written, current] of [['abc|default=1.0', 'abc'], ['abc|default=1.0', 'abc|default=1.0'], ['abc', 'abc|default=1.0']]) {
+      enqueue.mockClear();
+      OCLSourceCodeSystemFactory.factoriesByKey.clear();
+      const factory = await factoryWithOldColdCache(written, current);
+      await settled(factory);
+      factory.scheduleBackgroundLoad('proactive-warm');
+      await settled(factory);
+      expect(enqueue).not.toHaveBeenCalled();
+    }
+  });
+
+  it('downloads again when the source has a new default release', async () => {
+    const factory = await factoryWithOldColdCache('abc|default=1.0', 'abc|default=2.0');
+    await settled(factory);
+
+    factory.scheduleBackgroundLoad('proactive-warm');
+    await settled(factory);
+
+    expect(enqueue).toHaveBeenCalledTimes(1);
+  });
+
   it('downloads an old file that does not say its source checksum once (as before)', async () => {
     const factory = await factoryWithOldColdCache(undefined, 'abc');
     await settled(factory);
@@ -197,6 +238,21 @@ describe('OCL code system cold cache kept while the source is unchanged', () => 
     factory.currentChecksum();
     expect(factory.isComplete).toBe(true);
     expect(factory.loadedConceptCount).toBe(3);
+  });
+
+  it('drops the loaded concepts on a new default release, even after a run without the suffix', async () => {
+    const factory = await factoryWithOldColdCache('abc|default=1.0', 'abc|default=1.0');
+    await settled(factory);
+    expect(factory.isComplete).toBe(true);
+
+    factory.meta.checksum = 'abc';
+    factory.currentChecksum();
+    expect(factory.isComplete).toBe(true);
+
+    factory.meta.checksum = 'abc|default=2.0';
+    factory.currentChecksum();
+    expect(factory.isComplete).toBe(false);
+    expect(factory.loadedConceptCount).toBe(-1);
   });
 
   it('drops the loaded concepts when the base checksum changes', async () => {

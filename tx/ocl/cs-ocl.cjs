@@ -7,7 +7,7 @@ const { CodeSystem } = require('../library/codesystem');
 const { SearchFilterText } = require('../library/designations');
 const { PAGE_SIZE, CONCEPT_PAGE_SIZE, COLD_CACHE_FRESHNESS_MS, OCL_CODESYSTEM_MARKER_EXTENSION } = require('./shared/constants');
 const { sizeProbe, sleep, withSizeProbeSlot } = require('./shared/size-probe');
-const { baseChecksum } = require('./shared/checksum');
+const { defaultSuffix, sameChecksum } = require('./shared/checksum');
 const { createOclHttpClient } = require('./http/client');
 const { fetchAllPages, extractItemsAndNext } = require('./http/pagination');
 const { OclReferenceResolver, isOrgOwned } = require('./resolve/reference-resolver');
@@ -1733,7 +1733,8 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
     this.loadedConceptCount = -1;
     this.loadedChecksum = meta?.checksum || null;
     this.customFingerprint = null;
-    // the source's base checksum the cold cache file was written for (null: unknown, an older file)
+    // the source checksum the cold cache file was written for (null: unknown, an older file; files
+    // written before the |default= suffix was kept have the base only, which sameChecksum accepts)
     this.coldCacheSourceChecksum = null;
     this.backgroundLoadProgress = { processed: 0, total: null };
     this.materializedConceptList = null;
@@ -1819,7 +1820,7 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       await ensureCacheDirectories(CACHE_CS_DIR, CACHE_VS_DIR);
 
       const fingerprint = computeCodeSystemFingerprint(concepts);
-      const sourceChecksum = baseChecksum(this.meta?.checksum || this.loadedChecksum || null);
+      const sourceChecksum = this.meta?.checksum || this.loadedChecksum || null;
       const cacheData = {
         canonicalUrl,
         version,
@@ -1927,8 +1928,8 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
     // If warm state is complete but cold cache is stale, force a refresh run.
     // This keeps warm data available while ensuring stale cold-cache files are replaced.
-    // A cold cache written for the source's current (base) checksum is not stale, however old
-    // the file: the source hasn't changed since, and downloading it again only loads OCL.
+    // A cold cache written for the source's current checksum is not stale, however old the
+    // file: the source hasn't changed since, and downloading it again only loads OCL.
     if (this.isComplete) {
       if (cacheAgeMs == null || cacheAgeMs < COLD_CACHE_FRESHNESS_MS || this.#coldCacheMatchesSource()) {
         return;
@@ -2111,11 +2112,12 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
 
   /**
    * Whether the cold cache that was read (or written) is that of the source as it is now:
-   * written for the same base checksum. False for an older file without one
+   * written for the same checksum, as sameChecksum compares them (a new default release is a
+   * change). False for an older file without one
    */
   #coldCacheMatchesSource() {
-    const current = baseChecksum(this.meta?.checksum || null);
-    return current != null && this.coldCacheSourceChecksum === current;
+    const current = this.meta?.checksum || null;
+    return current != null && this.coldCacheSourceChecksum != null && sameChecksum(this.coldCacheSourceChecksum, current);
   }
 
   #syncWarmStateWithChecksum() {
@@ -2125,11 +2127,15 @@ class OCLSourceCodeSystemFactory extends CodeSystemFactoryProvider {
       return;
     }
 
-    // Only a change of the source's own (base) checksum means its content changed. The
-    // |default=<version> suffix comes and goes with whether discovery resolved the default
-    // version in that run (shared/checksum.cjs); it must not throw away the loaded concepts.
-    if (baseChecksum(checksum) === baseChecksum(this.loadedChecksum)) {
-      this.loadedChecksum = checksum;
+    // The |default=<version> suffix comes and goes with whether discovery resolved the default
+    // version in that run (shared/checksum.cjs): its coming or going must not throw away the
+    // loaded concepts, but a different one (a new default release) is a change. The suffix the
+    // concepts were loaded with is kept when this run has none, so that a later run with another
+    // default version is still seen as a change.
+    if (sameChecksum(checksum, this.loadedChecksum)) {
+      if (defaultSuffix(checksum) != null) {
+        this.loadedChecksum = checksum;
+      }
       return;
     }
 
