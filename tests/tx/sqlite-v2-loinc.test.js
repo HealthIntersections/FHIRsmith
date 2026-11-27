@@ -124,6 +124,23 @@ function flatParams(body) {
   return sorted((body.parameter || []).map((p) => (p.resource ? p.name + ':' + JSON.stringify(p.resource.issue || p.resource) : one(p))));
 }
 
+// Main's designations of a code (cs-loinc.js #loadDesignationsForContext) come from a query with
+// no ORDER BY, so in the order SQLite plans it: by DescriptionTypeKey, then row, where it uses the
+// index main's load() makes on Descriptions (CodeKey, DescriptionTypeKey); by row where it scans
+// the table. Either way the display is first, and the rows of one use, and of one language, are in
+// row order - so those are what is compared in order
+
+/** a list with its items after the first stably sorted by key(item) */
+const restBy = (list, key) => [list[0], ...list.slice(1).sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0))];
+
+/** a "Valid display is one of N choices" message with the choices after the first in language order */
+const choicesByLanguage = (s) => s.replace(/(choices: )(.*?)( \(for the language)/g, (all, pre, list, post) => {
+  const items = [...list.matchAll(/'((?:[^']|'')*)' \(([^()]*)\)/g)].map((m) => [m[0], m[2]]);
+  const join = (l) => l.slice(0, -1).join(', ') + ' or ' + l[l.length - 1];
+  if (items.length < 2 || join(items.map((i) => i[0])) !== list) return all; // not a list this reads
+  return pre + join(restBy(items, (i) => i[1]).map((i) => i[0])) + post;
+});
+
 beforeAll(async () => {
   app = await getTestApp();
   tx = getTxModule();
@@ -581,7 +598,7 @@ describe('LOINC v2 dialect against main\'s provider (same fixture)', () => {
     const r = await both(async () => {
       const res = await request(app).get(`/tx/r5/${kind}/$validate-code?${query}`);
       expect(res.status).toBe(200);
-      return flatParams(res.body);
+      return flatParams(res.body).map(choicesByLanguage);
     });
     expect(r.v2).toEqual(r.classic);
   });
@@ -710,7 +727,7 @@ describe('LOINC v2 provider filter API against main\'s', () => {
     pc = await classic.build(op, []);
   });
 
-  test('designations of every code in main\'s order (a part\'s DisplayName before its PartName variants)', async () => {
+  test('designations of every code as main: the display first, each use\'s and each language\'s in main\'s order, a part\'s DisplayName before its PartName variants', async () => {
     const { Designations } = require('../../tx/library/designations');
     const { OperationContext } = require('../../tx/operation-context');
     const op = new OperationContext('en', tx.i18n);
@@ -727,9 +744,14 @@ describe('LOINC v2 provider filter API against main\'s', () => {
       await p.designations(a, da, true);
       await pcl.designations(b, db, true);
       const flat = (ds) => ds.designations.map((d) => [d.language && d.language.code, d.use && d.use.code, d.value]);
-      expect([code, flat(da)]).toEqual([code, flat(db)]);
+      // in order where main's order is defined (see the note above restBy)
+      expect([code, restBy(flat(da), (d) => d[1] || '')]).toEqual([code, restBy(flat(db), (d) => d[1] || '')]);
+      expect([code, restBy(flat(da), (d) => d[0] || '')]).toEqual([code, restBy(flat(db), (d) => d[0] || '')]);
       const uses = flat(db).map((d) => d[1]);
-      if (uses.includes('DisplayName') && uses.includes('PartName')) partsWithBoth++;
+      if (uses.includes('DisplayName') && uses.includes('PartName')) {
+        partsWithBoth++;
+        for (const u of [uses, flat(da).map((d) => d[1])]) expect([code, u.lastIndexOf('DisplayName') < u.indexOf('PartName')]).toEqual([code, true]);
+      }
       n++;
     }
     expect(n).toBeGreaterThan(400);
