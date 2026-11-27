@@ -61,6 +61,32 @@ describe('Iso4217Services', () => {
       }
     });
 
+    test('should use the list-one minor units for CVE, MGA and MRU', async () => {
+      for (const code of ['CVE', 'MGA', 'MRU']) {
+        const result = await provider.locate(code);
+        expect(result.context.decimals).toBe(2);
+      }
+    });
+
+    test('should report withdrawn codes as retired', async () => {
+      for (const code of ['ANG', 'BGN', 'CUC', 'HRK', 'SLL', 'VEF', 'ZWL']) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeTruthy();
+        expect(await provider.isInactive(result.context)).toBe(true);
+        expect(await provider.getStatus(result.context)).toBe('retired');
+      }
+      const usd = (await provider.locate('USD')).context;
+      expect(await provider.isInactive(usd)).toBe(false);
+      expect(await provider.getStatus(usd)).toBeNull();
+    });
+
+    test('should not know codes that were never in ISO 4217', async () => {
+      for (const code of ['GGP', 'IMP', 'JEP', 'TVD']) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeNull();
+      }
+    });
+
     test('should return error for invalid codes', async () => {
       const result = await provider.locate('ZZZ');
       expect(result.context).toBeNull();
@@ -683,7 +709,6 @@ describe('Iso4217Services', () => {
 
       // Should have currencies with different decimal places
       expect(decimalCounts[0]).toBeGreaterThan(0); // 0 decimals
-      expect(decimalCounts[1]).toBeGreaterThan(0); // 1 decimal
       expect(decimalCounts[2]).toBeGreaterThan(0); // 2 decimals
       expect(decimalCounts[3]).toBeGreaterThan(0); // 3 decimals
       expect(decimalCounts[-1]).toBeGreaterThan(0); // -1 decimals

@@ -4,11 +4,12 @@ const { CodeSystem } = require("../library/codesystem");
 const { Issue } = require('../library/operation-outcome');
 
 class CurrencyConcept {
-  constructor(code, display, decimals, symbol) {
+  constructor(code, display, decimals, symbol, inactive = false) {
     this.code = code;
     this.display = display;
     this.decimals = decimals;
     this.symbol = symbol;
+    this.inactive = inactive;
   }
 }
 
@@ -95,9 +96,14 @@ class Iso4217Services extends CodeSystemProvider {
   }
 
   async isInactive(code) {
-    
-    await this.#ensureContext(code);
-    return false; // No inactive concepts
+    const ctxt = await this.#ensureContext(code);
+    // withdrawn codes (ISO 4217 list three)
+    return ctxt ? ctxt.inactive : false;
+  }
+
+  async getStatus(code) {
+    const ctxt = await this.#ensureContext(code);
+    return ctxt && ctxt.inactive ? 'retired' : null;
   }
 
   async isDeprecated(code) {
@@ -376,7 +382,7 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['CRC', 2, '₡', 'Costa Rican colon'],
       ['CUC', 2, '', 'Cuban convertible peso'],
       ['CUP', 2, '₱', 'Cuban peso'],
-      ['CVE', 0, '', 'Cape Verde escudo'],
+      ['CVE', 2, '', 'Cape Verde escudo'],
       ['CZK', 2, 'Kč', 'Czech koruna'],
       ['DJF', 0, '', 'Djiboutian franc'],
       ['DKK', 2, 'kr', 'Danish krone'],
@@ -390,7 +396,6 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['FKP', 2, '£', 'Falkland Islands pound'],
       ['GBP', 2, '£', 'Pound sterling'],
       ['GEL', 2, '', 'Georgian lari'],
-      ['GGP', 2, '£', 'Guernsey Pound'],
       ['GHS', 2, '¢', 'Ghanaian cedi'],
       ['GIP', 2, '£', 'Gibraltar pound'],
       ['GMD', 2, '', 'Gambian dalasi'],
@@ -404,12 +409,10 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['HUF', 2, 'Ft', 'Hungarian forint'],
       ['IDR', 2, 'Rp', 'Indonesian rupiah'],
       ['ILS', 2, '₪', 'Israeli new shekel'],
-      ['IMP', 2, '£', 'Isle of Man Pound'],
       ['INR', 2, '', 'Indian rupee'],
       ['IQD', 3, '', 'Iraqi dinar'],
       ['IRR', 2, '﷼', 'Iranian rial'],
       ['ISK', 0, 'kr', 'Icelandic króna'],
-      ['JEP', 2, '£', 'Jersey Pound'],
       ['JMD', 2, 'J$', 'Jamaican dollar'],
       ['JOD', 3, '', 'Jordanian dinar'],
       ['JPY', 0, '¥', 'Japanese yen'],
@@ -430,12 +433,12 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['LYD', 3, '', 'Libyan dinar'],
       ['MAD', 2, '', 'Moroccan dirham'],
       ['MDL', 2, '', 'Moldovan leu'],
-      ['MGA', 1, '', 'Malagasy ariary'],
+      ['MGA', 2, '', 'Malagasy ariary'],
       ['MKD', 2, 'ден', 'Macedonian denar'],
       ['MMK', 2, '', 'Myanmar kyat'],
       ['MNT', 2, '₮', 'Mongolian tögrög'],
       ['MOP', 2, '', 'Macanese pataca'],
-      ['MRU', 1, '', 'Mauritanian ouguiya'],
+      ['MRU', 2, '', 'Mauritanian ouguiya'],
       ['MUR', 2, '₨', 'Mauritian rupee'],
       ['MVR', 2, '', 'Maldivian rufiyaa'],
       ['MWK', 2, '', 'Malawian kwacha'],
@@ -485,7 +488,6 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['TOP', 2, '', 'Tongan paʻanga'],
       ['TRY', 2, '', 'Turkish lira'],
       ['TTD', 2, 'TT$', 'Trinidad and Tobago dollar'],
-      ['TVD', 2, '$', 'Tuvalu Dollar'],
       ['TWD', 2, 'NT$', 'New Taiwan dollar'],
       ['TZS', 2, '', 'Tanzanian shilling'],
       ['UAH', 2, '₴', 'Ukrainian hryvnia'],
@@ -528,9 +530,12 @@ class Iso4217FactoryProvider extends CodeSystemFactoryProvider {
       ['ZWL', 2, 'Z$', 'Zimbabwean dollar A/10']
     ];
 
+    // Withdrawn codes (ISO 4217 list three): kept, but reported as retired
+    const withdrawn = new Set(['ANG', 'BGN', 'CUC', 'HRK', 'SLL', 'VEF', 'ZWL']);
+
     // Load concepts into arrays and map
     for (const [code, decimals, symbol, display] of data) {
-      const concept = new CurrencyConcept(code, display, decimals, symbol);
+      const concept = new CurrencyConcept(code, display, decimals, symbol, withdrawn.has(code));
       this.codes.push(concept);
       this.codeMap.set(code, concept);
     }
