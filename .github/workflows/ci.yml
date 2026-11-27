@@ -152,7 +152,7 @@ jobs:
         timeout-minutes: 20
 
       - name: Run the tx-ecosystem tests
-        run: npx jest --ci --watchAll=false --reporters=default --reporters=jest-junit tests/tx/test-cases.test.js
+        run: npx jest tests/tx/test-cases.test.js --ci --watchAll=false --reporters=default --reporters=jest-junit
         timeout-minutes: 20
         env:
           SUPPRESS_LOGS: 'true'
