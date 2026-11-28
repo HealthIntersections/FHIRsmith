@@ -20,7 +20,8 @@ The same tests run in jest against this server's own rest endpoint
   "enabled": true,
   "database": "tester.db",
   "allowPrivateAddresses": false,
-  "keepDays": 90,
+  "keepDays": 183,
+  "detailDays": 30,
   "reportServer": "https://npm.fhir.org/testing",
   "reportTokenEnv": "FHIRSMITH_TESTING_TOKEN",
   "npm": { "enabled": true, "requestTimeout": 30000, "maxDownloadMB": 50 }
@@ -31,7 +32,8 @@ The same tests run in jest against this server's own rest endpoint
 |---|---|---|
 | `database` | `tester.db` | The runs and their results, in the databases folder (or an absolute path) |
 | `allowPrivateAddresses` | false | Servers on private addresses too (localhost, 10.x, 192.168.x...): only on a server that isn't public. Otherwise, as for every request this server makes to an address someone gave it (library/ssrf-guard.js), only public addresses: checked when the run is asked for, and again on every connection, so redirects and DNS changes can't get round it |
-| `keepDays` | 90 | Runs are deleted this many days after they finish |
+| `keepDays` | 183 | Runs are deleted this many days (about 6 months) after they finish |
+| `detailDays` | 30 | A run's step details (each test's requests and responses, and the resources it made) are cleared this many days after it finishes; the run and its results stay until `keepDays` |
 | `reportServer` | none | Where each completed run's TestReport is sent (`POST [reportServer]/TestReport`): a FHIRsmith /testing module ([testing/readme.md](../testing/readme.md)), or anything else that takes TestReports. Without it, reports are only kept here |
 | `reportTokenEnv` / `reportTokenFile` | none | The API token for the report server: the name of an environment variable that holds it, or a file (relative to the data folder) that holds it. Never the token itself in config.json |
 | `reportTokenHeader` | `Authorization` | The header the token goes in (`Bearer {token}` in Authorization) |
@@ -76,7 +78,15 @@ way stops after the request it is making, and then cleans up.
 The bearer token is sent with every request of the run (`Authorization: Bearer {token}`). It is
 kept in the database only while the run is waiting or under way, and set to nothing as the run
 ends, however it ends (and for a run under way when the server stopped, as the server starts
-again). It is never shown: the requests the pages show have `Bearer (the run's token)`.
+again). It is never shown: the requests the pages show have `Bearer (the run's token)`. The
+database has secure_delete on, so a cleared token is overwritten, not left in the file.
+
+**Everything else from a run is public.** The runs, their results, and each test's requests
+and responses (bodies up to 64 KB) can be seen by anyone, logged in or not. The token isn't,
+but what the server answered with it is: a run with a token reads what only the token lets
+anyone read (the history of the whole server, searches, a patient's compartment), and that is
+on the run's pages, for anyone to see, until the step details are cleared (`detailDays`). Test
+a server that holds real data only if that is all right.
 
 ### Outcomes
 
@@ -91,7 +101,8 @@ again). It is never shown: the requests the pages show have `Bearer (the run's t
 Each test's name on the run's page links to the test's own page
 (`[base]/runs/{id}/tests/{n}`): its outcome and why, the resources it made to test with (as the
 server had them once made), and every request it made and the response, in order, the setup
-ones marked as setup (bodies up to 64 KB each; the token never shown).
+ones marked as setup (bodies up to 64 KB each; the token never shown). These step details are
+cleared `detailDays` (30) days after the run, and the run itself deleted after `keepDays` (183).
 
 ### What a server needn't support
 

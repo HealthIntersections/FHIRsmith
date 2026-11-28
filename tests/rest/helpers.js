@@ -115,6 +115,7 @@ async function makeApp(engine, options = {}) {
     jobs: options.jobs,
     localBase: options.localBase,
     maintenanceGraceMs: options.maintenanceGraceMs,
+    maxBody: options.maxBody,
     principal: options.principal || (async () => admin),
     principalById: options.principalById || (async (id) => (String(id) === String(admin.id) ? admin : null))
   });

@@ -432,6 +432,7 @@ const MODULES = {
     database: str({ nonEmpty: true }),
     allowPrivateAddresses: bool(),
     keepDays: positive(),
+    detailDays: positive(),
     reportServer: url(),
     reportTokenEnv: str({ nonEmpty: true }),
     reportTokenFile: str({ nonEmpty: true }),

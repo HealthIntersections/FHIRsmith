@@ -110,3 +110,49 @@ describe('checkResourceNarratives', () => {
     expect(() => assertNoActiveContent({ resourceType: 'ValueSet', id: 'v', text: { div: ok } }, 'Package x#1.0')).not.toThrow();
   });
 });
+
+describe('the strict check (the rest module)', () => {
+  const strict = (inner) => checkNarrative(div(inner), { strict: true });
+
+  test.each([
+    ['a relative image', '<img src="tbl_spacer.png" alt="x"/>'],
+    ['a rooted image', '<img src="/images/x.png"/>'],
+    ['an inline image', '<img src="data:image/png;base64,iVBORw0KGgo="/>'],
+    ['a link anywhere', '<a href="https://example.org/x">x</a>'],
+    ['a relative url() in a style', '<span style="background: url(x.png)">x</span>'],
+    ['an inline url() in a style', '<span style="background: url(\'data:image/png;base64,AA\')">x</span>']
+  ])('fine: %s', (_, inner) => {
+    expect(strict(inner)).toBeNull();
+  });
+
+  test.each([
+    ['an image from elsewhere', '<img src="https://example.org/x.png"/>', /image from elsewhere \(the src of <img>\)/],
+    ['an image by //host', '<img src="//example.org/x.png"/>', /image from elsewhere/],
+    ['an image by /\\host', '<img src=" /\\example.org/x.png"/>', /image from elsewhere/],
+    ['one of a srcset from elsewhere', '<img srcset="a.png 1x, http://example.org/b.png 2x"/>', /the srcset of <img>/],
+    ['a video from elsewhere', '<video src="https://example.org/v.mp4"></video>', /the src of <video>/],
+    ['url() from elsewhere in a style', '<p style="background-image: url(https://example.org/t.gif)">x</p>', /URL from elsewhere \(url\(\.\.\.\)\) in the style/],
+    ['quoted and escaped url() from elsewhere', '<p style="background: u\\72l( \'//example.org/t.gif\' )">x</p>', /URL from elsewhere/],
+    ['image-set from elsewhere', '<p style="background-image: image-set(\'https://example.org/t.gif\' 1x)">x</p>', /URL from elsewhere/],
+    ['a script, as before', '<script>alert(1)</script>', /<script> element/]
+  ])('refused: %s', (_, inner, why) => {
+    expect(strict(inner)).toMatch(why);
+  });
+
+  test('images from elsewhere are fine when not strict (the tx module, packages)', () => {
+    expect(checkNarrative(div('<img src="https://example.org/x.png"/>'))).toBeNull();
+  });
+
+  test('<plaintext> is refused, strict or not', () => {
+    expect(checkNarrative(div('<p>x</p><plaintext>y'))).toMatch(/<plaintext> element/);
+  });
+
+  test('strict: every narrative, wherever it is', () => {
+    const bad = div('<img src="https://example.org/x.png"/>');
+    const comp = { resourceType: 'Composition', id: 'c', text: { div: div('ok') }, section: [{ text: { div: div('ok') } }, { section: [{ text: { div: bad } }] }] };
+    expect(checkResourceNarratives(comp)).toBeNull();
+    expect(checkResourceNarratives(comp, { strict: true })).toMatch(/^Composition\/c\.section\[1\]\.section\[0\]\.text: .*image from elsewhere/);
+    expect(checkResourceNarratives({ resourceType: 'Bundle', entry: [{ resource: { resourceType: 'Patient', contained: [{ resourceType: 'X', text: { div: bad } }] } }] }, { strict: true }))
+      .toMatch(/^Bundle\.entry\[0\]\.resource\.contained\[0\]\.text: /);
+  });
+});

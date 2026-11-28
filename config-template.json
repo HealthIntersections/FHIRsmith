@@ -490,8 +490,9 @@
       "database": "tester.db",
       // servers on private addresses (localhost, 10.x...) too: only for a server that isn't public
       "allowPrivateAddresses": false,
-      // how long runs are kept
-      "keepDays": 90,
+      // how long runs are kept (days), and their step details (each test's requests and responses)
+      "keepDays": 183,
+      "detailDays": 30,
       // the npm registry checks (/tester?kind=npm): on by default; these are the defaults.
       // "control": false stops the daily check of the checks against the npm registry itself
       "npm": {

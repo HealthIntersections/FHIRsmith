@@ -502,7 +502,8 @@ class RestWeb {
 
   /** The resource's narrative, made safe: none if it carries active content */
   narrative(r) {
-    const found = checkResourceNarratives({ resourceType: r.resourceType, id: r.id, text: r.text });
+    // (as strictly as a write is checked, store.js: this is for what was stored before that)
+    const found = checkResourceNarratives({ resourceType: r.resourceType, id: r.id, text: r.text }, { strict: true });
     if (found) {
       return `<div class="alert alert-danger">This narrative is not shown: ${escape(found)}</div>`;
     }
@@ -512,7 +513,10 @@ class RestWeb {
     }
     // the parsed tree written out again, never the string as it is: an unterminated tag
     // would otherwise swallow the rest of the page
-    return `<div class="narrative">${parse5.serialize(parse5.parseFragment(div))}</div>`;
+    // (contained: its styles can't lay anything over the rest of the page - position: fixed,
+    // say - or draw outside its own box)
+    return '<div class="narrative" style="contain: paint; overflow: auto; position: relative">' +
+      `${parse5.serialize(parse5.parseFragment(div))}</div>`;
   }
 
   json(resource, open) {

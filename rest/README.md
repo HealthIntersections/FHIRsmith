@@ -253,6 +253,10 @@ FHIRPath Patch (a `Parameters` resource, as JSON or XML; in a batch or transacti
 entry's resource). A patch that can't be applied, or that changes the resource's type or id, is
 a 422; a body that is neither is a 400.
 
+A JSON Patch `copy` can't copy the whole document (`"from": ""`), and the patched resource can't
+be bigger than the biggest body the server takes (`server.maxBodyMB`, 50 MB): each copy doubles
+what it copies, so a patch of a few hundred bytes could otherwise make a resource of gigabytes.
+
 FHIRPath Patch (rest/library/fhirpath-patch.js) applies `add`, `insert`, `delete`, `replace`
 and `move`, as the specification says: each path must find one element (for `insert` and
 `move`, the whole of one list; `insert` can find an empty list by the element that would hold
@@ -389,6 +393,28 @@ the user's account page:
   expand, or not closed, can't be searched with `:in` (the search says so, and points here);
   registered, with a version chosen from those the terminology server has, it is searched by
   membership instead, worked out in the background (search.md says how).
+
+## Narrative
+
+Narrative is shown in the web pages as it is, so every resource is checked before it is
+stored, however it comes (create, update, patch, batch or transaction, a package, X-Provenance):
+every narrative in it, wherever it is (`text`, contained resources', a Bundle's entries', a
+Composition's sections'). A narrative with any of these is refused, a 422 that says what and
+where:
+
+- script: `<script>`, event attributes (`onclick`...), `javascript:` URLs, script in styles
+- forms, frames and iframes, embedded documents (`object`, `embed`), `svg` and `math`
+- style from elsewhere: `<style>`, `<link>`, `@import`, and `url(...)` in a style attribute
+  that is absolute
+- images (or other content the page loads) from elsewhere: a `src` or `srcset` that is an
+  absolute URL (`https://`, `//host`), unless it is an inline image (`data:image/...`).
+  Relative URLs (this server's own images) are fine, and so are links to anywhere
+- `<plaintext>`, `<head>`, `<body>`, `<base>`, `<meta>`
+
+This is library/narrative-check.js (strictly), until the narrative is fully validated. The
+page checks again as it shows a narrative (for what was stored before the check), and draws it
+in a box its styles can't escape (`contain: paint`): a narrative can't lay anything over the
+page around it.
 
 ## Loading packages
 

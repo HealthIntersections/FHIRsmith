@@ -979,6 +979,14 @@ describe('language', () => {
     await runTest({"suite":"language","test":"language-echo-de-multi-de-header"}, "4.0");
   });
 
+  it("language-echo-de-multi-de-header-unreadable" + 'R5', async () => {
+    await runTest({"suite":"language","test":"language-echo-de-multi-de-header-unreadable"}, "5.0");
+  });
+
+  it("language-echo-de-multi-de-header-unreadable" + 'R4', async () => {
+    await runTest({"suite":"language","test":"language-echo-de-multi-de-header-unreadable"}, "4.0");
+  });
+
   it("language-xform-en-multi-de-soft" + 'R5', async () => {
     await runTest({"suite":"language","test":"language-xform-en-multi-de-soft"}, "5.0");
   });
@@ -13944,6 +13952,150 @@ describe('langcodes', () => {
     await runTest({"suite":"langcodes","test":"validate-lang-case-all"}, "4.0");
   });
 
+  it("validate-lang-ext" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext"}, "5.0");
+  });
+
+  it("validate-lang-ext" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext"}, "4.0");
+  });
+
+  it("validate-lang-ext-multi" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-multi"}, "5.0");
+  });
+
+  it("validate-lang-ext-multi" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-multi"}, "4.0");
+  });
+
+  it("validate-lang-ext-unicode" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-unicode"}, "5.0");
+  });
+
+  it("validate-lang-ext-unicode" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-unicode"}, "4.0");
+  });
+
+  it("validate-lang-ext-private" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-private"}, "5.0");
+  });
+
+  it("validate-lang-ext-private" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-private"}, "4.0");
+  });
+
+  it("validate-lang-private-short" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-short"}, "5.0");
+  });
+
+  it("validate-lang-private-short" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-short"}, "4.0");
+  });
+
+  it("validate-lang-private-only" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-only"}, "5.0");
+  });
+
+  it("validate-lang-private-only" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-only"}, "4.0");
+  });
+
+  it("validate-lang-variant-two" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-two"}, "5.0");
+  });
+
+  it("validate-lang-variant-two" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-two"}, "4.0");
+  });
+
+  it("validate-lang-variant-three" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-three"}, "5.0");
+  });
+
+  it("validate-lang-variant-three" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-three"}, "4.0");
+  });
+
+  it("validate-lang-ext-empty-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-empty-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-empty-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-empty-bad"}, "4.0");
+  });
+
+  it("validate-lang-ext-singleton-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-singleton-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-singleton-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-singleton-bad"}, "4.0");
+  });
+
+  it("validate-lang-ext-onechar-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-onechar-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-onechar-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-onechar-bad"}, "4.0");
+  });
+
+  it("validate-lang-ext-long-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-long-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-long-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-long-bad"}, "4.0");
+  });
+
+  it("validate-lang-ext-repeat-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-repeat-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-repeat-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-repeat-bad"}, "4.0");
+  });
+
+  it("validate-lang-private-empty-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-empty-bad"}, "5.0");
+  });
+
+  it("validate-lang-private-empty-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-empty-bad"}, "4.0");
+  });
+
+  it("validate-lang-private-long-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-long-bad"}, "5.0");
+  });
+
+  it("validate-lang-private-long-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-long-bad"}, "4.0");
+  });
+
+  it("validate-lang-wildcard-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-wildcard-bad"}, "5.0");
+  });
+
+  it("validate-lang-wildcard-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-wildcard-bad"}, "4.0");
+  });
+
+  it("validate-lang-variant-repeat-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-bad"}, "5.0");
+  });
+
+  it("validate-lang-variant-repeat-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-bad"}, "4.0");
+  });
+
+  it("validate-lang-variant-repeat-de-bad" + 'R5', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-de-bad"}, "5.0");
+  });
+
+  it("validate-lang-variant-repeat-de-bad" + 'R4', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-de-bad"}, "4.0");
+  });
+
   it("subsumes-lang-base-region" + 'R5', async () => {
     await runTest({"suite":"langcodes","test":"subsumes-lang-base-region"}, "5.0");
   });
@@ -15988,6 +16140,10 @@ describe('language', () => {
 
   it("language-echo-de-multi-de-header" + 'R5-cached', async () => {
     await runTest({"suite":"language","test":"language-echo-de-multi-de-header"}, "5.0");
+  });
+
+  it("language-echo-de-multi-de-header-unreadable" + 'R5-cached', async () => {
+    await runTest({"suite":"language","test":"language-echo-de-multi-de-header-unreadable"}, "5.0");
   });
 
   it("language-xform-en-multi-de-soft" + 'R5-cached', async () => {
@@ -22637,6 +22793,78 @@ describe('langcodes', () => {
 
   it("validate-lang-case-all" + 'R5-cached', async () => {
     await runTest({"suite":"langcodes","test":"validate-lang-case-all"}, "5.0");
+  });
+
+  it("validate-lang-ext" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext"}, "5.0");
+  });
+
+  it("validate-lang-ext-multi" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-multi"}, "5.0");
+  });
+
+  it("validate-lang-ext-unicode" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-unicode"}, "5.0");
+  });
+
+  it("validate-lang-ext-private" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-private"}, "5.0");
+  });
+
+  it("validate-lang-private-short" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-short"}, "5.0");
+  });
+
+  it("validate-lang-private-only" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-only"}, "5.0");
+  });
+
+  it("validate-lang-variant-two" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-two"}, "5.0");
+  });
+
+  it("validate-lang-variant-three" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-three"}, "5.0");
+  });
+
+  it("validate-lang-ext-empty-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-empty-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-singleton-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-singleton-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-onechar-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-onechar-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-long-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-long-bad"}, "5.0");
+  });
+
+  it("validate-lang-ext-repeat-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-ext-repeat-bad"}, "5.0");
+  });
+
+  it("validate-lang-private-empty-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-empty-bad"}, "5.0");
+  });
+
+  it("validate-lang-private-long-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-private-long-bad"}, "5.0");
+  });
+
+  it("validate-lang-wildcard-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-wildcard-bad"}, "5.0");
+  });
+
+  it("validate-lang-variant-repeat-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-bad"}, "5.0");
+  });
+
+  it("validate-lang-variant-repeat-de-bad" + 'R5-cached', async () => {
+    await runTest({"suite":"langcodes","test":"validate-lang-variant-repeat-de-bad"}, "5.0");
   });
 
   it("subsumes-lang-base-region" + 'R5-cached', async () => {

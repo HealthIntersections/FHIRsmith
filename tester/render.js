@@ -152,7 +152,9 @@ function form(o) {
       `<input type="text" class="form-control" id="version" name="version" required="required" maxlength="50" value="${escape(v.version || '4.0.1')}" style="max-width: 12em"/></div>`;
   }
   html += '<div class="mb-2"><label for="token" class="form-label">Bearer token (optional)</label> ' +
-    '<input type="password" class="form-control" id="token" name="token" maxlength="8000" autocomplete="off" style="max-width: 40em"/></div>' +
+    '<input type="password" class="form-control" id="token" name="token" maxlength="8000" autocomplete="off" style="max-width: 40em"/>' +
+    '<div class="form-text">The token is never shown, or kept once the run ends. Everything else is public: anyone can see the run, ' +
+    'the requests it made and what the server answered.</div></div>' +
     `<button type="submit" class="btn btn-primary">${npm ? 'Run the checks' : 'Run the tests'}</button></form>`;
   return html;
 }
@@ -273,7 +275,7 @@ function txDetailHtml(tx, outcome) {
 
 /**
  * A test's page: its outcome, the resources it made to test with, and every request and response
- * @param {Object} o - { base, run, result }
+ * @param {Object} o - { base, run, result, detailDays }
  */
 function renderTest(o) {
   const r = o.result;
@@ -291,7 +293,10 @@ function renderTest(o) {
     }
   }
   const txDetail = r.Exchanges.find(x => x && x.tx);
-  if (txDetail) {
+  if (o.run.DetailsCleared) {
+    html += '<p><i>The requests and responses, and the resources the test made, are no longer kept: ' +
+      `a run's step details are cleared ${Number(o.detailDays) || 30} days after it.</i></p>`;
+  } else if (txDetail) {
     html += txDetailHtml(txDetail.tx, r.Outcome);
   } else if (r.Exchanges.length) {
     const setup = r.Exchanges.filter(x => x.phase === 'setup').length;

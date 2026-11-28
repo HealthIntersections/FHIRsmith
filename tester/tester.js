@@ -60,7 +60,9 @@ const { renderHome, renderRun, renderTest } = require('./render');
 
 const TEMPLATE = 'tester';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_KEEP_DAYS = 90;
+// runs are kept about 6 months; their step details (each test's requests and responses) 30 days
+const DEFAULT_KEEP_DAYS = 183;
+const DEFAULT_DETAIL_DAYS = 30;
 const QUEUE_MS = 2000;
 const PAGE_SIZE = 50;
 const PACKAGE_SERVERS = ['https://packages2.fhir.org/packages', 'https://packages.fhir.org'];
@@ -144,6 +146,7 @@ class TesterModule {
     this.store = new TesterStore(file);
     this.allowPrivate = this.config.allowPrivateAddresses === true;
     this.keepDays = Number(this.config.keepDays) > 0 ? Number(this.config.keepDays) : DEFAULT_KEEP_DAYS;
+    this.detailDays = Number(this.config.detailDays) > 0 ? Number(this.config.detailDays) : DEFAULT_DETAIL_DAYS;
     this.repository = this.reportRepository();
     this.npm = this.npmConfig();
     this.npmControl = { report: null, running: false };
@@ -361,12 +364,17 @@ class TesterModule {
 
   purge() {
     try {
-      const n = this.store.purgeBefore(Date.now() - this.keepDays * DAY_MS);
+      const now = Date.now();
+      const n = this.store.purgeBefore(now - this.keepDays * DAY_MS);
       if (n) {
         this.log.info(`Tester: deleted ${n} runs older than ${this.keepDays} days`);
       }
+      const d = this.store.clearDetailsBefore(now - this.detailDays * DAY_MS, now);
+      if (d) {
+        this.log.info(`Tester: cleared the step details of ${d} runs older than ${this.detailDays} days`);
+      }
       if (this.stats) {
-        this.stats.taskDone('Test run retention', `${n} deleted`);
+        this.stats.taskDone('Test run retention', `${n} deleted, ${d} cleared of step details`);
       }
     } catch (e) {
       this.log.error(`Tester: deleting old runs failed: ${e.message}`);
@@ -678,7 +686,7 @@ class TesterModule {
     if (!result) {
       throw httpError(404, run ? 'There is no such test in the run' : 'There is no such run');
     }
-    this.sendHtml(res, result.Name, renderTest({ base: req.baseUrl, run, result }), start);
+    this.sendHtml(res, result.Name, renderTest({ base: req.baseUrl, run, result, detailDays: this.detailDays }), start);
   }
 
   async cancel(req, res) {

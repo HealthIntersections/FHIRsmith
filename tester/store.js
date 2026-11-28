@@ -11,7 +11,13 @@
  * (Kind 'tx': the HL7 terminology service tests, in the Modes chosen).
  *
  * A run's bearer token is kept only while the run is queued or running (Token), and is set to
- * NULL as it ends, however it ends. It is never read but by the queue.
+ * NULL as it ends, however it ends. It is never read but by the queue. The database has
+ * secure_delete on, so what is cleared or deleted (the token above all) is written over, not
+ * left in free pages for someone with the file to find.
+ *
+ * What is kept, and for how long (tester.js purge): a run's step details (each test's
+ * requests and responses, and the resources it made) for detailDays, then they are cleared
+ * (DetailsCleared is when); the run and its results for keepDays, then it is deleted.
  *
  * @module tester/store
  */
@@ -26,6 +32,8 @@ class TesterStore {
    */
   constructor(file) {
     this.db = new Database(file);
+    // (before anything is written: what is deleted is overwritten with zeros)
+    this.db.pragma('secure_delete = ON');
     this.db.pragma('journal_mode = WAL');
     this.db.pragma('busy_timeout = 5000');
     this.db.exec(`
@@ -56,7 +64,8 @@ class TesterStore {
         Kind TEXT NOT NULL DEFAULT 'fhir',
         Package TEXT,
         Version TEXT,
-        Modes TEXT
+        Modes TEXT,
+        DetailsCleared INTEGER
       );
       CREATE INDEX IF NOT EXISTS RunsRequested ON Runs (Requested);
       CREATE INDEX IF NOT EXISTS RunsStatus ON Runs (Status);
@@ -89,6 +98,10 @@ class TesterStore {
     // (a database from before terminology runs)
     if (!this.db.prepare('PRAGMA table_info(Runs)').all().some(c => c.name === 'Modes')) {
       this.db.exec('ALTER TABLE Runs ADD COLUMN Modes TEXT');
+    }
+    // (a database from before step details were cleared)
+    if (!this.db.prepare('PRAGMA table_info(Runs)').all().some(c => c.name === 'DetailsCleared')) {
+      this.db.exec('ALTER TABLE Runs ADD COLUMN DetailsCleared INTEGER');
     }
   }
 
@@ -212,6 +225,18 @@ class TesterStore {
 
   count() {
     return this.db.prepare('SELECT COUNT(*) AS N FROM Runs').get().N;
+  }
+
+  /** Clear the step details (each result's exchanges and resources) of the runs finished before a time */
+  clearDetailsBefore(time, now = Date.now()) {
+    return this.db.transaction(() => {
+      const ids = this.db.prepare("SELECT Id FROM Runs WHERE Finished IS NOT NULL AND Finished < ? AND DetailsCleared IS NULL AND Status NOT IN ('queued', 'running')").all(time).map(r => r.Id);
+      for (const id of ids) {
+        this.db.prepare('UPDATE Results SET Exchanges = NULL, Resources = NULL WHERE RunId = ?').run(id);
+        this.db.prepare('UPDATE Runs SET DetailsCleared = ? WHERE Id = ?').run(now, id);
+      }
+      return ids.length;
+    })();
   }
 
   /** Delete the runs finished before a time */
