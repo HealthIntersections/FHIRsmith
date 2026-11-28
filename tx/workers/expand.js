@@ -539,7 +539,11 @@ class ValueSetExpander {
       n.display = pref.value;
     }
 
-    if (this.params.includeDesignations) {
+    // a designation parameter names the designations wanted, so it lists them without
+    // includeDesignations; an explicit includeDesignations=false still wins
+    const listDesignations = this.params.includeDesignations ||
+      (this.params.hasDesignations && !this.params.hasIncludeDesignations);
+    if (listDesignations) {
       for (const t of displays.designations) {
         if (t !== pref && this.useDesignation(t) && t.value != null && !this.redundantDisplay(n, t.language, t.use, t.value)) {
           if (!n.designation) {
