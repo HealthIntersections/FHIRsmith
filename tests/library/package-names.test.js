@@ -6,9 +6,8 @@ const os = require('os');
 const path = require('path');
 const { entryNameKey, EntryNames, pathProblem } = require('../../library/package-names');
 const { PackageManager } = require('../../library/package-manager');
-const { readPackageJson, CHECKS } = require('../../packages/npm-check');
+const { readPackageJson, CHECKS } = require('../../tester/npm/checks');
 const PackageCrawler = require('../../packages/package-crawler');
-const PackageWatcher = require('../../npmprojector/watcher');
 const { tgz } = require('../packages/npm-registry-checks');
 
 const pj = JSON.stringify({ name: 'ex.names', version: '1.0.0' });
@@ -61,11 +60,6 @@ describe('duplicate names in a package', () => {
     await c.unpackPackage(examples());
     const pm = new PackageManager(['http://127.0.0.1:1'], tmp);
     expect(await pm.extractToCache('ex.names', '1.0.0', examples())).toBe('ex.names#1.0.0');
-    const file = path.join(tmp, 'p.tgz');
-    const watcher = new PackageWatcher(file, { log: { info() {}, warn() {}, error() {} } });
-    watcher.extractDir = path.join(tmp, 'x');
-    fs.writeFileSync(file, examples());
-    watcher.extractTgz();
     // the npm registry check still reports them: a package being published can't have them
     expect((await readPackageJson(examples())).duplicates).toEqual(['the package has more than one file named package/examples/a.json']);
     const strict = new EntryNames({ strict: true });
@@ -90,17 +84,6 @@ describe('duplicate names in a package', () => {
     expect(await pm.extractToCache('ex.names', '1.0.0', fine())).toBe('ex.names#1.0.0');
   });
 
-  test('the npm projector refuses them', () => {
-    const file = path.join(tmp, 'p.tgz');
-    const watcher = new PackageWatcher(file, { log: { info() {}, warn() {}, error() {} } });
-    watcher.extractDir = path.join(tmp, 'x');
-    fs.writeFileSync(file, variant());
-    expect(() => watcher.extractTgz()).toThrow(/same file to some systems/);
-    expect(fs.existsSync(watcher.extractDir)).toBe(false);
-    fs.writeFileSync(file, fine());
-    watcher.extractTgz();
-    expect(fs.readFileSync(path.join(watcher.extractDir, 'package', 'package.json'), 'utf8')).toBe(pj);
-  });
 
   test('the npm registry check reports them as a problem, and reads the first package.json', async () => {
     const found = await readPackageJson(exact());
@@ -147,14 +130,6 @@ describe('duplicate names in a package', () => {
       expect(fs.readdirSync(tmp)).toEqual([]);
     });
 
-    test('the npm projector refuses them', () => {
-      const file = path.join(tmp, 'p.tgz');
-      const watcher = new PackageWatcher(file, { log: { info() {}, warn() {}, error() {} } });
-      watcher.extractDir = path.join(tmp, 'x');
-      fs.writeFileSync(file, outside());
-      expect(() => watcher.extractTgz()).toThrow(/goes outside its folder/);
-      expect(fs.existsSync(watcher.extractDir)).toBe(false);
-    });
 
     test('the npm registry check reports them as a problem', async () => {
       const found = await readPackageJson(outside());

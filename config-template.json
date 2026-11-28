@@ -1,6 +1,17 @@
 {
   // A starting point for config.json: every section, with comments (config.json may have
   // // and /* */ comments too). Every module is off: set "enabled": true on the ones you run
+
+  // The home page's module panels: the order (the modules named come first, in this order; the
+  // others after them), a module's own title or description in place of the default (plain
+  // text), and modules with no panel. Optional.
+  // "homePage": {
+  //   "order": ["tx", "rest", "packages"],
+  //   "modules": {
+  //     "tx": { "description": "Terminology services for the FHIR community" },
+  //     "testing": { "hide": true }   // no panel, but the module still runs
+  //   }
+  // },
   "server": {
     "port": 3000,
     // Any site's scripts may call the APIs. Not "credentials": true - that lets other sites'

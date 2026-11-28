@@ -233,8 +233,18 @@ describe.each(engines())('XML through the API (%s)', (engine) => {
     for (const [accept, type] of [[XML, 'xml'], ['application/xml', 'xml'], ['text/xml', 'xml'], [FHIR_JSON, 'json'], ['*/*', 'json'],
       [`${XML};q=0.5, ${FHIR_JSON}`, 'json'], [`${FHIR_JSON};q=0.5, ${XML}`, 'xml'], [`*/*;q=0.1, ${XML}`, 'xml']]) {
       const a = await text(request(t.app).get('/r4/metadata').set('Accept', accept));
-      expect([accept, a.headers['content-type'].split(';')[0]]).toEqual([accept, type === 'xml' ? XML : FHIR_JSON]);
+      // a generic type asked for is the answer's type (application/xml); otherwise FHIR's own
+      expect([accept, a.headers['content-type'].split(';')[0]]).toEqual([accept, accept === 'application/xml' ? 'application/xml' : type === 'xml' ? XML : FHIR_JSON]);
     }
+    const json = await text(request(t.app).get('/r4/metadata').set('Accept', 'application/json'));
+    expect(json.headers['content-type']).toBe('application/json; charset=utf-8');
+    expect((await text(request(t.app).get('/r4/metadata?_format=application/json'))).headers['content-type']).toBe('application/json; charset=utf-8');
+    expect((await text(request(t.app).get('/r4/metadata?_format=json'))).headers['content-type']).toBe('application/fhir+json; charset=utf-8');
+    // a type the server can't do: 406, as an OperationOutcome in JSON
+    const odd = await text(request(t.app).get('/r4/metadata').set('Accept', 'image/png'));
+    expect(odd.status).toBe(406);
+    expect(odd.headers['content-type']).toBe('application/fhir+json; charset=utf-8');
+    expect(JSON.parse(odd.body).resourceType).toBe('OperationOutcome');
   });
 
   test('create, read, update in XML', async () => {

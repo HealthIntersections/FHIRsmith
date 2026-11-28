@@ -1,16 +1,16 @@
-// Runs the npm registry protocol checks (packages/npm-check.js) as Jest tests, one test
+// Runs the npm registry protocol checks (tester/npm/checks.js) as Jest tests, one test
 // per check, for the suites that use them:
 //
 //   npm-registry.test.js        live registries: registry.npmjs.org (the control) and others
 //   npm-registry-local.test.js  the packages module, started locally with known content
 //
-// /packages/npm-check runs the same checks and reports on them as a web page.
+// The tester module (/tester?kind=npm) runs the same checks against any registry, as a test run.
 
 const zlib = require('zlib');
-const { runNpmCheck, makeGetter, STEPS, CHECKS, untar } = require('../../packages/npm-check');
+const { runNpmCheck, makeGetter, STEPS, CHECKS, untar } = require('../../tester/npm/checks');
 const PackageCrawler = require('../../packages/package-crawler');
 
-// The same SSRF-guarded agents /npm-check uses: public addresses, and loopback for local servers
+// SSRF-guarded agents: public addresses, and loopback for local servers
 function guardedGetter() {
   const crawler = Object.create(PackageCrawler.prototype);
   crawler.config = {};

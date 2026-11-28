@@ -162,9 +162,18 @@ const SERVER = obj({
   })
 });
 
+// the modules' panels on the home page (server.js, modulePanels): homePage.order and
+// homePage.modules name them so
+const HOME_MODULES = ['packages', 'keys', 'xig', 'shl', 'vcl', 'registry', 'publisher', 'ext-tracker', 'testing', 'tester', 'ips', 'rest', 'folder', 'tx'];
+const HOME_PANEL = obj({ title: str({ nonEmpty: true }), description: str({ nonEmpty: true }), hide: bool() });
+
 const TOP = obj({
   hostName: str(),
   sponsorMessage: str(),
+  homePage: obj({
+    order: arr(str({ values: HOME_MODULES })),
+    modules: obj(Object.fromEntries(HOME_MODULES.map(m => [m, HOME_PANEL])))
+  }),
   server: SERVER,
   stats: obj({ enabled: bool(), database: str({ nonEmpty: true }), intervalMinutes: positive(), sampleSeconds: positive() }),
   npmAudit: obj({ enabled: bool(), intervalHours: positive(), url: url(), latestUrl: url(), timeout: positive() }),

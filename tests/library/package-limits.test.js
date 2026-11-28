@@ -8,7 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { PackageManager } = require('../../library/package-manager');
-const { readPackageJson } = require('../../packages/npm-check');
+const { readPackageJson } = require('../../tester/npm/checks');
 const PackageCrawler = require('../../packages/package-crawler');
 const { tgz } = require('../packages/npm-registry-checks');
 

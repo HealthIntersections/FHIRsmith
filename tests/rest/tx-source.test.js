@@ -134,6 +134,24 @@ describe.each(engines())('a rest endpoint\'s terminology on the tx server (%s)',
     expect(r.status).toBe(200);
     expect(r.body.entry.map(x => x.resource.id).sort()).toEqual(['o1', 'o3']);
   });
+
+  // (last: it empties the endpoint)
+  test('a reset of the endpoint: what was read before is used until it is over, then what the new database has', async () => {
+    const expand = () => request(t.app).get('/tx/r4/ValueSet/$expand').query({ url: VS }).set('Accept', FHIR_JSON);
+    t.ep.maintenance.graceMs = 0;
+    expect(await t.ep.maintenance.request('admin')).toBe(true);
+    // the tables dropped and made again: the endpoint is still under maintenance
+    await t.ep.runner.runNow('maintenance');
+    expect((await t.ep.maintenance.current(true)).state).toBe('loading');
+    await catchUp();
+    expect((await expand()).status).toBe(200);
+    // over: the new database is empty
+    await t.ep.runner.runNow('maintenance');
+    expect(await t.ep.maintenance.current(true)).toBeNull();
+    await catchUp();
+    expect((await expand()).status).not.toBe(200);
+    expect((await request(t.app).get('/tx/r4/ValueSet/r4db-warm').set('Accept', FHIR_JSON)).status).toBe(404);
+  });
 });
 
 describe('the rest source on its own', () => {

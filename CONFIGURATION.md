@@ -97,6 +97,34 @@ cookie on a request whose `Origin` is another site.) `node server.js --check` wa
 
 Behind nginx, nginx's `client_max_body_size` is checked first. If it is lower than `maxBodyMB`, nginx refuses a bigger body with its own 413 HTML page before FHIRsmith sees it, so set it at or above `maxBodyMB` to get FHIRsmith's OperationOutcome; if it is higher, `maxBodyMB` applies. Requests of over 100 MB have been seen, caused by client-side issues: choose `maxBodyMB` (default 50) and the nginx limit with that in mind. See [nginx.md](nginx.md).
 
+### Home page
+
+The home page has a panel for each module that is on: its picture, a line with its title and
+what it does, and a line with the links to its end points. `homePage` sets the order of the
+panels, and a module's title and description:
+
+```json
+"homePage": {
+  "order": ["tx", "rest", "packages"],
+  "modules": {
+    "tx": { "title": "Terminology", "description": "Terminology services for the FHIR community" },
+    "testing": { "hide": true }
+  }
+}
+```
+
+| Option | Default | Description |
+|---|---|---|
+| `homePage.order` | the order below | The modules named come first, in this order; the others after them, in the default order |
+| `homePage.modules.[module].title` | the module's | The title on the panel's first line (plain text) |
+| `homePage.modules.[module].description` | the module's | What follows it on that line (plain text) |
+| `homePage.modules.[module].hide` | `false` | `true`: no panel for the module. It still runs, and its pages and end points are still there for anyone who has the address |
+
+The modules, in the default order: `packages`, `keys` (the keystore), `xig`, `shl`, `vcl`,
+`registry`, `publisher`, `ext-tracker`, `testing`, `tester`, `ips`, `rest`, `folder`, `tx`. A
+module's picture is `static/assets/images/[name].png` (64x64), where the name is the module's,
+except `extension-tracker` for `ext-tracker`; a module without one has a blank space instead.
+
 ### Memory
 
 `server.memory` sets the memory guard: fractions of the memory limit (the cgroup limit, such

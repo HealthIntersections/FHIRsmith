@@ -156,9 +156,9 @@ const xigModule = require('./xig/xig.js');
 const PackagesModule = require('./packages/packages.js');
 const RegistryModule = require('./registry/registry.js');
 const PublisherModule = require('./publisher/publisher.js');
-const NpmProjectorModule = require('./npmprojector/npmprojector.js');
 const TXModule = require('./tx/tx.js');
 const TestingModule = require('./testing/testing.js');
+const TesterModule = require('./tester/tester.js');
 const IpsModule = require('./ips/ips.js');
 const RestModule = require('./rest/rest.js');
 
@@ -407,20 +407,6 @@ async function initializeModules() {
     }
   }
 
-  // Initialize NpmProjector module
-  if (config.modules?.npmprojector?.enabled) {
-    try {
-      serverLog.info('Initializing module: npmprojector...');
-      modules.npmprojector = new NpmProjectorModule(stats.forModule('npmprojector'));
-      await modules.npmprojector.initialize(config.modules.npmprojector);
-      const basePath = NpmProjectorModule.getBasePath(config.modules.npmprojector);
-      app.use(basePath, modules.npmprojector.router);
-    } catch (error) {
-      serverLog.error('Failed to initialize NpmProjector module:', error);
-      throw error;
-    }
-  }
-
 
   if (config.modules?.['ext-tracker']?.enabled) {
     try {
@@ -440,6 +426,21 @@ async function initializeModules() {
       app.use('/testing', modules.testing.router);
     } catch (error) {
       serverLog.error('Failed to initialize testing module:', error);
+      throw error;
+    }
+  }
+  if (config.modules?.tester?.enabled) {
+    try {
+      serverLog.info('Initializing module: tester...');
+      modules.tester = new TesterModule(stats.forModule('tester'));
+      await modules.tester.initialize(config.modules.tester, { hostName: config.hostName });
+      app.use('/tester', modules.tester.router);
+      // the packages module's link to the npm registry check, which is the tester's
+      if (modules.packages && modules.tester.npm.enabled) {
+        modules.packages.npmCheckAt = '/tester?kind=npm';
+      }
+    } catch (error) {
+      serverLog.error('Failed to initialize tester module:', error);
       throw error;
     }
   }
@@ -719,6 +720,97 @@ function clusterStatus() {
   return role && role.role === 'master' && stats.clusterStatus ? stats.clusterStatus : null;
 }
 
+// the module images (static/assets/images/{name}.png, 64x64), as they are: one that isn't
+// there is a space the same size, so the panels line up
+const MODULE_IMAGES = path.join(__dirname, 'static', 'assets', 'images');
+
+/** A link, for a module's panel */
+function link(href, text) {
+  return `<a href="${escape(href)}" class="text-decoration-none">${escape(text)}</a>`;
+}
+
+/**
+ * The panels of the modules that are on, in their default order: each { key (the module's
+ * name, as homePage.order and homePage.modules name it), image, title, description, links }
+ */
+function modulePanels() {
+  const panels = [];
+  const add = (key, on, image, title, description, links) => {
+    if (on) {
+      panels.push({ key, image, title, description, links });
+    }
+  };
+  add('packages', config.modules?.packages?.enabled, 'packages', 'Package Server', 'Browse and download FHIR Implementation Guide packages',
+    [link('/packages', 'Packages'), link('/packages/openapi', 'API')]);
+  add('keys', config.keystore?.enabled, 'keys', 'Keys', 'Public keys for checking signatures', [link('/keys', 'Keys'), link('/keys/jwks.json', 'JWKS')]);
+  add('xig', config.modules?.xig?.enabled, 'xig', 'FHIR IG Statistics', 'Statistics and analysis of FHIR Implementation Guides', [link('/xig', 'XIG')]);
+  add('shl', config.modules?.shl?.enabled, 'shl', 'SHL Server', 'SMART Health Links management and validation', [link('/shl', 'SHL')]);
+  add('vcl', config.modules?.vcl?.enabled, 'vcl', 'VCL Server', 'ValueSet Compose Language expression parsing', [link('/VCL', 'VCL')]);
+  add('registry', config.modules?.registry?.enabled, 'registry', 'Terminology Server Registry',
+    'Discover and query FHIR terminology servers for code system and value set support', [link('/tx-reg', 'Registry'), link('/tx-reg/openapi', 'API')]);
+  add('publisher', config.modules?.publisher?.enabled, 'publisher', 'FHIR Publisher', 'Manage FHIR Implementation Guide publication tasks and approvals',
+    [link('/publisher', 'Publisher')]);
+  add('ext-tracker', config.modules?.['ext-tracker']?.enabled, 'extension-tracker', 'Extension Tracker', 'View of Extension Usage',
+    [link('/ext-tracker', 'Extension Tracker')]);
+  add('testing', config.modules?.testing?.enabled, 'testing', 'Test Reports', 'TestReports submitted by TxTester and other test tools',
+    [link('/testing', 'Test Reports'), link('/testing/openapi', 'API')]);
+  if (config.modules?.tester?.enabled) {
+    const links = [link('/tester', 'FHIR servers')];
+    if (modules.tester && modules.tester.npm.enabled) {
+      links.push(link('/tester?kind=npm', 'npm registries'));
+    }
+    if (modules.tester && modules.tester.tx.enabled) {
+      links.push(link('/tester?kind=tx', 'terminology servers'));
+    }
+    add('tester', true, 'tester', 'Tester',
+      'Run tests against a server: the FHIRsmith RESTful API tests, the npm registry checks, or the HL7 terminology service tests', links);
+  }
+  add('ips', config.modules?.ips?.enabled, 'ips', 'IPS', 'Collections of International Patient Summary documents, each with its own FHIR endpoint',
+    [link('/ips', 'IPS')]);
+  add('rest', config.modules?.rest?.enabled, 'rest', 'FHIR REST', 'Database-backed FHIR servers',
+    (config.modules?.rest?.endpoints || []).map(e => link(String(e.path), `${e.path} (FHIR v${e.fhirVersion})`)));
+  add('folder', config.modules?.folder?.enabled, 'folder', 'Cache Folder', 'Cache Folder for Kindling: file folders with write control',
+    (config.modules?.folder?.folders || []).filter(fc => fc.enabled !== false).map(fc => link(String(fc.url), String(fc.name))));
+  // (the OpenAPI description is for the R5 endpoints)
+  add('tx', config.modules?.tx?.enabled, 'tx', 'TX Terminology Server', 'FHIR terminology services (CodeSystem, ValueSet, ConceptMap)',
+    (config.modules?.tx?.endpoints || []).map(e => link(String(e.path), `${e.path} (FHIR v${e.fhirVersion}${e.context ? ', context: ' + e.context : ''})`) +
+      (String(e.fhirVersion).startsWith('5') ? ` (${link(e.path + '/openapi', 'API')})` : '')));
+  return panels;
+}
+
+/**
+ * The panels as the configuration has them (homePage): its order first (the modules it names,
+ * in that order; the others after, in their default order), its title and description for a
+ * module in place of the module's own, and without the modules it hides (which still run)
+ */
+function homePanels() {
+  const home = config.homePage || {};
+  const order = Array.isArray(home.order) ? home.order : [];
+  const own = home.modules || {};
+  const rank = (p) => {
+    const i = order.indexOf(p.key);
+    return i < 0 ? order.length : i;
+  };
+  return modulePanels()
+    .filter(p => own[p.key]?.hide !== true)
+    .map((p, i) => ({ ...p, i, title: own[p.key]?.title || p.title, description: own[p.key]?.description || p.description }))
+    .sort((a, b) => rank(a) - rank(b) || a.i - b.i);
+}
+
+/**
+ * A module's panel on the home page: its image on the left; then its title and what it does,
+ * and the links to its end points
+ * @param {Object} panel - { image (static/assets/images/{image}.png), title, description, links (HTML, from link()) }
+ */
+function modulePanel({ image, title, description, links }) {
+  const img = fs.existsSync(path.join(MODULE_IMAGES, image + '.png'))
+    ? `<img src="/assets/images/${escape(image)}.png" width="64" height="64" alt="" style="flex: none; width: 64px; height: 64px; object-fit: contain"/>`
+    : '<span style="flex: none; width: 64px; height: 64px"></span>';
+  return '<li class="list-group-item" style="display: flex; align-items: center; gap: 1em">' + img +
+    `<div><div><strong>${escape(title)}</strong>: ${escape(description)}</div>` +
+    (links.length ? `<div style="margin-top: 0.25em">${links.join(' &middot; ')}</div>` : '') + '</div></li>';
+}
+
 async function buildRootPageContent() {
   stats.requestCount++;
   let content = npmAudit ? npmAudit.renderBanner() : '';
@@ -728,118 +820,8 @@ async function buildRootPageContent() {
   content += '<h3>Available Modules</h3>';
   content += '<ul class="list-group">';
 
-  // Check which modules are enabled and add them to the list
-  if (config.modules?.packages?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/packages" class="text-decoration-none">Package Server</a>: Browse and download FHIR Implementation Guide packages (<a href="/packages/openapi">API</a>)';
-    content += '</li>';
-  }
-
-  if (config.keystore?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/keys" class="text-decoration-none">Keys</a>: Public keys for checking signatures (<a href="/keys/jwks.json">JWKS</a>)';
-    content += '</li>';
-  }
-
-  if (config.modules?.xig?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/xig" class="text-decoration-none">FHIR IG Statistics</a>: Statistics and analysis of FHIR Implementation Guides';
-    content += '</li>';
-  }
-
-  if (config.modules?.shl?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/shl" class="text-decoration-none">SHL Server</a>: SMART Health Links management and validation';
-    content += '</li>';
-  }
-
-  if (config.modules?.vcl?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/VCL" class="text-decoration-none">VCL Server</a>: ValueSet Compose Language expression parsing';
-    content += '</li>';
-  }
-
-  if (config.modules?.registry?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/tx-reg" class="text-decoration-none">Terminology Server Registry</a>: ';
-    content += 'Discover and query FHIR terminology servers for code system and value set support (<a href="/tx-reg/openapi">API</a>)';
-    content += '</li>';
-  }
-
-  if (config.modules?.publisher?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/publisher" class="text-decoration-none">FHIR Publisher</a>: ';
-    content += 'Manage FHIR Implementation Guide publication tasks and approvals';
-    content += '</li>';
-  }
-
-  if (config.modules?.npmprojector?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/npmprojector" class="text-decoration-none">NpmProjector</a>: ';
-    content += 'Hot-reloading FHIR server with FHIRPath-based search indexes';
-    content += '</li>';
-  }
-
-  if (config.modules?.['ext-tracker']?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/ext-tracker" class="text-decoration-none">Extension Tracker</a>: ';
-    content += 'View of Extension Usage';
-    content += '</li>';
-  }
-
-  if (config.modules?.testing?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/testing" class="text-decoration-none">Test Reports</a>: ';
-    content += 'TestReports submitted by TxTester and other test tools (<a href="/testing/openapi">API</a>)';
-    content += '</li>';
-  }
-
-  if (config.modules?.ips?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<a href="/ips" class="text-decoration-none">IPS</a>: ';
-    content += 'Collections of International Patient Summary documents, each with its own FHIR endpoint';
-    content += '</li>';
-  }
-
-  if (config.modules?.rest?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<strong>FHIR REST</strong>: database-backed FHIR servers: ';
-    content += (config.modules.rest.endpoints || []).map(e => `<a href="${escape(String(e.path))}" class="text-decoration-none">${escape(String(e.path))}</a>`).join(', ');
-    content += '</li>';
-  }
-
-  if (config.modules?.folder?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<strong>Cache Folder</strong>: ';
-    content += 'Cache Folder for Kindling';
-    const folders = config.modules.folder.folders || [];
-    content += '<ul class="mt-2 mb-0">';
-    for (const fc of folders) {
-      if (fc.enabled === false) continue;
-      content += '<li>';
-      content += `<a href="${fc.url}" class="text-decoration-none">${fc.name}</a>: `;
-      content += 'File folder with write control';
-      content += '</li>';
-    }
-    content += '</ul>';
-    content += '</li>';
-  }
-
-
-  if (config.modules?.tx?.enabled) {
-    content += '<li class="list-group-item">';
-    content += '<strong>TX Terminology Server</strong>: ';
-    content += 'FHIR terminology services (CodeSystem, ValueSet, ConceptMap)';
-    if (config.modules.tx.endpoints && config.modules.tx.endpoints.length > 0) {
-      content += '<ul class="mt-2 mb-0">';
-      for (const endpoint of config.modules.tx.endpoints) {
-        // the OpenAPI description is for the R5 endpoints
-        const api = String(endpoint.fhirVersion).startsWith('5') ? ` (<a href="${endpoint.path}/openapi">API</a>)` : '';
-        content += `<li><a href="${endpoint.path}" class="text-decoration-none">${endpoint.path}</a> (FHIR v${endpoint.fhirVersion}${endpoint.context ? ', context: ' + endpoint.context : ''})${api}</li>`;
-      }
-      content += '</ul>';
-    }
-    content += '</li>';
+  for (const panel of homePanels()) {
+    content += modulePanel(panel);
   }
 
   content += '</ul>';

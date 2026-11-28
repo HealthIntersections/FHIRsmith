@@ -406,6 +406,11 @@ describe('the rest module\'s background jobs (jobsView, jobProblems)', () => {
     expect(v.table.rows[0].cells[8].text).toBe('the terminology server didn\'t answer (2m 0s ago)');
   });
 
+  test('problems: an endpoint under maintenance', () => {
+    const s = [{ label: 'Jobs j1', jobs: [{ path: '/r4', tasks: [], queues: queues(), maintenance: { state: 'loading', message: 'Loading packages: 1 of 3 done' } }] }];
+    expect(jobProblems(s, { now })).toEqual(['Rest /r4: under maintenance (loading: Loading packages: 1 of 3 done)']);
+  });
+
   test('the snapshot carries a process\'s jobs while its figures are fresh; the jobs process has no cache figures', () => {
     const base = { now, intervalMs: 15000, launcher: { startedAt: now - 1000, requests: 0, memory: null }, guard: { limit: 0 }, cgroup: null };
     const figures = { time: now - 1000, requests: 0, clientCaches: 0, clientConcepts: 0, expansionItems: 0, jobs: [{ path: '/r4', tasks: [], queues: null }] };

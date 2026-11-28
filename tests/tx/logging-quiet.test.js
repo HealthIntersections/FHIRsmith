@@ -1,5 +1,6 @@
-// Routine client errors aren't logged (the request's own log line has its status); a bad
-// Accept-Language is a 400; a slow request's log line says what it asked
+// Routine client errors aren't logged (the request's own log line has its status); an
+// Accept-Language entry that can't be read is left out, but a bad displayLanguage is a 400; a
+// slow request's log line says what it asked
 const request = require('supertest');
 const { getTestApp, getTxModule, shutdownTestApp } = require('./setup');
 const Logger = require('../../library/logger');
@@ -67,9 +68,16 @@ describe('routine client errors are not logged', () => {
     expect(problems(logged)).toEqual([]);
   });
 
-  test('an Accept-Language that is not valid is a 400', async () => {
+  test('an Accept-Language that is not valid is left out, not refused', async () => {
     const { res, logged } = await send('GET', '/tx/r5/CodeSystem/$lookup?system=http://hl7.org/fhir/administrative-gender&code=male', null,
       { 'Accept-Language': 'zz-qq' });
+    expect(res.status).toBe(200);
+    expect(res.body.resourceType).toBe('Parameters');
+    expect(problems(logged)).toEqual([]);
+  });
+
+  test('a displayLanguage that is not valid is a 400', async () => {
+    const { res, logged } = await send('GET', '/tx/r5/CodeSystem/$lookup?system=http://hl7.org/fhir/administrative-gender&code=male&displayLanguage=zz-qq');
     expect(res.status).toBe(400);
     expect(res.body.resourceType).toBe('OperationOutcome');
     expect(problems(logged)).toEqual([]);
