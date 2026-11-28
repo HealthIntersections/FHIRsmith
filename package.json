@@ -74,7 +74,8 @@
     "yaml": "^2.8.2"
   },
   "optionalDependencies": {
-    "koffi": "^3.3.6"
+    "koffi": "^3.3.6",
+    "roaring": "^2.7.0"
   },
   "devDependencies": {
     "@types/jest": "^30.0.0",

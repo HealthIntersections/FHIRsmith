@@ -7,10 +7,16 @@ on:
     branches: [ main ]
 
 jobs:
+  # The unit tests, in two halves that run at the same time (jest --shard), each well inside the
+  # limit. The tx-ecosystem test cases (tests/tx/test-cases.test.js) are the tx-tests job, below
   test:
-    name: Test
+    name: Test (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
+
     steps:
       - uses: actions/checkout@v4
 
@@ -73,8 +79,8 @@ jobs:
           restore-keys: test-downloads-
 
       - name: Run tests
-        run: npm run test:ci
-        timeout-minutes: 45
+        run: npm run test:ci -- --shard=${{ matrix.shard }}/2 --testPathIgnorePatterns=tests/tx/test-cases.test.js
+        timeout-minutes: 30
         env:
           SUPPRESS_LOGS: 'true'
           NODE_OPTIONS: "--max-old-space-size=14000"
@@ -83,7 +89,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.shard }}
           path: ./test-results/junit.xml
 
       # With SUPPRESS_LOGS, what the server logged during the tests is only in the log files
@@ -91,6 +97,114 @@ jobs:
         uses: actions/upload-artifact@v4
         if: failure()
         with:
-          name: server-logs
+          name: server-logs-${{ matrix.shard }}
+          path: ./data/logs/
+          if-no-files-found: ignore
+
+  # The HL7 tx-ecosystem test cases, over the standard test library (tx/fixtures/test-cases.yml)
+  # and over the same library with LOINC and SNOMED CT on the sqlite-v2 providers
+  # (tx/fixtures/test-cases-v2.yml), whose files are imported in this run from the standard
+  # library's files (tx/tests/prepare-v2-test-files.js)
+  tx-tests:
+    name: tx-ecosystem tests (${{ matrix.library }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        library: [standard, sqlite-v2]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A PR whose tests need changes to the tx-ecosystem IG is tested against the tx-ecosystem PR
+      # that makes them: if HL7/fhir-tx-ecosystem-ig has an open PR from a branch with the same
+      # name as this one, and there is a CI build of that branch, the terminology tests come from
+      # it (FHIRSMITH_TX_TESTS_VERSION=current$<branch>; see tx/tests/tx-tests-package.js).
+      # Otherwise, and for every build that isn't a PR, from the CI build of main. The
+      # tx-ecosystem branch has to be built before this runs: if it isn't yet, run this again.
+      # Branch names with a / in them aren't supported
+      - name: Choose the tx-ecosystem build to test against
+        if: github.event_name == 'pull_request'
+        env:
+          BRANCH: ${{ github.head_ref }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ ! "$BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "Branch '$BRANCH' can't be matched to a tx-ecosystem branch: the tests come from the build of main"
+            exit 0
+          fi
+          open=$(gh api --paginate "repos/HL7/fhir-tx-ecosystem-ig/pulls?state=open&per_page=100" --jq ".[] | select(.head.ref == \"$BRANCH\") | .number")
+          if [ -z "$open" ]; then
+            echo "No open tx-ecosystem PR from a branch '$BRANCH': the tests come from the build of main"
+            exit 0
+          fi
+          url="https://build.fhir.org/ig/HL7/fhir-tx-ecosystem-ig/branches/$BRANCH/package.tgz"
+          if ! curl -sfIL -o /dev/null "$url"; then
+            echo "::warning::tx-ecosystem PR #$open is open from '$BRANCH', but there is no CI build of it yet ($url): the tests come from the build of main. Run this again once it is built"
+            exit 0
+          fi
+          echo "The tests come from tx-ecosystem PR #$open, branch '$BRANCH'"
+          echo "FHIRSMITH_TX_TESTS_VERSION=current\$$BRANCH" >> "$GITHUB_ENV"
+
+      # What the tests download when they first need it - the terminology files the tx tests load
+      # (tx/fixtures/*.yml: about 1.7 GB of SNOMED CT and LOINC) and FHIR packages, in
+      # data/terminology-cache, and the packages in ~/.fhir/packages - is kept between runs, so the
+      # test step doesn't wait on the downloads; a changed file list starts from the last cache and
+      # downloads only what is new. Not CI builds (#current, #current$<branch>: the tx-ecosystem
+      # tests): the package manager uses a cached one without asking whether it is still current,
+      # so a cached copy would be tested against for ever. Not the sqlite-v2 files either: they are
+      # imported in each run
+      - name: Cache terminology test files
+        uses: actions/cache@v4
+        with:
+          path: |
+            data/terminology-cache
+            !data/terminology-cache/*#current*
+            !data/terminology-cache/*.v2.db
+            ~/.fhir/packages
+            !~/.fhir/packages/*#current*
+          # (renamed from tx-test-files-, whose caches can hold a #current package)
+          key: test-downloads-${{ hashFiles('tx/fixtures/*.yml') }}
+          restore-keys: test-downloads-
+
+      - name: Import the sqlite-v2 files
+        if: matrix.library == 'sqlite-v2'
+        run: node tx/tests/prepare-v2-test-files.js
+        timeout-minutes: 20
+
+      - name: Run the tx-ecosystem tests
+        run: npx jest tests/tx/test-cases.test.js --ci --watchAll=false --reporters=default --reporters=jest-junit
+        timeout-minutes: 20
+        env:
+          SUPPRESS_LOGS: 'true'
+          NODE_OPTIONS: "--max-old-space-size=14000"
+          FHIRSMITH_TX_TESTS_LIBRARY: ${{ matrix.library == 'sqlite-v2' && 'tx/fixtures/test-cases-v2.yml' || '' }}
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tx-test-results-${{ matrix.library }}
+          path: |
+            ./test-results/junit.xml
+            ./test-cases-summary.txt
+            ./test-cases-report.json
+          if-no-files-found: ignore
+
+      - name: Upload server logs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: tx-server-logs-${{ matrix.library }}
           path: ./data/logs/
           if-no-files-found: ignore

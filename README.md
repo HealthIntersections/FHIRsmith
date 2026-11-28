@@ -161,6 +161,21 @@ one machine, see [cluster.md](cluster.md): a master and several tx workers, behi
 npm test
 ```
 
+`npm test` includes the HL7 terminology test cases (`tests/tx/test-cases.test.js`), which run
+against a server on the library `tx/fixtures/test-cases.yml` and download its files into the
+terminology cache. CI runs them as a job of their own, twice: over that library, and over
+`tx/fixtures/test-cases-v2.yml`, which serves LOINC and SNOMED CT from sqlite-v2 files
+([tx/sqlite-v2/README.md](tx/sqlite-v2/README.md)). The v2 files are imported in the run, from
+the standard library's files of the same releases. To do the same locally:
+
+```bash
+node tx/tests/prepare-v2-test-files.js
+FHIRSMITH_TX_TESTS_LIBRARY=tx/fixtures/test-cases-v2.yml npx jest tests/tx/test-cases.test.js
+```
+
+`FHIRSMITH_TX_TESTS_LIBRARY` names the library the test cases run over (default: the one in
+`tx/fixtures/test-cases-setup.json`); the summary in `test-cases-summary.txt` says which it was.
+
 ## Deployment
 
 There are three deployment options: npm global install, Docker, or clone-and-run. All three

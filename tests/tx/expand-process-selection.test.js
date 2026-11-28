@@ -102,7 +102,7 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
       for (const code of page) {
         set.add(this.codeSystem.getConceptByCode(code));
       }
-      const total = behaviour === 'no-total' ? -1 : behaviour === 'large' ? 1000000 : all.length;
+      const total = behaviour === 'no-total' ? -1 : behaviour === 'large' ? 1000000 : behaviour === 'huge' ? 1000001 : all.length;
       return { sets: [set], total };
     }));
   }, 60000);
@@ -231,7 +231,8 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     const vs = await expand(app, valueSet({ include: [wholeSystem] }),
       [{ name: 'limit', valueInteger: 5 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual(codes.slice(0, 3));
-    expect(vs.expansion.total).toBe(1000000);
+    // no total: the selection is over the limit, and a paged walk reports none then (#finishIfPageFilled)
+    expect(vs.expansion.total).toBeUndefined();
   });
 
   test('a deep page is not refused: only the page counts against the limit', async () => {
@@ -239,7 +240,27 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     const vs = await expand(app, valueSet({ include: [wholeSystem] }),
       [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 4 }, { name: 'count', valueInteger: 3 }]);
     expect(codesOf(vs)).toEqual(codes.slice(4, 7));
+    expect(vs.expansion.total).toBeUndefined();
+  });
+
+  test('a page past the last code: the total, as the walk counts every code when its page never fills', async () => {
+    behaviour = 'large';
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }),
+      [{ name: 'limit', valueInteger: 5 }, { name: 'offset', valueInteger: 1000000 }, { name: 'count', valueInteger: 3 }]);
+    expect(codesOf(vs)).toEqual([]);
     expect(vs.expansion.total).toBe(1000000);
+  });
+
+  test('count=0 of a filter over the walk limit: too costly, as the usual path\'s counting walk; the whole system is counted', async () => {
+    behaviour = 'huge';
+    const filtered = valueSet({ include: [{ system: CS_URL, filter: [{ property: 'group', op: '=', value: 'x' }] }] });
+    const res = await request(app).post('/tx/r5/ValueSet/$expand').set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [{ name: 'tx-resource', resource: CS }, { name: 'valueSet', resource: filtered },
+        { name: 'count', valueInteger: 0 }] });
+    expect(res.status).toBe(422);
+    expect(res.body.issue[0].details.text).toContain('>1000000');
+    const vs = await expand(app, valueSet({ include: [wholeSystem] }), [{ name: 'count', valueInteger: 0 }]);
+    expect(vs.expansion.total).toBe(1000001);
   });
 
   test('the requested properties are on each code the provider selected', async () => {
@@ -260,6 +281,36 @@ describe('$expand: handing a whole compose to the provider (processSelection)', 
     expect(res.status).toBe(200);
     expect(calls).toHaveLength(0);
     expect(codesOf(res.body)).toEqual(['c03', 'c04']);
+  });
+
+  // a value set that names a supplement no code system takes (replay: a Belgian SNOMED CT
+  // supplement for http://snomed.info/sct/11000172109, which no loaded edition is): the usual path
+  // reports it missing only when its walk gets to the end of the compose; a paged walk that stops
+  // with the expansion finished (#finishIfPageFilled) never checks. Handed over, the same answer
+  test.each([
+    ['unpaged', [wholeSystem], [], [], 'handle', 422],
+    ['a full page, the rest over the limit', [wholeSystem], [], [{ name: 'limit', valueInteger: 5 }, { name: 'count', valueInteger: 3 }], 'large', 200],
+    ['a full page within the limit (the walk takes the size as the total)', [wholeSystem], [], [{ name: 'count', valueInteger: 3 }], 'handle', 200],
+    ['the last page, exactly full', [wholeSystem], [], [{ name: 'offset', valueInteger: 9 }, { name: 'count', valueInteger: 3 }], 'handle', 200],
+    ['a page that is never filled', [wholeSystem], [], [{ name: 'count', valueInteger: 50 }], 'handle', 422],
+    ['a full page within the limit, with an exclude (the walk counts to the end)', [wholeSystem], [excludeTwo], [{ name: 'count', valueInteger: 3 }], 'handle', 422]
+  ])('a required supplement that is not there, %s: the usual path\'s status and codes', async (_label, include, exclude, extra, handled, status) => {
+    const vs = valueSet({ include, exclude });
+    vs.extension = [{ url: 'http://hl7.org/fhir/StructureDefinition/valueset-supplement', valueCanonical: 'http://example.org/fhir/CodeSystem/no-such-supplement' }];
+    const run = async () => request(app).post('/tx/r5/ValueSet/$expand').set('Content-Type', 'application/json')
+      .send({ resourceType: 'Parameters', parameter: [{ name: 'tx-resource', resource: CS }, { name: 'valueSet', resource: vs }, ...extra] });
+    behaviour = 'off';
+    const usual = await run();
+    behaviour = handled;
+    const res = await run();
+    expect(calls).toHaveLength(1);
+    expect(usual.status).toBe(status);
+    expect(res.status).toBe(status);
+    if (status === 200) {
+      expect(codesOf(res.body)).toEqual(codesOf(usual.body));
+    } else {
+      expect(res.body.issue[0].details.text).toBe(usual.body.issue[0].details.text);
+    }
   });
 
   test.each([

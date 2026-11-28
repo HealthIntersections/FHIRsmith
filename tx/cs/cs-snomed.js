@@ -5326,5 +5326,6 @@ module.exports = {
   SnomedExpressionContext,
   SnomedServices,
   SnomedFilterContext,
-  SnomedProviderContextKind
+  SnomedProviderContextKind,
+  LANGUAGE_REFSET_DIALECTS
 };

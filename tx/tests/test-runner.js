@@ -99,6 +99,18 @@ async function  finishTxTests() {
 
 // ", from the tx-ecosystem branch <branch>" when the tests didn't come from main's build: a run
 // that passed against a branch mustn't look like one that passed against main
+// FHIRSMITH_TX_TESTS_LIBRARY runs the tests over another library file than the one in
+// tx/fixtures/test-cases-setup.json: tx/fixtures/test-cases-v2.yml serves LOINC and SNOMED CT from
+// sqlite-v2 files (prepared by tx/tests/prepare-v2-test-files.js). The summary names the library,
+// so that such a run can't be taken for one over the standard library
+function txTestsLibrary() {
+    return process.env.FHIRSMITH_TX_TESTS_LIBRARY || null;
+}
+
+function libraryUsed() {
+    return txTestsLibrary() ? `, library ${txTestsLibrary()}` : '';
+}
+
 function testsFrom() {
     try {
         const branch = txTestsBranch(txTestsPackageVersion());
@@ -116,9 +128,9 @@ function runnerVersion() {
 function txTestSummary() {
     let set = Array.from(txTestModeSet()).join('+');
     if (error == 0) {
-      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} passed all ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}${libraryUsed()}, runner v${runnerVersion()})`;
     } else {
-      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}, runner v${runnerVersion()})`;
+      return `FHIRsmith v${packageJson.version} failed ${error} of ${count} HL7 terminology service tests (modes ${set}, tests v${txTestVersion()}${testsFrom()}${libraryUsed()}, runner v${runnerVersion()})`;
     }
 }
 
@@ -146,7 +158,7 @@ function txTestReport() {
         testScript: txTestsSource(txTestsPackageVersion()) + '|' + txTestVersion(),
         result: error == 0 ? 'pass' : 'fail',
         score: count == 0 ? 0 : Math.round(((count - error) / count) * 10000) / 100,
-        tester: 'FHIRsmith build (modes ' + Array.from(txTestModeSet()).join(', ') + ')',
+        tester: 'FHIRsmith build (modes ' + Array.from(txTestModeSet()).join(', ') + libraryUsed() + ')',
         issued: new Date().toISOString(),
         participant: [{
             type: 'server',
@@ -233,6 +245,9 @@ async function startServer() {
         config = require('../../library/config-reader').readConfig(TEST_CONFIG_FILE);
     } catch (error) {
         throw new Error(`Failed to load test config: ${error.message}`);
+    }
+    if (txTestsLibrary()) {
+        config.librarySource = txTestsLibrary();
     }
 
     // Middleware
