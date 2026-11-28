@@ -141,17 +141,39 @@ function sortKeys(v) {
   return v;
 }
 
+// how big a value is, written as JSON (near enough: what the patch adds or takes away)
+function sizeOf(v) {
+  return v === undefined ? 0 : JSON.stringify(v).length;
+}
+
+const DEFAULT_MAX_BYTES = 50 * 1024 * 1024;
+
 /**
  * Apply a JSON Patch to a copy of a document.
+ *
+ * A copy doubles what it copies, so a short patch could otherwise make an enormous document
+ * (copying the whole document into itself 30 times is a gigabyte, from a patch of 1 KB): the
+ * whole document can't be copied, and the patched document can't get bigger than maxBytes.
+ *
  * @param {Object} document
  * @param {Object[]} patch
+ * @param {{maxBytes?: number}} [options] - maxBytes: the biggest the patched document may be
+ *   (as JSON); default 50 MB, as the biggest body the server takes
  * @returns {Object} the patched copy
  * @throws {PatchError}
  */
-function applyPatch(document, patch) {
+function applyPatch(document, patch, options = {}) {
   if (!Array.isArray(patch)) {
     throw new PatchError('A JSON Patch is an array of operations');
   }
+  const maxBytes = Number(options.maxBytes) > 0 ? Number(options.maxBytes) : DEFAULT_MAX_BYTES;
+  let size = sizeOf(document);
+  const grow = (by, what) => {
+    size += by;
+    if (size > maxBytes) {
+      throw new PatchError(`${what}: the patched resource would be bigger than this server takes (${Math.round(maxBytes / (1024 * 1024))} MB)`);
+    }
+  };
   let doc = fhirJson.clone(document);
   for (const op of patch) {
     if (!op || typeof op !== 'object' || typeof op.op !== 'string' || typeof op.path !== 'string') {
@@ -163,20 +185,24 @@ function applyPatch(document, patch) {
         if (!('value' in op)) {
           throw new PatchError(`add ${op.path}: no value`);
         }
+        grow(sizeOf(op.value), `add ${op.path}`);
         doc = add(doc, op.path, clone(op.value), fhirJson.writtenAs(op, 'value'));
         break;
       case 'remove':
-        remove(doc, op.path);
+        size -= sizeOf(remove(doc, op.path));
         break;
       case 'replace':
         if (!('value' in op)) {
           throw new PatchError(`replace ${op.path}: no value`);
         }
         if (parsePointer(op.path).length === 0) {
+          size = 0;
+          grow(sizeOf(op.value), `replace ${op.path}`);
           doc = clone(op.value);
         } else {
           getValue(doc, op.path);
-          remove(doc, op.path);
+          size -= sizeOf(remove(doc, op.path));
+          grow(sizeOf(op.value), `replace ${op.path}`);
           doc = add(doc, op.path, clone(op.value), fhirJson.writtenAs(op, 'value'));
         }
         break;
@@ -188,9 +214,15 @@ function applyPatch(document, patch) {
         doc = add(doc, op.path, v);
         break;
       }
-      case 'copy':
-        doc = add(doc, op.path, clone(getValue(doc, op.from)));
+      case 'copy': {
+        if (typeof op.from === 'string' && parsePointer(op.from).length === 0) {
+          throw new PatchError(`copy ${op.path}: the whole document can't be copied`);
+        }
+        const v = getValue(doc, op.from);
+        grow(sizeOf(v), `copy ${op.from} to ${op.path}`);
+        doc = add(doc, op.path, clone(v));
         break;
+      }
       case 'test':
         if (!equal(getValue(doc, op.path), op.value)) {
           throw new PatchError(`test ${op.path} failed`);

@@ -79,9 +79,17 @@ describe('rest web pages', () => {
     await page('/r4/Patient/nope', 404);
   });
 
-  test('a narrative with active content is not shown', async () => {
-    const id = (await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Patient',
-      text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p onclick="x()">x</p></div>' } }))).body.id;
+  test('a narrative with active content is not stored, and not shown if it was stored before', async () => {
+    const bad = { resourceType: 'Patient', text: { status: 'generated', div: '<div xmlns="http://www.w3.org/1999/xhtml"><p onclick="x()">x</p></div>' } };
+    expect((await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send(body(bad))).status).toBe(422);
+    // (as if it had been stored before writes were checked: straight into the store, round put())
+    const ep = t.ep;
+    const id = await ep.db.write(async (q) => {
+      const r = await ep.store.reserve(q, 'Patient', null);
+      await ep.store.writeVersion(q, { type: 'Patient', id: r.id, resourceKey: r.resourceKey, basedOn: null, previousVersionId: 0,
+        previousDeleted: false, resource: { ...bad, id: r.id }, operation: 1, userId: null });
+      return r.id;
+    });
     const h = await page(`/r4/Patient/${id}`);
     expect(h).toContain('This narrative is not shown');
     expect(h).not.toContain('onclick="x()"');

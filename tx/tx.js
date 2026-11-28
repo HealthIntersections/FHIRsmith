@@ -754,8 +754,8 @@ class TXModule {
           endpointInfo.resourceCache, endpointInfo.expansionCache
         );
       } catch (err) {
-        // an Accept-Language header that isn't valid (e.g. a region that doesn't exist) is the
-        // client's error: 400, not 500
+        // the Accept-Language entries that can't be read are left out, so this isn't expected;
+        // if the context can't be made from the request, it's still the client's error: 400, not 500
         err.statusCode = err.statusCode || 400;
         throw err;
       }

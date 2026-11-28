@@ -5,7 +5,7 @@ const http = require('http');
 const { requestDeadline, describeRequestFailure } = require('../../library/http-limits');
 const RegistryCrawler = require('../../registry/crawler');
 const PackageCrawler = require('../../packages/package-crawler');
-const { makeGetter } = require('../../packages/npm-check');
+const { makeGetter } = require('../../tester/npm/checks');
 const { createGuardedAgents } = require('../../library/ssrf-guard');
 
 describe('requestDeadline', () => {

@@ -11,7 +11,7 @@ const express = require('express');
 const PackagesModule = require('../../packages/packages');
 const PackageCrawler = require('../../packages/package-crawler');
 const { NpmSigner, integrityOf, integrityOfSync, verifySignature } = require('../../packages/npm-signing');
-const { runNpmCheck, makeGetter } = require('../../packages/npm-check');
+const { runNpmCheck, makeGetter } = require('../../tester/npm/checks');
 const { tgz } = require('./npm-registry-checks');
 
 const PKG = 'example.fhir.signed';
@@ -207,7 +207,7 @@ describe('packages module: signatures', () => {
     }
   });
 
-  test('/npm-check\'s signature checks pass, and fail on a bad signature', async () => {
+  test('the npm registry checks\' signature checks pass, and fail on a bad signature', async () => {
     const crawler = Object.create(PackageCrawler.prototype);
     crawler.config = {};
     const get = makeGetter(crawler.guardedAgents({ allowLoopback: true }));

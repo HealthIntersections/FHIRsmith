@@ -238,7 +238,8 @@ async function conditionalUpdate(ep, freq, ctx) {
 function applyRequestPatch(ep, freq, resource) {
   const p = freq.body;
   if (Array.isArray(p)) {
-    return applyPatch(resource, p);
+    // (no bigger than the biggest body the server takes: a patch can't make what a PUT couldn't)
+    return applyPatch(resource, p, { maxBytes: typeof ep.options.maxBody === 'number' ? ep.options.maxBody : undefined });
   }
   if (p && p.resourceType === 'Parameters') {
     const d = ep.definitions;

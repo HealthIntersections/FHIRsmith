@@ -20,15 +20,38 @@ const FHIR_XML = 'application/fhir+xml';
 const JSON_TYPES = new Set(['json', 'application/json', 'application/fhir+json', 'fhir+json', 'application/json+fhir', 'text/json']);
 const XML_TYPES = new Set(['xml', 'application/xml', 'application/fhir+xml', 'fhir+xml', 'application/xml+fhir', 'text/xml']);
 const PATCH_JSON = 'application/json-patch+json';
+// the generic types: asked for, they're the type of the answer (http.html: the server SHOULD
+// respond with the requested mime type)
+const GENERIC = new Map([['application/json', 'json'], ['text/json', 'json'], ['application/xml', 'xml']]);
+
+/** The types in an Accept header, best first (by q, then order), without those q=0 refuses */
+function acceptedTypes(req) {
+  const accept = String((req.get && req.get('Accept')) || '').toLowerCase();
+  return accept.split(',').map((p, i) => {
+    const [t, ...params] = p.split(';').map(x => x.trim());
+    const q = params.map(x => /^q=([0-9.]+)$/.exec(x)).find(x => x);
+    return { t, q: q ? Number(q[1]) : 1, i };
+  }).filter(x => x.t && x.q > 0).sort((a, b) => b.q - a.q || a.i - b.i).map(x => x.t);
+}
+
+/** What an Accept type is: 'json' (JSON, text/html and wildcards), 'xml', or null (neither) */
+function kindOf(t) {
+  if (JSON_TYPES.has(t) || t === '*/*' || t === 'application/*' || t === 'text/html' || t === 'text/*') {
+    return 'json';
+  }
+  return XML_TYPES.has(t) ? 'xml' : null;
+}
 
 /**
  * The response format the client wants: 'json' or 'xml', or throws 406. _format wins; then
  * Accept, the first type in it (by its q values, then its order) that is JSON or XML, where
- * text/html and wildcards are JSON; otherwise JSON.
+ * text/html and wildcards are JSON; no Accept is JSON. An Accept with none of those is 406
+ * (Not Acceptable), unless options.lenient (a Binary's content, which is whatever type it is).
  * @param {Object} req
  * @param {Object|null} [xmlModel] - the endpoint's (null: XML can't be done)
+ * @param {Object} [options] - { lenient }
  */
-function responseFormat(req, xmlModel = null) {
+function responseFormat(req, xmlModel = null, options = {}) {
   const f = typeof req.query._format === 'string' ? req.query._format.trim().toLowerCase().replace(/ /g, '+') : '';
   if (f) {
     const base = f.split(';')[0].trim();
@@ -40,25 +63,36 @@ function responseFormat(req, xmlModel = null) {
     }
     throw new FhirError(406, 'not-supported', `Unknown _format '${f}'`);
   }
-  const accept = String(req.get('Accept') || '').toLowerCase();
-  if (!accept) {
-    return 'json';
-  }
-  const types = accept.split(',').map((p, i) => {
-    const [t, ...params] = p.split(';').map(x => x.trim());
-    const q = params.map(x => /^q=([0-9.]+)$/.exec(x)).find(x => x);
-    return { t, q: q ? Number(q[1]) : 1, i };
-  }).filter(x => x.t && x.q > 0).sort((a, b) => b.q - a.q || a.i - b.i);
-  for (const { t } of types) {
+  const types = acceptedTypes(req);
+  for (const t of types) {
     // (a browser's text/html, or a wildcard, is the default: JSON)
-    if (JSON_TYPES.has(t) || t === '*/*' || t === 'application/*' || t === 'text/html' || t === 'text/*') {
+    const kind = kindOf(t);
+    if (kind === 'json') {
       return 'json';
     }
-    if (XML_TYPES.has(t)) {
+    if (kind === 'xml') {
       return xmlOr406(xmlModel);
     }
   }
+  if (types.length && !options.lenient) {
+    throw new FhirError(406, 'not-supported', `None of the types in Accept (${types.join(', ')}) can be returned: use application/fhir+json or application/fhir+xml`);
+  }
   return 'json';
+}
+
+/**
+ * The Content-Type of a response in fmt: the generic type the client asked for, if it asked
+ * for one (application/json, text/json, application/xml), else application/fhir+json or +xml
+ */
+function responseMime(req, fmt) {
+  const f = req.query && typeof req.query._format === 'string' ? req.query._format.trim().toLowerCase().split(';')[0].trim() : '';
+  let asked = null;
+  if (f) {
+    asked = f;
+  } else {
+    asked = acceptedTypes(req).find(t => kindOf(t)) || null;
+  }
+  return asked && GENERIC.get(asked) === fmt ? asked : fmt === 'xml' ? FHIR_XML : FHIR_JSON;
 }
 
 function xmlOr406(xmlModel) {
@@ -171,7 +205,7 @@ function pretty(req) {
 function serialise(req, body, fmt = 'json', xmlModel = null) {
   if (fmt === 'xml') {
     try {
-      return { text: toXml(body, xmlModel, { pretty: pretty(req) }), contentType: FHIR_XML + '; charset=utf-8' };
+      return { text: toXml(body, xmlModel, { pretty: pretty(req) }), contentType: responseMime(req, 'xml') + '; charset=utf-8' };
     } catch (e) {
       if (e instanceof XmlProblem) {
         throw new FhirError(500, 'exception', `This can't be returned as XML: ${e.message} (ask for JSON instead)`);
@@ -179,7 +213,7 @@ function serialise(req, body, fmt = 'json', xmlModel = null) {
       throw e;
     }
   }
-  return { text: pretty(req) ? fhirJson.stringify(body, null, 2) : fhirJson.stringify(body), contentType: FHIR_JSON + '; charset=utf-8' };
+  return { text: pretty(req) ? fhirJson.stringify(body, null, 2) : fhirJson.stringify(body), contentType: responseMime(req, 'json') + '; charset=utf-8' };
 }
 
 /**
@@ -198,7 +232,7 @@ async function serialiseParts(req, body, fmt = 'json', xmlModel = null, stillWan
     return { parts: [out.text], contentType: out.contentType };
   }
   try {
-    return { parts: await toXmlChunks(body, xmlModel, { pretty: pretty(req), stillWanted }), contentType: FHIR_XML + '; charset=utf-8' };
+    return { parts: await toXmlChunks(body, xmlModel, { pretty: pretty(req), stillWanted }), contentType: responseMime(req, 'xml') + '; charset=utf-8' };
   } catch (e) {
     if (e instanceof XmlProblem) {
       throw new FhirError(500, 'exception', `This can't be returned as XML: ${e.message} (ask for JSON instead)`);
@@ -207,4 +241,4 @@ async function serialiseParts(req, body, fmt = 'json', xmlModel = null, stillWan
   }
 }
 
-module.exports = { responseFormat, errorFormat, requestBody, serialise, serialiseParts, FHIR_JSON, FHIR_XML, PATCH_JSON, JSON_TYPES, XML_TYPES };
+module.exports = { responseFormat, responseMime, errorFormat, requestBody, serialise, serialiseParts, FHIR_JSON, FHIR_XML, PATCH_JSON, JSON_TYPES, XML_TYPES };

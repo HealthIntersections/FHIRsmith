@@ -16,6 +16,10 @@ const { typeAllows } = require('../endpoint/settings');
 const { OPERATIONS } = require('../operations/operations');
 const { operationsFor: terminologyOperations } = require('../operations/terminology');
 
+// R5's CapabilityStatement.rest.resource.conditionalPatch, in an earlier version: the
+// cross-version extension (hl7.fhir.uv.xver-r5.*)
+const XVER_CONDITIONAL_PATCH = 'http://hl7.org/fhir/5.0/StructureDefinition/extension-CapabilityStatement.rest.resource.conditionalPatch';
+
 const COMMON = [
   { name: '_id', type: 'token' }, { name: '_lastUpdated', type: 'date' }, { name: '_tag', type: 'token' },
   { name: '_security', type: 'token' }, { name: '_profile', type: 'uri' }, { name: '_has', type: 'string' },
@@ -47,7 +51,8 @@ function capabilities(ep, freq) {
       readHistory: true,
       updateCreate: !!s.createOnUpdate,
       conditionalCreate: !!ts.conditionalCreate,
-      conditionalRead: 'not-supported',
+      // If-None-Match and If-Modified-Since on a read (crud.js: notModified)
+      conditionalRead: 'full-support',
       conditionalUpdate: !!ts.conditionalUpdate,
       conditionalDelete: ts.conditionalDelete ? ((s.conditionalDeleteMax || 1) > 1 ? 'multiple' : 'single') : 'not-supported',
       referencePolicy: ['literal', 'logical', 'local'],
@@ -57,6 +62,15 @@ function capabilities(ep, freq) {
     };
     if (ts.versionAware) {
       r.versioning = 'versioned-update';
+    }
+    if (ts.conditionalUpdate && typeAllows(ts, 'patch')) {
+      // allowed where conditional update is (crud.js: conditionalPatch): R5's element, and
+      // before R5, its cross-version extension
+      if (Number(String(ep.definitions.fhirVersion || '').split('.')[0]) >= 5) {
+        r.conditionalPatch = true;
+      } else {
+        r.extension = [...(r.extension || []), { url: XVER_CONDITIONAL_PATCH, valueBoolean: true }];
+      }
     }
     const ops = OPERATIONS.filter(o => o.types === null || o.types.includes(type)).filter(o => o.instance || o.type)
       .map(o => ({ name: o.name, definition: o.definition }));
@@ -106,4 +120,4 @@ function definitionOf(type, name) {
   return name === 'batch-validate-code' ? null : `http://hl7.org/fhir/OperationDefinition/${type}-${name}`;
 }
 
-module.exports = { capabilities };
+module.exports = { capabilities, XVER_CONDITIONAL_PATCH };

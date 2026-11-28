@@ -93,6 +93,21 @@ class QueueRunner {
   }
 
   /**
+   * Wait until no task is running but the one named (a reset waits for the others to finish:
+   * rest/maintenance.js)
+   * @param {string} except
+   */
+  async idle(except) {
+    for (;;) {
+      const running = this.tasks.filter(t => t.name !== except && t.running).map(t => t.running);
+      if (!running.length) {
+        return;
+      }
+      await Promise.all(running);
+    }
+  }
+
+  /**
    * The tasks, for the status page: [{name, everyMs, runs, failures, running (since, or null),
    * lastAt (when the last run finished), lastMs, failing (the last run failed), lastError,
    * lastErrorAt}]

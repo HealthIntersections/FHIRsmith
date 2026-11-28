@@ -55,7 +55,7 @@ async function emptyMysql(cfg) {
   try {
     await conn.query('SET FOREIGN_KEY_CHECKS = 0');
     for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers', 'PackageLoads',
-      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles']) {
+      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles', 'Maintenance']) {
       await conn.query(`DROP TABLE IF EXISTS ${t}`);
     }
   } finally {
@@ -114,6 +114,8 @@ async function makeApp(engine, options = {}) {
     master: options.master !== false,
     jobs: options.jobs,
     localBase: options.localBase,
+    maintenanceGraceMs: options.maintenanceGraceMs,
+    maxBody: options.maxBody,
     principal: options.principal || (async () => admin),
     principalById: options.principalById || (async (id) => (String(id) === String(admin.id) ? admin : null))
   });
@@ -157,7 +159,7 @@ async function snapshot(ep) {
   return ep.db.read(async (q) => {
     const out = {};
     for (const t of [...TABLES.map(x => x.name), 'TextIndex', 'Contained', 'ParamConcepts', 'ValueSets', 'ValueSetMembers', 'PackageLoads',
-      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles']) {
+      'ObservationValues', 'ObservationCodes', 'AsyncJobs', 'JobFiles', 'Maintenance']) {
       const r = await q.get(`SELECT COUNT(*) AS N FROM ${t}`);
       out[t] = Number(r.N);
     }

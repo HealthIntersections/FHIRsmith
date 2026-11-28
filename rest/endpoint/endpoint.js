@@ -18,6 +18,11 @@
  * compared with the database's at most once a second, and everything reloads when it
  * changes. Resources and search results are never cached.
  *
+ * Under maintenance (maintenance.js: the database being wiped and made again), every request
+ * is answered 503 and the background jobs wait. The database's epoch (Config: made with it)
+ * tells each process that the database was made again, and the process sets itself up again
+ * from it (setup) before it uses the database.
+ *
  * @module rest/endpoint/endpoint
  */
 
@@ -51,6 +56,7 @@ const { AsyncJobs, PATH: ASYNC_PATH } = require('../queue/async');
 const queueStatus = require('../queue/status');
 const terminologyProxy = require('../operations/terminology');
 const { RestWeb, wantsHtml } = require('../web');
+const { Maintenance } = require('../maintenance');
 
 const GENERATION_CHECK_MS = 1000;
 const AUDIT_FLUSH_MS = 1000;
@@ -58,6 +64,17 @@ const MAX_AUDIT_BUFFER = 5000;
 const REINDEX_BATCH = 200;
 // how often the queues are measured for the status page
 const STATUS_MS = 15 * 1000;
+
+// how long a client is told to wait, under maintenance (Retry-After, in seconds)
+const MAINTENANCE_RETRY_S = 30;
+
+/** The answer under maintenance: 503, saying how it is going */
+function maintenanceError(m) {
+  const fe = new FhirError(503, 'transient', `The server is under maintenance (${m.state}${m.message ? ': ' + m.message : ''}). Try again later`);
+  fe.headers = { ...(fe.headers || {}), 'Retry-After': String(MAINTENANCE_RETRY_S) };
+  fe.maintenance = true;
+  return fe;
+}
 
 // the role an interaction needs, by what access.js calls it
 const ACCESS_NAMES = {
@@ -83,6 +100,8 @@ class Endpoint {
    * @param {Function} [options.app] - the express app, for a terminology server on this server
    * @param {function(Object): Promise<Object|null>} [options.principal] - who a request is
    * @param {string} [options.hostName]
+   * @param {number} [options.maintenanceGraceMs] - how long a reset gives the requests under
+   *   way (maintenance.js; tests: less)
    */
   constructor(cfg, options) {
     if (!cfg || typeof cfg.path !== 'string' || !/^\/[A-Za-z0-9/_-]*$/.test(cfg.path)) {
@@ -101,6 +120,10 @@ class Endpoint {
     this.generation = null;
     this.bundleReturnsResources = true;
     this.terminology = null;
+    // set up from the database (setup): not while a reset is making it again
+    this.ready = false;
+    this.epoch = null;
+    this.settingUp = null;
   }
 
   // ---- start up and refresh ----
@@ -108,6 +131,62 @@ class Endpoint {
   async open() {
     const cfg = this.cfg;
     this.db = await openDatabase(cfg.database, { databasesDir: this.options.databasesDir, master: this.master, log: (m) => this.log.info(m) });
+    this.maintenance = new Maintenance(this, { graceMs: this.options.maintenanceGraceMs });
+    const m = await this.maintenance.current(true);
+    if (!m || m.state === 'loading') {
+      await this.setup({ first: true });
+    } else {
+      // the database is being made again: set up when it has been (refresh)
+      this.log.warn(`Rest ${this.path}: the endpoint is under maintenance (${m.state}): it answers 503 until it is over`);
+    }
+    this.web = new RestWeb(this);
+    this.packages = new PackageLoader(this);
+    this.asyncJobs = new AsyncJobs(this);
+    if (this.jobs) {
+      if (m && m.state === 'loading') {
+        // the reset's loads go on (maintenance.js)
+        await this.packages.requeueRunning();
+      } else if (!m) {
+        await this.packages.recover();
+      }
+      this.startJobs();
+    }
+    this.auditTimer = setInterval(() => {
+      this.flushAudits().catch(e => this.log.error(`Rest ${this.path}: writing AuditEvents failed: ${e.message}`));
+    }, AUDIT_FLUSH_MS);
+    this.auditTimer.unref();
+    if (this.ready) {
+      this.log.info(`Rest endpoint ${this.path}: FHIR ${this.settings.fhirVersion}, ${this.typeKeys.size} types, ${this.definitions.byUrl.size} search parameters, ` +
+        `${this.cfg.database.type} database${this.master ? '' : this.jobs ? ' (jobs)' : ' (worker)'}${this.master && !this.jobs ? ', jobs in the jobs process' : ''}`);
+    }
+  }
+
+  /**
+   * Set the endpoint up from its database: as the master does for a new database (the settings
+   * from initialSettings, the packages to load, the types) when this is the master or the
+   * database was just made again by a reset (fresh); then the settings, definitions and keys,
+   * all read again (nothing kept from before).
+   * @param {Object} options
+   * @param {boolean} [options.first] - as the endpoint opens
+   * @param {boolean} [options.fresh] - after a reset (maintenance.js), in the process that did it
+   */
+  async setup(options = {}) {
+    if (this.settingUp) {
+      return this.settingUp;
+    }
+    this.settingUp = this.doSetup(options).finally(() => {
+      this.settingUp = null;
+    });
+    return this.settingUp;
+  }
+
+  async doSetup(options) {
+    const cfg = this.cfg;
+    const seeding = this.master || !!options.fresh;
+    this.ready = false;
+    this.definitions = null;
+    this.lookups = null;
+    this.auditBuffer = [];
     // the FHIR version is fixed when the database is made
     const initial = { ...(cfg.initialSettings || {}) };
     if (cfg.fhirVersion) {
@@ -116,9 +195,13 @@ class Endpoint {
     // packages to load into a new database: not a setting
     const loadPackages = (initial.loadPackages || []).map(p => PackageLoader.parse(p));
     delete initial.loadPackages;
-    if (this.master) {
+    if (seeding) {
       const isNew = !(await this.db.read(q => q.get("SELECT Value FROM Config WHERE Name = 'generation'")));
       await settingsStore.seed(this.db, initial, []);
+      if (isNew) {
+        // which database this is: a reset makes a new one
+        await this.db.write(q => q.run(q.dialect.insertIgnore('Config', ['Name', 'Value']) + '(?, ?)', ['epoch', crypto.randomUUID()]));
+      }
       if (isNew && loadPackages.length) {
         await this.db.write(async (q) => {
           for (const p of loadPackages) {
@@ -135,26 +218,19 @@ class Endpoint {
     if (cfg.fhirVersion && majorMinor(cfg.fhirVersion) !== majorMinor(loaded.endpoint.fhirVersion)) {
       throw new Error(`The rest endpoint ${this.path}'s database is FHIR ${loaded.endpoint.fhirVersion}, but the configuration says ${cfg.fhirVersion}`);
     }
-    this.warnOverridden(cfg.initialSettings || {}, loaded.endpoint);
+    if (options.first) {
+      this.warnOverridden(cfg.initialSettings || {}, loaded.endpoint);
+    }
     await this.loadDefinitions(loaded.endpoint);
-    if (this.master) {
+    if (seeding) {
       await settingsStore.seed(this.db, {}, [...this.definitions.resourceTypes], cfg.types || {});
     }
-    await this.apply(await settingsStore.load(this.db));
-    this.web = new RestWeb(this);
-    this.packages = new PackageLoader(this);
-    this.asyncJobs = new AsyncJobs(this);
-    if (this.jobs) {
-      await this.packages.recover();
-      this.startJobs();
-    }
-    this.auditTimer = setInterval(() => {
-      this.flushAudits().catch(e => this.log.error(`Rest ${this.path}: writing AuditEvents failed: ${e.message}`));
-    }, AUDIT_FLUSH_MS);
-    this.auditTimer.unref();
-    loaded = null;
-    this.log.info(`Rest endpoint ${this.path}: FHIR ${this.settings.fhirVersion}, ${this.typeKeys.size} types, ${this.definitions.byUrl.size} search parameters, ` +
-      `${this.cfg.database.type} database${this.master ? '' : this.jobs ? ' (jobs)' : ' (worker)'}${this.master && !this.jobs ? ', jobs in the jobs process' : ''}`);
+    loaded = await settingsStore.load(this.db);
+    const epoch = await this.db.read(q => q.get("SELECT Value FROM Config WHERE Name = 'epoch'"));
+    this.epoch = epoch ? epoch.Value : null;
+    await this.apply(loaded);
+    this.lastGenerationCheck = Date.now();
+    this.ready = true;
   }
 
   /**
@@ -261,14 +337,32 @@ class Endpoint {
     return server;
   }
 
-  /** Reload when the settings' generation has changed (at most once a second) */
+  /**
+   * Reload when the settings' generation has changed (at most once a second); set up again
+   * when the database is a new one (a reset), or hasn't been set up yet (it was under
+   * maintenance). Not under maintenance: the caller has checked
+   */
   async refresh() {
+    if (!this.ready) {
+      await this.setup({});
+      return;
+    }
     const now = Date.now();
     if (now - this.lastGenerationCheck < GENERATION_CHECK_MS) {
       return;
     }
     this.lastGenerationCheck = now;
-    const g = await this.db.read(q => settingsStore.readGeneration(q));
+    const rows = await this.db.read(q => q.all("SELECT Name, Value FROM Config WHERE Name IN ('generation', 'epoch')"));
+    const value = (name) => {
+      const r = rows.find(x => x.Name === name);
+      return r ? r.Value : null;
+    };
+    if (value('epoch') !== this.epoch) {
+      this.log.info(`Rest ${this.path}: the database was made again (a reset): setting up from it`);
+      await this.setup({});
+      return;
+    }
+    const g = value('generation') === null ? 0 : Number(value('generation'));
     if (g !== this.generation) {
       const loaded = await settingsStore.load(this.db);
       const packagesChanged = JSON.stringify(loaded.endpoint.packages) !== JSON.stringify(this.settings.packages) ||
@@ -283,6 +377,31 @@ class Endpoint {
       await this.apply(loaded);
       this.log.info(`Rest ${this.path}: settings reloaded (generation ${g})`);
     }
+  }
+
+  /**
+   * Refuse a request while the endpoint is under maintenance: 503, with how it is going
+   * @throws {FhirError}
+   */
+  async checkMaintenance() {
+    const m = await this.maintenance.current();
+    if (m) {
+      throw maintenanceError(m);
+    }
+  }
+
+  /** What to answer for an error that wasn't a FhirError: 503 if it's because of maintenance */
+  async errorFor(e) {
+    if (e instanceof FhirError) {
+      return e;
+    }
+    let m = null;
+    try {
+      m = await this.maintenance.current(true);
+    } catch (e2) {
+      // the database itself isn't answering: a 500, as it would be
+    }
+    return m ? maintenanceError(m) : null;
   }
 
   // ---- helpers for the interactions ----
@@ -457,7 +576,17 @@ class Endpoint {
     if (!this.auditBuffer.length) {
       return;
     }
+    if (await this.maintenance.active()) {
+      // the database they're for is going
+      this.auditBuffer = [];
+      return;
+    }
+    // (a new database since: they're dropped, by setup)
+    await this.refresh();
     const list = this.auditBuffer.splice(0);
+    if (!list.length) {
+      return;
+    }
     await this.db.write(async (q) => {
       for (const a of list) {
         await this.store.put(q, { type: 'AuditEvent', id: null, resource: a.ev, mustCreate: true, userId: a.userId, deferChecks: true });
@@ -551,6 +680,7 @@ class Endpoint {
   /** GET or DELETE [base]/_async/{id}: an async request's status and result, or cancelling it */
   async handleAsyncJob(req, res) {
     try {
+      await this.checkMaintenance();
       await this.refresh();
       format.responseFormat(req, this.xmlModel());
       const principal = this.options.principal ? await this.options.principal(req) : null;
@@ -570,10 +700,11 @@ class Endpoint {
         res.end();
       }
     } catch (e) {
-      if (!(e instanceof FhirError)) {
+      const known = await this.errorFor(e);
+      if (!known) {
         this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed: ${e.stack || e.message}`);
       }
-      this.sendError(req, res, e instanceof FhirError ? e : new FhirError(500, 'exception', 'Internal error'));
+      this.sendError(req, res, known || new FhirError(500, 'exception', 'Internal error'));
     }
   }
 
@@ -586,8 +717,10 @@ class Endpoint {
     let freq = null;
     let interaction = 'unknown';
     try {
+      await this.checkMaintenance();
       await this.refresh();
-      format.responseFormat(req, this.xmlModel());
+      // (a Binary's own content is whatever type it is: binary.js answers its Accept)
+      format.responseFormat(req, this.xmlModel(), { lenient: binary.binaryPath(req) });
       const principal = this.options.principal ? await this.options.principal(req) : null;
       const isPatch = req.method === 'PATCH';
       // a Binary's own content, and a Binary resource in a JSON or XML type of any name (binary.js)
@@ -624,11 +757,12 @@ class Endpoint {
         this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed after the response started: ${e.message}`);
         return;
       }
-      if (!(e instanceof FhirError)) {
+      const known = await this.errorFor(e);
+      if (!known) {
         this.log.error(`Rest ${this.path}: ${req.method} ${req.originalUrl} failed: ${e.stack || e.message}`);
       }
-      const fe = e instanceof FhirError ? e : new FhirError(500, 'exception', 'Internal error');
-      if (freq && this.settings && this.settings.audit !== 'off' && fe.status !== 401) {
+      const fe = known || new FhirError(500, 'exception', 'Internal error');
+      if (freq && this.ready && this.settings && this.settings.audit !== 'off' && fe.status !== 401 && !fe.maintenance) {
         this.auditLater(freq, freq.interaction === 'bundle' ? 'transaction' : interaction, fe.status, fe.message);
       }
       if (wantsHtml(req) && this.web) {
@@ -696,10 +830,10 @@ class Endpoint {
     } else if (result.outcome) {
       body = operationOutcome([result.outcome]);
     }
-    const fmt = format.responseFormat(req, this.xmlModel());
+    const fmt = format.responseFormat(req, this.xmlModel(), { lenient: binary.binaryPath(req) });
     if (body === null || req.method === 'HEAD') {
       if (body !== null) {
-        res.set('Content-Type', fmt === 'xml' ? format.FHIR_XML + '; charset=utf-8' : format.FHIR_JSON + '; charset=utf-8');
+        res.set('Content-Type', format.responseMime(req, fmt) + '; charset=utf-8');
       }
       res.end();
       return;
@@ -725,8 +859,21 @@ class Endpoint {
     void this.runner.runNow('queue status');
   }
 
-  /** The endpoint's tasks, on a runner */
-  jobTasks(runner) {
+  /**
+   * The endpoint's tasks, on a runner. Under maintenance (or before the endpoint is set up)
+   * only the maintenance task does anything
+   */
+  jobTasks(queueRunner) {
+    const runner = {
+      every: (ms, name, fn) => queueRunner.every(ms, name, async () => {
+        if (!this.ready || await this.maintenance.active()) {
+          return undefined;
+        }
+        return fn();
+      })
+    };
+    // a reset (maintenance.js), when one is asked for: the other tasks wait while it goes
+    queueRunner.every(1000, 'maintenance', () => this.maintenance.run(() => queueRunner.idle('maintenance')));
     runner.every(5 * 60 * 1000, 'search cleanup', () => this.searcher.cleanup());
     runner.every(5000, 'closure update', async () => {
       if (this.terminology) {
@@ -767,7 +914,8 @@ class Endpoint {
     if (!this.runner) {
       return null;
     }
-    return { path: this.path, tasks: this.runner.describe().filter(t => t.name !== 'queue status'), queues: this.queueFigures || null };
+    return { path: this.path, tasks: this.runner.describe().filter(t => t.name !== 'queue status'), queues: this.queueFigures || null,
+      maintenance: (this.maintenance && this.maintenance.row) || null };
   }
 
   /**
@@ -837,4 +985,4 @@ class Endpoint {
   }
 }
 
-module.exports = { Endpoint };
+module.exports = { Endpoint, maintenanceError };

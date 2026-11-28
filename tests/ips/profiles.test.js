@@ -143,6 +143,44 @@ describe('checking and building', () => {
   });
 });
 
+describe('descriptions', () => {
+  test('a description is pure markdown, kept, and left out when empty', () => {
+    const md = 'For **referrals** to an O/G service.\n\nFrom the [IPS use cases](https://example.org/uc) - see <https://example.org>.';
+    const first = profiles.checkInput({ title: 'Referral', description: `  ${md}\r\n`, constraints: [] });
+    expect(first.problems).toEqual([]);
+    expect(first.description).toBe(md);
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Referral', description: first.description, constraints: [] });
+    expect(sd.description).toBe(md);
+    expect(profiles.descriptionOf(sd)).toBe(md);
+    // no description given: the profile being replaced keeps its own; an empty one removes it
+    expect(profiles.checkInput({ title: 'Referral', constraints: [] }, sd).description).toBe(md);
+    expect(profiles.checkInput({ title: 'Referral', description: '', constraints: [] }, sd).description).toBe('');
+    expect(profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Referral', description: '', constraints: [] })).not.toHaveProperty('description');
+    expect(profiles.checkInput({ title: 'Referral', constraints: [] }).description).toBe('');
+  });
+
+  test('HTML is refused, not just left out', () => {
+    expect(profiles.checkDescription('Fine <b>bold</b> text').problems).toEqual([expect.stringMatching(/has HTML in it \(<b>\): only pure markdown is allowed/)]);
+    expect(profiles.checkDescription('<div>\nblock\n</div>').problems[0]).toMatch(/has HTML in it/);
+    expect(profiles.checkDescription('<script>alert(1)</script>').problems[0]).toMatch(/has HTML in it/);
+    expect(profiles.checkDescription(42).problems).toEqual(['The description must be text (markdown)']);
+    expect(profiles.checkDescription('x'.repeat(profiles.MAX_DESCRIPTION + 1)).problems[0]).toMatch(/longer than/);
+    expect(profiles.checkInput({ title: 'T', description: 'a <i>b</i>', constraints: [] }).problems[0]).toMatch(/has HTML in it/);
+  });
+
+  test('descriptions go out in downloads and come back in uploads', () => {
+    const sd = profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Referral', description: 'Why: *this*', constraints: [{ key: 'cp-1', human: 'Problems', expression: sec }] });
+    expect(profiles.fromUpload(sd)).toEqual({ input: { title: 'Referral', description: 'Why: *this*', constraints: [{ human: 'Problems', expression: sec }], guides: [] }, problems: [] });
+    expect(profiles.fromUpload({ ...sd, description: 'Has <span>html</span>' }).problems[0]).toMatch(/has HTML in it/);
+  });
+
+  test('a profile moved off Composition keeps its description', () => {
+    const old = { resourceType: 'StructureDefinition', id: 'profile-abcdef012345', url: 'http://x/sd', title: 'Old', description: 'Kept', type: 'Composition',
+      baseDefinition: 'http://hl7.org/fhir/StructureDefinition/Composition', differential: { element: [{ id: 'Composition', path: 'Composition', constraint: [] }] } };
+    expect(profiles.migrate(old).description).toBe('Kept');
+  });
+});
+
 describe('uploads', () => {
   const made = () => profiles.build({ id: 'abcdef012345', url: 'http://x/sd', title: 'Referral', constraints: [{ key: 'cp-7', human: 'Problems', expression: sec }] });
 

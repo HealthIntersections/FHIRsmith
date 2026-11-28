@@ -72,7 +72,16 @@ describe('config-check', () => {
     expect(report.warnings.find(w => w.where === 'modules.tx.cacheTimout').message).toContain('did you mean cacheTimeout?');
   });
 
-  test('keys starting with _ or x- are parked, not unknown', () => {
+  test('homePage: the order and the panels name the modules on the home page', () => {
+    const fine = check({ homePage: { order: ['tx', 'rest', 'packages'], modules: { tx: { title: 'Terminology', description: 'For the FHIR community' }, 'ext-tracker': { description: 'Extensions' }, testing: { hide: true } } } });
+    expect(fine.errors).toEqual([]);
+    expect(fine.warnings).toEqual([]);
+    const bad = check({ homePage: { order: ['tx', 'terminology'], modules: { tx: { description: '' }, txx: { title: 'X' }, rest: { hide: 'yes' } } } });
+    expect(where(bad.errors).sort()).toEqual(['homePage.modules.rest.hide', 'homePage.modules.tx.description', 'homePage.order[1]']);
+    expect(bad.warnings.find(w => w.where === 'homePage.modules.txx').message).toContain('did you mean tx?');
+  });
+
+    test('keys starting with _ or x- are parked, not unknown', () => {
     const report = check({ server: { 'x-webBase': 'http://example.org', _note: 'hi' } });
     expect(report.warnings).toEqual([]);
   });

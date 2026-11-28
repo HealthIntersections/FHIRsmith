@@ -1,6 +1,17 @@
 {
   // A starting point for config.json: every section, with comments (config.json may have
   // // and /* */ comments too). Every module is off: set "enabled": true on the ones you run
+
+  // The home page's module panels: the order (the modules named come first, in this order; the
+  // others after them), a module's own title or description in place of the default (plain
+  // text), and modules with no panel. Optional.
+  // "homePage": {
+  //   "order": ["tx", "rest", "packages"],
+  //   "modules": {
+  //     "tx": { "description": "Terminology services for the FHIR community" },
+  //     "testing": { "hide": true }   // no panel, but the module still runs
+  //   }
+  // },
   "server": {
     "port": 3000,
     // Any site's scripts may call the APIs. Not "credentials": true - that lets other sites'
@@ -244,17 +255,8 @@
         "maxItems": 50,
         "maxTotalMB": 500,
         "keepMinutes": 60
-      },
-      // /packages/npm-check: checks any registry against the npm registry protocol. On by
-      // default; the other settings are the defaults. "control": false stops the daily
-      // check against the npm registry itself.
-      "npmCheck": {
-        "enabled": true,
-        "maxConcurrentRuns": 2,
-        "runsPerWindow": 10,
-        "requestTimeout": 30000,
-        "maxDownloadMB": 50
       }
+      // (the npm registry check is the tester module's now: modules.tester.npm)
     },
     "registry": {
       "enabled": false,
@@ -322,15 +324,6 @@
           "FHIR": 87654321
         }
       }
-    },
-    "npmprojector": {
-      "enabled": false,
-      "fhirVersion": "r4",  // Options: "r4", "r5", "stu3", "dstu2"
-      "basePath": "/fhir",   // Default: "/npmprojector"
-      "npmPath": "./data/fhir-package",
-      "resourceTypes": null,
-      "searchParametersPath": null,
-      "debounceMs": 500
     },
     "tx": {
       "enabled": false,
@@ -488,6 +481,38 @@
       "rateLimit": { "windowMinutes": 1, "max": 60 }
       // delete reports received more than this many days ago. Leave it out to keep everything
       // , "retentionDays": 365
+    },
+    // runs the FHIRsmith RESTful API tests against a FHIR server anyone logged in names, at
+    // /tester. See tester/README.md
+    "tester": {
+      "enabled": false,
+      // relative paths resolve under the data folder's databases directory
+      "database": "tester.db",
+      // servers on private addresses (localhost, 10.x...) too: only for a server that isn't public
+      "allowPrivateAddresses": false,
+      // how long runs are kept (days), and their step details (each test's requests and responses)
+      "keepDays": 183,
+      "detailDays": 30,
+      // the npm registry checks (/tester?kind=npm): on by default; these are the defaults.
+      // "control": false stops the daily check of the checks against the npm registry itself
+      "npm": {
+        "enabled": true,
+        "requestTimeout": 30000,
+        "maxDownloadMB": 50
+      },
+      // the terminology tests (/tester?kind=tx), run through the FHIR validator: on when there's
+      // Java to run it in; these are the defaults ("jar": a validator of your own, used as it is)
+      "tx": {
+        "enabled": true,
+        "port": 8083,
+        "idleMinutes": 15,
+        "limitMinutes": 30,
+        "testsVersion": "current"
+      }
+      // where each run's TestReport is sent (a /testing module, say), and the API token for it:
+      // the name of an environment variable that holds it, or a file (never the token itself)
+      // , "reportServer": "https://npm.fhir.org/testing"
+      // , "reportTokenEnv": "FHIRSMITH_TESTING_TOKEN"
     },
     // International Patient Summary documents, in projects, at /ips. See ips/readme.md
     "ips": {

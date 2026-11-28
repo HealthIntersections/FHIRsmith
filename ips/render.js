@@ -1598,6 +1598,52 @@ function renderAi(row, options = {}) {
  * @param {Object} row - from store.read(), with .comment (store.patientComment) or not
  * @param {{base: string, user?: Object, csrf?: string, docUrl: string, here?: string, saved?: boolean}} ctx
  */
+/**
+ * A markdown text area with Write | Preview switches; the preview (in the browser, CommonMark)
+ * says when there is HTML in it, which can't be saved: pure markdown only. Inside a form.
+ * @param {{base: string}} ctx
+ * @param {{prefix: string, name: string, value: string, max: number, rows: number, noun: string, label: string}} f -
+ *   prefix: for the elements' ids; label: HTML
+ */
+function markdownField(ctx, f) {
+  const id = (s) => escape(`${f.prefix}-${s}`);
+  let h = `<div class="ips-switch" role="tablist"><a href="#" class="active" id="${id('write')}" role="tab" aria-controls="${id('text')}">Write</a>` +
+    `<a href="#" id="${id('preview')}" role="tab" aria-controls="${id('shown')}">Preview</a></div>`;
+  h += `<label for="${id('text')}" class="ips-small">${f.label}</label>` +
+    `<textarea id="${id('text')}" name="${escape(f.name)}" class="form-control" rows="${f.rows}" maxlength="${f.max}">${escape(f.value || '')}</textarea>` +
+    `<div id="${id('shown')}" class="ips-patient-comment" style="display: none; min-height: 8em" aria-live="polite"></div>`;
+  h += `<script src="${escape(assets.src(ctx.base, 'vendor/commonmark.min.js'))}"></script>`;
+  const js = (s) => JSON.stringify(s).replace(/</g, '\\u003c');
+  h += `<script>
+(function () {
+  var text = document.getElementById(${js(`${f.prefix}-text`)}), shown = document.getElementById(${js(`${f.prefix}-shown`)});
+  var write = document.getElementById(${js(`${f.prefix}-write`)}), preview = document.getElementById(${js(`${f.prefix}-preview`)});
+  var warning = ${js(`<div class="alert alert-danger">The ${f.noun} has HTML in it: only pure markdown is allowed, so it cannot be saved like this.</div>`)};
+  function show(previewing) {
+    if (previewing) {
+      var cm = window.commonmark;
+      if (!cm) {
+        shown.innerHTML = '<p><i>(the preview could not be made)</i></p>';
+      } else {
+        var doc = new cm.Parser().parse(text.value), w = doc.walker(), ev, html = false;
+        while ((ev = w.next())) {
+          if (ev.entering && (ev.node.type === 'html_block' || ev.node.type === 'html_inline')) { html = true; }
+        }
+        shown.innerHTML = (html ? warning : '') + new cm.HtmlRenderer({ safe: true }).render(doc);
+      }
+    }
+    text.style.display = previewing ? 'none' : '';
+    shown.style.display = previewing ? '' : 'none';
+    write.className = previewing ? '' : 'active';
+    preview.className = previewing ? 'active' : '';
+  }
+  write.addEventListener('click', function (e) { e.preventDefault(); show(false); });
+  preview.addEventListener('click', function (e) { e.preventDefault(); show(true); });
+})();
+</script>`;
+  return h;
+}
+
 function renderPatientComments(row, ctx) {
   const c = row.comment;
   let h = '<p class="ips-small">This is a section for any comments the patient wishes to make about the accuracy or appropriateness of the content in the document.</p>';
@@ -1615,40 +1661,11 @@ function renderPatientComments(row, ctx) {
   } else {
     h += `<h3>${c ? 'Edit the comment' : 'Write a comment'}</h3>`;
     h += `<form method="post" action="${escape(ctx.docUrl)}/comment">${csrfField(ctx.csrf)}`;
-    h += '<div class="ips-switch" role="tablist"><a href="#" class="active" id="pc-write" role="tab" aria-controls="pc-text">Write</a>' +
-      '<a href="#" id="pc-preview" role="tab" aria-controls="pc-shown">Preview</a></div>';
-    h += '<label for="pc-text" class="ips-small">The comment, in <a href="https://commonmark.org/help/">markdown</a> - pure markdown: no HTML is allowed. Saving it replaces the comment there was; saving it empty removes it.</label>' +
-      `<textarea id="pc-text" name="comment" class="form-control" rows="12" maxlength="${PATIENT_COMMENT_MAX}">${escape(c ? c.markdown : '')}</textarea>` +
-      '<div id="pc-shown" class="ips-patient-comment" style="display: none; min-height: 8em" aria-live="polite"></div>';
+    h += markdownField(ctx, {
+      prefix: 'pc', name: 'comment', value: c ? c.markdown : '', max: PATIENT_COMMENT_MAX, rows: 12, noun: 'comment',
+      label: 'The comment, in <a href="https://commonmark.org/help/">markdown</a> - pure markdown: no HTML is allowed. Saving it replaces the comment there was; saving it empty removes it.'
+    });
     h += '<div style="margin-top: 6px"><button type="submit" class="btn btn-primary">Save</button></div></form>';
-    h += `<script src="${escape(assets.src(ctx.base, 'vendor/commonmark.min.js'))}"></script>`;
-    h += `<script>
-(function () {
-  var text = document.getElementById('pc-text'), shown = document.getElementById('pc-shown');
-  var write = document.getElementById('pc-write'), preview = document.getElementById('pc-preview');
-  function show(previewing) {
-    if (previewing) {
-      var cm = window.commonmark;
-      if (!cm) {
-        shown.innerHTML = '<p><i>(the preview could not be made)</i></p>';
-      } else {
-        var doc = new cm.Parser().parse(text.value), w = doc.walker(), ev, html = false;
-        while ((ev = w.next())) {
-          if (ev.entering && (ev.node.type === 'html_block' || ev.node.type === 'html_inline')) { html = true; }
-        }
-        shown.innerHTML = (html ? '<div class="alert alert-danger">The comment has HTML in it: only pure markdown is allowed, so it cannot be saved like this.</div>' : '') +
-          new cm.HtmlRenderer({ safe: true }).render(doc);
-      }
-    }
-    text.style.display = previewing ? 'none' : '';
-    shown.style.display = previewing ? '' : 'none';
-    write.className = previewing ? '' : 'active';
-    preview.className = previewing ? 'active' : '';
-  }
-  write.addEventListener('click', function (e) { e.preventDefault(); show(false); });
-  preview.addEventListener('click', function (e) { e.preventDefault(); show(true); });
-})();
-</script>`;
   }
   h += '<div class="ips-explain"><p class="ips-small">The patient\'s own comments on the document - where they take issue with its content, such as a diagnosis in the problems section ' +
     '(these are notoriously unreliable). The patient may be right or wrong: the comment is what they say, not a correction. ' +
@@ -2327,6 +2344,26 @@ function guidedInput(sd, ctx, admin) {
  * A clinical profile: the same page for everyone. The administrator also gets add, edit and
  * delete on each row (a row at a time, the script edits it in place), and the full editor.
  */
+/**
+ * A clinical profile's description (StructureDefinition.description: its intent, and where its
+ * content comes from), rendered from the markdown; for the administrator, its editor.
+ */
+function profileDescription(sd, ctx, admin, url) {
+  const md = profiles.descriptionOf(sd);
+  let h = md ? `<div class="ips-patient-comment ips-pf-description">${markdownHtml(md)}</div>` : '';
+  if (admin) {
+    h += `<details class="ips-pf-describe"${md ? '' : ' open'}><summary class="ips-small">${md ? 'Edit the description' : 'This profile has no description: write one'}</summary>` +
+      `<form method="post" action="${url}/description">${csrfField(ctx.csrf)}`;
+    h += markdownField(ctx, {
+      prefix: 'pf-desc', name: 'description', value: md, max: profiles.MAX_DESCRIPTION, rows: 8, noun: 'description',
+      label: 'What the profile is for, and where its content comes from, in <a href="https://commonmark.org/help/">markdown</a> - pure markdown: no HTML is allowed. ' +
+        'Saving it empty removes the description.'
+    });
+    h += '<div style="margin: 6px 0 12px 0"><button type="submit" class="btn btn-primary">Save description</button></div></form></details>';
+  }
+  return h;
+}
+
 function renderProfile(sd, ctx, editor = null) {
   const base = escape(ctx.base);
   const url = `${base}/StructureDefinition/${escape(sd.id)}`;
@@ -2341,6 +2378,7 @@ function renderProfile(sd, ctx, editor = null) {
       `<details class="ips-inline ips-pf-rename"><summary class="btn btn-default">Rename</summary><form method="post" action="${url}/title" class="ips-inline">${csrfField(ctx.csrf)}` +
       `<input type="text" name="title" class="form-control ips-inline" style="width: 22em; display: inline-block" required aria-label="The profile's title" value="${escape(sd.title)}"/> ` +
       '<button type="submit" class="btn btn-primary">Save</button></form></details>' : '') + '</div>';
+  h += profileDescription(sd, ctx, admin, url);
   const constraints = (sd.differential?.element?.[0]?.constraint || []).filter(c => c && typeof c === 'object');
   // the actions on a row, for the administrator
   const actions = (c) => !admin ? '' : '<td class="ips-pf-actions">' +

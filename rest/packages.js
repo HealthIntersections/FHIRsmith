@@ -89,6 +89,14 @@ class PackageLoader {
   }
 
   /**
+   * When the queue runner starts during a reset's loads (rest/maintenance.js): a load that was
+   * running when it stopped goes back in the queue, to be loaded again (which is safe)
+   */
+  async requeueRunning() {
+    await this.ep.db.write(q => q.run('UPDATE PackageLoads SET Status = ?, Started = NULL WHERE Status = ?', [QUEUED, RUNNING]));
+  }
+
+  /**
    * The queue runner's job: run the next queued load, if none is running.
    * @returns {Promise<boolean>} whether one was run
    */

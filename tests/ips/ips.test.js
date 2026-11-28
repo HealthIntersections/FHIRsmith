@@ -2978,6 +2978,45 @@ describe('clinical profiles', () => {
     expect((await request(app).get('/ips/StructureDefinition/profile-nothere')).status).toBe(404);
   });
 
+  test('a profile\'s description: edited by the administrator as markdown, shown as HTML, kept through edits, downloads and uploads', async () => {
+    const { agent, send } = await asAdmin();
+    const made = await send('/ips/StructureDefinition', { title: 'Described', constraints: [{ human: 'Two entries', expression: 'Bundle.entry.count() >= 2' }] });
+    const id = made.body.id;
+    // none yet: the administrator is offered the editor, a visitor sees nothing
+    expect((await agent.get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html')).text).toContain('This profile has no description: write one');
+    let visit = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
+    expect(visit.text).not.toContain('ips-pf-description');
+    expect(visit.text).not.toContain('pf-desc-text');
+    const md = 'For **medical tourism**.\n\nFrom the [IPS use cases](https://example.org/uc).';
+    expect((await form(agent, `/ips/StructureDefinition/${id}/description`, { description: md })).status).toBe(302);
+    expect(mod.store.profile(id.substring(8)).description).toBe(md);
+    visit = await request(app).get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html');
+    expect(visit.text).toContain('<div class="ips-patient-comment ips-pf-description"><p>For <strong>medical tourism</strong>.</p>\n<p>From the <a href="https://example.org/uc">IPS use cases</a>.</p>\n</div>');
+    expect(visit.text).not.toContain('Edit the description');
+    expect((await agent.get(`/ips/StructureDefinition/${id}`).set('Accept', 'text/html')).text).toContain('Edit the description');
+    // HTML is refused, and nothing changes
+    expect((await form(agent, `/ips/StructureDefinition/${id}/description`, { description: 'Bad <script>alert(1)</script>' })).status).toBe(400);
+    expect(mod.store.profile(id.substring(8)).description).toBe(md);
+    // a visitor can't change it
+    expect((await request(app).post(`/ips/StructureDefinition/${id}/description`).type('form').send({ description: 'x' })).status).not.toBe(302);
+    expect(mod.store.profile(id.substring(8)).description).toBe(md);
+    // kept when rules change, a rename, and a save without a description
+    await send(`/ips/StructureDefinition/${id}/constraint`, { human: 'Three', expression: 'Bundle.entry.count() >= 3' });
+    await form(agent, `/ips/StructureDefinition/${id}/title`, { title: 'Described v2' });
+    await send(`/ips/StructureDefinition/${id}`, { title: 'Described v3', constraints: [] });
+    expect(mod.store.profile(id.substring(8)).description).toBe(md);
+    // downloaded, and uploaded again
+    const dl = await request(app).get(`/ips/StructureDefinition/${id}?download=1`);
+    expect(JSON.parse(dl.text).description).toBe(md);
+    const up = await send('/ips/StructureDefinition', { upload: JSON.parse(dl.text) });
+    expect(up.status).toBe(201);
+    expect(mod.store.profile(up.body.id.substring(8)).description).toBe(md);
+    expect((await send('/ips/StructureDefinition', { upload: { ...JSON.parse(dl.text), description: 'a <b>b</b>' } })).status).toBe(422);
+    // saved empty: gone
+    await form(agent, `/ips/StructureDefinition/${id}/description`, { description: '' });
+    expect(mod.store.profile(id.substring(8))).not.toHaveProperty('description');
+  });
+
   test('the administrator adds, edits and deletes a rule at a time, on the profile\'s page', async () => {
     const { agent, send } = await asAdmin();
     const vs = 'http://example.org/ValueSet/heart';

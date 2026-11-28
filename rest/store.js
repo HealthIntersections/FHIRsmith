@@ -18,13 +18,22 @@
  * if another request got there first, nothing changes and the write starts again from the
  * newer version (or fails, with If-Match).
  *
+ * Every resource written is checked first (narratives): every narrative in it, wherever it
+ * is, has no active content (script, event attributes, forms, frames, embedded documents,
+ * external style) and no images, or other content, from other sites
+ * (library/narrative-check, strictly). A resource that has is refused (422), however it
+ * came: a create, an update, a patch, a transaction or batch, a package load, X-Provenance.
+ * (Until the narrative is fully validated. The web pages check again as they show it, for
+ * what was stored before.)
+ *
  * @module rest/store
  */
 
 const zlib = require('zlib');
 const crypto = require('crypto');
 const fhirJson = require('../library/fhir-json');
-const { FhirError, preconditionFailed, conflict, badRequest } = require('./library/errors');
+const { checkResourceNarratives } = require('../library/narrative-check');
+const { FhirError, preconditionFailed, conflict, badRequest, unprocessable } = require('./library/errors');
 
 const OP_CREATE = 1;
 const OP_UPDATE = 2;
@@ -311,6 +320,12 @@ class Store {
    * @returns {Promise<{created: boolean, deleted: boolean, unchanged: boolean, id, resourceKey, versionKey, versionId, lastUpdated, resource, previous}>}
    */
   async put(q, p) {
+    if (p.resource) {
+      const found = checkResourceNarratives(p.resource, { strict: true });
+      if (found) {
+        throw unprocessable(`The resource can't be stored: ${found}`);
+      }
+    }
     let reservation = p.reservation || null;
     let cur = null;
     let ids = null;

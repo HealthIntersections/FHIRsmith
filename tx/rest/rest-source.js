@@ -128,6 +128,10 @@ class RestSource {
     }
     try {
       const fresh = await db.read(async (q) => {
+        // a reset under way (rest/maintenance.js): what was read before, until it's over
+        if (await underMaintenance(q)) {
+          return null;
+        }
         if (!this.fhirVersion) {
           const v = await q.get("SELECT Value FROM Config WHERE Name = 'fhirVersion'");
           this.fhirVersion = v ? String(v.Value) : '4.0.1';
@@ -136,9 +140,11 @@ class RestSource {
         if (!t) {
           return { signature: 'none', entries: new Map() };
         }
-        // anything written (or deleted, or expunged) changes the newest version or the count
+        // anything written (or deleted, or expunged) changes the newest version or the count; a
+        // reset, the database's epoch
         const sig = await q.get('SELECT MAX(MostRecent) AS M, COUNT(*) AS N FROM Ids WHERE TypeKey = ? AND MostRecent IS NOT NULL', [t.TypeKey]);
-        const signature = `${sig.M}|${sig.N}`;
+        const epoch = await q.get("SELECT Value FROM Config WHERE Name = 'epoch'");
+        const signature = `${epoch ? epoch.Value : ''}|${sig.M}|${sig.N}`;
         if (snap && snap.signature === signature) {
           return null;
         }
@@ -161,10 +167,10 @@ class RestSource {
       if (fresh) {
         snap = { signature: fresh.signature, checkedAt: Date.now(), entries: fresh.entries };
         this.snapshots.set(type, snap);
-      } else {
+      } else if (snap) {
         snap.checkedAt = Date.now();
       }
-      return snap.entries;
+      return snap ? snap.entries : new Map();
     } catch (e) {
       this.warn(`reading ${type} failed: ${e.message}`);
       return snap ? snap.entries : new Map();
@@ -531,6 +537,15 @@ function restProviders(details, endpoints, options = {}) {
   const source = new RestSource({ path: want, database: ep.database, databasesDir: options.databasesDir || path.join(__dirname, '..', '..', 'data', 'databases'),
     log: options.log, db: options.db });
   return { source, codeSystems: new RestCodeSystemProvider(source), valueSets: new RestValueSetProvider(source), conceptMaps: new RestConceptMapProvider(source) };
+}
+
+/** Whether the rest endpoint is under maintenance (a database from before it could be, never) */
+async function underMaintenance(q) {
+  try {
+    return !!(await q.get('SELECT State FROM Maintenance WHERE Id = 1'));
+  } catch (e) {
+    return false;
+  }
 }
 
 module.exports = { RestSource, RestCodeSystemProvider, RestValueSetProvider, RestConceptMapProvider, restProviders, matches, REFRESH_MS, TYPES };

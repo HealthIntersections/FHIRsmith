@@ -20,6 +20,7 @@ const EXCLUDED = {
   'GET /stats': 'operational: server statistics',
   'GET /status': 'operational: module status',
   'POST /crawl': 'administrative',
+  'GET /npm-check': 'moved: the npm registry check is the tester module\'s (/tester?kind=npm)',
   'GET /openapi': 'the description itself',
   'GET /openapi.json': 'the description itself',
   'GET /openapi.yaml': 'the description itself',
@@ -82,10 +83,6 @@ describe('package server OpenAPI description', () => {
 
     test('broken-dependency parameters match the server validation rules', () => {
       expectParametersMatch(spec, 'listBrokenDependencies', 'query', PackagesModule.QUERY_PARAMS.broken);
-    });
-
-    test('npm-check parameters match the server validation rules', () => {
-      expectParametersMatch(spec, 'checkNpmRegistry', 'query', PackagesModule.QUERY_PARAMS.npmCheck);
     });
 
     test('download path parameters match the server validation rules', () => {

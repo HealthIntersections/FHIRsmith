@@ -196,14 +196,18 @@ const runTests = shouldRunSlowTests();
                 const result1 = await packageManager.fetch(TEST_PACKAGE, '2.1?');
                 expect(result1).toBe('hl7.fhir.us.core#2.1.0');
 
-                // Second fetch with same wildcard should resolve to same version and use cache
-                const startTime = Date.now();
-                const result2 = await packageManager.fetch(TEST_PACKAGE, '2.1?');
-                expect(result2).toBe('hl7.fhir.us.core#2.1.0');
-
-                const elapsed = Date.now() - startTime;
-                // Should still resolve version but cache the actual package
-                expect(elapsed).toBeLessThan(2000);
+                // Second fetch with same wildcard should resolve to same version and use cache.
+                // (Not timed: a wildcard is resolved by asking the registry for the versions
+                // every time, so how long it takes is how long the registry takes. What matters
+                // is that the package itself isn't downloaded again.)
+                const download = jest.spyOn(packageManager, 'fetchFromServers');
+                try {
+                    const result2 = await packageManager.fetch(TEST_PACKAGE, '2.1?');
+                    expect(result2).toBe('hl7.fhir.us.core#2.1.0');
+                    expect(download).not.toHaveBeenCalled();
+                } finally {
+                    download.mockRestore();
+                }
             }, 30000);
         });
 

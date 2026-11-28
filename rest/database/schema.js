@@ -20,7 +20,7 @@
  * @module rest/database/schema
  */
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 // columns every index table has
 const INDEX_COMMON = [
@@ -252,6 +252,14 @@ const JOB_TABLES = [
     primaryKey: ['JobKey', 'Name', 'Seq'] }
 ];
 
+// version 9: maintenance (rest/maintenance.js): while there's a row, every request is answered
+// 'under maintenance'. A reset drops every table but this one, so every process sees what is
+// happening while the rest is gone. State: requested, wiping, loading, failed
+const MAINTENANCE_TABLE = { name: 'Maintenance',
+  columns: [['Id', 'int', { notNull: true }], ['State', 'str(16)', { notNull: true }], ['Started', 'bigint', { notNull: true }],
+    ['StartedBy', 'str(128)'], ['Updated', 'bigint'], ['Message', 'text']],
+  primaryKey: ['Id'] };
+
 const CONTAINED_TABLE = {
   name: 'Contained',
   columns: [['ContainedKey', 'key'], ['ResourceKey', 'bigint', { notNull: true }], ['TypeKey', 'bigint'], ['LocalId', 'str(64)', { notNull: true }]],
@@ -384,6 +392,14 @@ const MIGRATIONS = {
         await q.exec(sql);
       }
     }
+  },
+  // maintenance: kept through a reset, which then makes everything else again from version 1
+  9: async (q) => {
+    if (!(await tableExists(q, MAINTENANCE_TABLE.name))) {
+      for (const sql of tableDDL(MAINTENANCE_TABLE, q.dialect.name)) {
+        await q.exec(sql);
+      }
+    }
   }
 };
 
@@ -466,4 +482,39 @@ async function waitForSchema(db, timeoutMs = 120000) {
   }
 }
 
-module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, PARAM_CONCEPTS_TABLE, VALUESET_TABLES, PACKAGE_LOADS_TABLE, OBSERVATION_TABLES, JOB_TABLES, INDEX_TABLES, tableDDL, migrate, waitForSchema, schemaVersion };
+/**
+ * Drop every table but the ones named (a reset: rest/maintenance.js), holding the schema lock.
+ * The schema is then made again by migrate().
+ * @param {Object} db
+ * @param {string[]} keep - table names
+ * @returns {Promise<number>} how many tables were dropped
+ */
+async function dropTables(db, keep) {
+  return db.withSchemaLock(async (q) => {
+    const kept = new Set(keep.map(k => k.toLowerCase()));
+    let n = 0;
+    if (q.dialect.name === 'sqlite') {
+      // virtual tables (full text) first: dropping one drops the tables it keeps its data in
+      const list = async () => (await q.all("SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"))
+        .filter(r => !kept.has(String(r.name).toLowerCase()));
+      for (const r of (await list()).filter(r => /^CREATE VIRTUAL TABLE/i.test(r.sql || ''))) {
+        await q.exec(`DROP TABLE IF EXISTS "${r.name}"`);
+        n++;
+      }
+      for (const r of await list()) {
+        await q.exec(`DROP TABLE IF EXISTS "${r.name}"`);
+        n++;
+      }
+    } else {
+      const rows = await q.all('SELECT TABLE_NAME AS name FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()');
+      for (const r of rows.filter(r => !kept.has(String(r.name).toLowerCase()))) {
+        await q.exec(`DROP TABLE IF EXISTS \`${r.name}\``);
+        n++;
+      }
+    }
+    return n;
+  });
+}
+
+module.exports = { SCHEMA_VERSION, TABLES, CONTAINED_TABLE, PARAM_CONCEPTS_TABLE, VALUESET_TABLES, PACKAGE_LOADS_TABLE, OBSERVATION_TABLES, JOB_TABLES, INDEX_TABLES,
+  MAINTENANCE_TABLE, tableDDL, migrate, waitForSchema, schemaVersion, tableExists, dropTables };

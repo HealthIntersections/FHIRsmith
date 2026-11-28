@@ -36,7 +36,7 @@ In summary:
 | `GET /packages/broken` | Package versions whose dependencies this registry doesn't hold |
 | `GET /packages/-/npm/v1/keys` | The key this registry signs package versions with (see [Signatures](#signatures)) |
 | `GET /packages/-/fhir/v1/signatures/{name}@{version}` | The publisher's signature of a version, as the crawler fetched it (see [Publishers' signatures](#publishers-signatures)) |
-| `GET /packages/npm-check` | Check any registry against the npm registry protocol (a form, in a browser) |
+| `GET /packages/npm-check` | Moved: the npm registry check is the tester module's (`/tester?kind=npm`). A browser is redirected there; anything else gets a 410 |
 | `GET /packages/feed-check` | Check a package feed the way the crawler reads it, storing nothing (a form, in a browser); the report is at `/packages/feed-check/{run}` |
 
 Most endpoints return an HTML page instead of JSON when the request's `Accept`
@@ -102,39 +102,32 @@ In the server config, under `modules.packages`:
 | `crawler.signatures` | Publishers' package signatures: `ignore`, `check` (the default) or `require`. See [Publishers' signatures](#publishers-signatures). |
 | `masterUrl` | The list of feeds to crawl. Defaults to `https://fhir.github.io/ig-registry/package-feeds.json`. |
 | `localFeedDirs` | Optional. Directories feeds may be read from as local files (for testing). |
-| `allowPrivateAddresses` | Optional, for testing only. Lets the crawler and `/npm-check` fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
+| `allowPrivateAddresses` | Optional, for testing only. Lets the crawler fetch from private and loopback addresses, which they otherwise refuse (SSRF protection). |
 | `npmSigning.enabled` | Sign package versions (see [Signatures](#signatures)). On unless set to `false`. |
 | `npmSigning.keyFile` | The signing key, an EC P-256 private key in PEM. A relative path is resolved against the database's folder. Default `npm-signing-key.pem`; made (readable only by the server's user) if it isn't there. |
 | `feedCheck.enabled` | `/packages/feed-check`. On unless set to `false`. |
 | `feedCheck.maxItems` | Items checked per run; the rest of the feed isn't read. Default 50. |
 | `feedCheck.maxTotalMB` | Downloaded per run; items after that are listed but their packages aren't fetched. Default 500. |
 | `feedCheck.keepMinutes` | How long a run's report is kept. Default 60. |
-| `npmCheck.enabled` | `/packages/npm-check`. On unless set to `false`. |
-| `npmCheck.maxConcurrentRuns` | Runs at once, across all users; more get a 503. Default 2. |
-| `npmCheck.runsPerWindow` | Runs per client address per 10 minutes; more get a 429. Default 10. |
-| `npmCheck.requestTimeout` | Milliseconds allowed for each request a run makes. Default 30000. |
-| `npmCheck.maxDownloadMB` | Largest response a run will read (so, the tarball). Default 50. |
-| `npmCheck.control` | The registry, package and version the checks are verified against daily; default `registry.npmjs.org`, `fhirpath` 3.15.0. `false` turns that off. |
 
 ## Checking npm compatibility
 
-This server aims to be an npm registry, carrying FHIR fields as well. `npm-check.js`
-holds checks of the npm registry protocol, written from the way npm clients use it:
-search by name, the package document, one version's document, and the tarball. They
-are used three ways:
+This server aims to be an npm registry, carrying FHIR fields as well.
+[tester/npm/checks.js](../tester/npm/checks.js) holds checks of the npm registry protocol,
+written from the way npm clients use it: search by name, the package document, one
+version's document, and the tarball. They are used three ways:
 
-* `/packages/npm-check` runs them against any registry and shows a report. Its requests
-  go through the crawler's SSRF guard, with a timeout and a size cap, and runs are rate
-  limited. Unlike the crawler, it may use loopback addresses (`localhost`, `127.0.0.1`,
-  `::1`), so it can check this server itself; other non-public addresses are refused.
+* The tester module runs them against any registry (`/tester?kind=npm`), as a test run with
+  a report ([tester/README.md](../tester/README.md)). Its settings are `modules.tester.npm`
+  (what was `modules.packages.npmCheck`); `/packages/npm-check` redirects there.
 * `tests/packages/npm-registry.test.js` runs them against registry.npmjs.org, which must
   pass every check: if npm changes its behaviour, that test is how we find out. Set
   `NPM_REGISTRY_TARGETS` to run them against other registries too.
 * `tests/packages/npm-registry-local.test.js` runs them against this module, started
   locally with known packages.
 
-`/packages/npm-check` also runs them against registry.npmjs.org once a day, and says on
-the page if any fail there.
+The tester module also runs them against registry.npmjs.org once a day, and says on its
+npm pages if any fail there.
 
 ## Signatures
 

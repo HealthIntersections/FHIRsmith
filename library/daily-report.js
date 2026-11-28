@@ -43,10 +43,10 @@ const MODULE_TITLES = {
   shl: 'SMART Health Links',
   ips: 'IPS',
   testing: 'Testing',
+  tester: 'Tester',
   publisher: 'Publisher',
   vcl: 'VCL',
   token: 'Tokens',
-  npmprojector: 'npm projector',
   extTracker: 'Extension tracker',
   folder: 'Folders'
 };

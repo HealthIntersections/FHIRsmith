@@ -184,9 +184,28 @@ function fromHttp(req, body, principal, base) {
     /x-www-form-urlencoded/.test(headers['content-type'] || '')) {
     freq.params.push(...parseQuery(req.body.toString('utf8')));
     freq.body = null;
+  } else if (req.method === 'POST' && segments[segments.length - 1] === '_search' && /x-www-form-urlencoded/.test(headers['content-type'] || '') &&
+    req.body && typeof req.body === 'object') {
+    // a form another module's parser read first (the tx module's express.urlencoded is
+    // app-wide): the endpoint's own text parser then leaves it as it is
+    freq.params.push(...formParams(req.body));
+    freq.body = null;
   }
   Object.assign(freq, classify(freq));
   return freq;
+}
+
+/** A form body, as express.urlencoded parsed it, as [name, value] pairs: repeated names are arrays */
+function formParams(body) {
+  const out = [];
+  for (const [name, value] of Object.entries(body)) {
+    for (const v of Array.isArray(value) ? value : [value]) {
+      if (typeof v === 'string') {
+        out.push([name, v]);
+      }
+    }
+  }
+  return out;
 }
 
 /**

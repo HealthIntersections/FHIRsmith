@@ -444,6 +444,10 @@ function jobProblems(sources, { now = Date.now() } = {}) {
           list.push(`Rest ${e.path}: ${t.name} failed${t.lastErrorAt ? ` ${duration(now - t.lastErrorAt)} ago` : ''}: ${t.lastError}`);
         }
       }
+      if (e.maintenance) {
+        // a reset (rest/maintenance.js): every request to the endpoint is answered 503 meanwhile
+        list.push(`Rest ${e.path}: under maintenance (${e.maintenance.state}${e.maintenance.message ? ': ' + e.maintenance.message : ''})`);
+      }
       const wait = e.queues && e.queues.async ? e.queues.async.oldestWaitingMs : null;
       if (Number.isFinite(wait) && wait >= ASYNC_WAIT_PROBLEM_MS) {
         list.push(`Rest ${e.path}: an async request has waited ${duration(wait)} to be started (${n(e.queues.async.queued)} queued)`);

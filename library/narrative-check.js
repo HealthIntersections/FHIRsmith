@@ -18,6 +18,15 @@
  * The XHTML is parsed the way a browser parses it when it is inserted into a page (parse5
  * implements the HTML parsing algorithm), so entity-encoded, mixed-case or malformed markup
  * is checked as the browser would see it, not as it is written.
+ *
+ * The strict check (options.strict: the rest module, for every resource it is given) goes
+ * further, until full validation of the narrative is in place:
+ *  - no image (or other content, or style) from anywhere else: an absolute URL (http:,
+ *    //host, anything but data:image/) in a src or srcset, the background, poster, lowsrc
+ *    and dynsrc attributes, or the style attribute (url(...), image-set(...)): a reader's
+ *    browser would fetch it as the page is shown, telling that site who is reading what
+ *  - every narrative in the resource, wherever it is (a Composition's sections, say), not
+ *    just text, contained resources' and a Bundle's entries'
  */
 
 const parse5 = require('parse5');
@@ -29,7 +38,9 @@ const ACTIVE_ELEMENTS = new Set([
   'script', 'style', 'link', 'meta', 'base',
   'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'portal', 'template',
   'form', 'input', 'button', 'select', 'textarea', 'isindex', 'keygen',
-  'svg', 'math', 'head', 'body', 'html'
+  'svg', 'math', 'head', 'body', 'html',
+  // (everything after it in the page is plain text: the rest of the page is gone)
+  'plaintext'
 ]);
 
 // Attributes that hold a URL
@@ -43,6 +54,11 @@ const ACTIVE_ATTRIBUTES = new Set(['srcdoc', 'http-equiv', 'formaction']);
 
 // CSS in a style attribute that runs script or binds behaviour (old IE and Gecko)
 const ACTIVE_CSS = /expression\(|javascript:|vbscript:|-moz-binding|behavior:|@import/;
+
+// Attributes whose URL the browser loads as the page is shown - an image's, mostly (img, and
+// video, audio and source, which narrative shouldn't have anyway): the strict check refuses
+// these from elsewhere. (A link's href is only followed when it's clicked.)
+const LOADED_ATTRIBUTES = new Set(['src', 'srcset', 'background', 'poster', 'lowsrc', 'dynsrc']);
 
 // The scheme of a URL, as a browser reads it: leading spaces and control characters
 // are ignored, and so are tabs and newlines anywhere
@@ -93,11 +109,37 @@ function normaliseCss(css) {
     .toLowerCase();
 }
 
+// An absolute URL that isn't an inline image: what the browser would fetch from elsewhere
+function isRemote(url) {
+  // eslint-disable-next-line no-control-regex -- control characters are what browsers strip
+  const cleaned = String(url).replace(/^[\x00-\x20'"]+/, '').replace(/[\t\n\r]/g, '');
+  // (//host, and \\host or /\host, which browsers read as //host)
+  if (/^[/\\]{2}/.test(cleaned)) {
+    return true;
+  }
+  const s = urlScheme(cleaned);
+  return !!s && !(s.scheme === 'data' && /^image\//i.test(s.rest.trim()));
+}
+
+// The URLs a normalised style attribute loads: url(...), and image-set's strings
+function cssUrls(css) {
+  const out = [];
+  for (const m of css.matchAll(/url\(([^)]*)\)/g)) {
+    out.push(m[1]);
+  }
+  for (const m of css.matchAll(/image-set\(([^)]*)\)/g)) {
+    for (const q of m[1].matchAll(/["']([^"']*)["']/g)) {
+      out.push(q[1]);
+    }
+  }
+  return out;
+}
+
 function describe(node) {
   return `<${node.tagName}>`;
 }
 
-function checkAttribute(node, attr, problems) {
+function checkAttribute(node, attr, problems, strict) {
   const name = (attr.prefix ? `${attr.prefix}:${attr.name}` : attr.name).toLowerCase();
   const value = attr.value || '';
   if (name.startsWith('on')) {
@@ -109,12 +151,19 @@ function checkAttribute(node, attr, problems) {
     return;
   }
   if (name === 'style') {
-    if (ACTIVE_CSS.test(normaliseCss(value))) {
+    const css = normaliseCss(value);
+    if (ACTIVE_CSS.test(css)) {
       problems.push(`script or behaviour in the style attribute of ${describe(node)}`);
+    } else if (strict && cssUrls(css).some(isRemote)) {
+      problems.push(`a URL from elsewhere (url(...)) in the style attribute of ${describe(node)}: an external image or style`);
     }
     return;
   }
   if (URL_ATTRIBUTES.has(name)) {
+    if (strict && LOADED_ATTRIBUTES.has(name) && urlsIn(name, value).some(isRemote)) {
+      problems.push(`an image from elsewhere (the ${name} of ${describe(node)}): only inline (data:image/) or relative images`);
+      return;
+    }
     for (const url of urlsIn(name, value)) {
       const s = urlScheme(url);
       if (!s) {
@@ -134,18 +183,18 @@ function checkAttribute(node, attr, problems) {
   }
 }
 
-function walk(node, problems) {
+function walk(node, problems, strict) {
   if (node.tagName) {
     if (ACTIVE_ELEMENTS.has(node.tagName.toLowerCase())) {
       problems.push(`a ${describe(node)} element`);
     }
     for (const attr of node.attrs || []) {
-      checkAttribute(node, attr, problems);
+      checkAttribute(node, attr, problems, strict);
     }
   }
   // a <template>'s content is a separate fragment
   for (const child of [...(node.childNodes || []), ...(node.content ? [node.content] : [])]) {
-    walk(child, problems);
+    walk(child, problems, strict);
   }
 }
 
@@ -153,10 +202,11 @@ function walk(node, problems) {
  * Checks XHTML for active content.
  *
  * @param {string} xhtml - e.g. a narrative's text.div
+ * @param {{strict?: boolean}} [options] - strict: no images from elsewhere either
  * @returns {string|null} what was found (the first few things, if several), or null if
  *   there is no active content
  */
-function checkNarrative(xhtml) {
+function checkNarrative(xhtml, options = {}) {
   if (xhtml == null || xhtml === '') {
     return null;
   }
@@ -164,7 +214,7 @@ function checkNarrative(xhtml) {
     return 'the narrative is not a string';
   }
   const problems = [];
-  walk(parse5.parseFragment(xhtml), problems);
+  walk(parse5.parseFragment(xhtml), problems, !!options.strict);
   if (problems.length === 0) {
     return null;
   }
@@ -175,12 +225,17 @@ function checkNarrative(xhtml) {
 
 /**
  * Checks every narrative in a resource: its own, its contained resources', and those of
- * the resources in a Bundle's entries.
+ * the resources in a Bundle's entries; strict, every narrative anywhere in it.
  *
  * @param {object} resource - the resource as JSON
+ * @param {{strict?: boolean}} [options]
  * @returns {string|null} what was found, with where, or null
  */
-function checkResourceNarratives(resource) {
+function checkResourceNarratives(resource, options = {}) {
+  const top = resource?.resourceType ? `${resource.resourceType}${resource.id ? '/' + resource.id : ''}` : 'resource';
+  if (options.strict) {
+    return checkEverywhere(resource, top);
+  }
   const check = (res, where) => {
     if (!res || typeof res !== 'object') {
       return null;
@@ -203,7 +258,36 @@ function checkResourceNarratives(resource) {
     }
     return null;
   };
-  return check(resource, resource?.resourceType ? `${resource.resourceType}${resource.id ? '/' + resource.id : ''}` : 'resource');
+  return check(resource, top);
+}
+
+// Every narrative (a "text" that is an object with a div) anywhere in the resource, strictly
+function checkEverywhere(resource, top) {
+  const stack = [[resource, top]];
+  while (stack.length) {
+    const [v, where] = stack.pop();
+    if (Array.isArray(v)) {
+      for (let i = v.length - 1; i >= 0; i--) {
+        if (v[i] && typeof v[i] === 'object') {
+          stack.push([v[i], `${where}[${i}]`]);
+        }
+      }
+      continue;
+    }
+    for (const [k, c] of Object.entries(v || {})) {
+      if (!c || typeof c !== 'object') {
+        continue;
+      }
+      if (k === 'text' && !Array.isArray(c) && 'div' in c) {
+        const found = checkNarrative(c.div, { strict: true });
+        if (found) {
+          return `${where}.text: ${found}`;
+        }
+      }
+      stack.push([c, `${where}.${k}`]);
+    }
+  }
+  return null;
 }
 
 /**
@@ -211,9 +295,10 @@ function checkResourceNarratives(resource) {
  *
  * @param {object} resource
  * @param {string} [context] - for the message, e.g. the package it came from
+ * @param {{strict?: boolean}} [options]
  */
-function assertNoActiveContent(resource, context) {
-  const found = checkResourceNarratives(resource);
+function assertNoActiveContent(resource, context, options) {
+  const found = checkResourceNarratives(resource, options);
   if (found) {
     throw new Error(context ? `${context}: ${found}` : found);
   }

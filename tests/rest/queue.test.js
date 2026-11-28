@@ -88,7 +88,7 @@ describe.each(engines())('who runs the jobs (%s)', (engine) => {
     const one = await makeApp(engine, { keep: true });
     try {
       expect(one.ep.runner).not.toBeNull();
-      expect(one.ep.runner.tasks.map(t => t.name)).toEqual(['search cleanup', 'closure update', 'package loads', 'value set membership', 'reindexing',
+      expect(one.ep.runner.tasks.map(t => t.name)).toEqual(['maintenance', 'search cleanup', 'closure update', 'package loads', 'value set membership', 'reindexing',
         'async requests', 'async tidy', 'queue status']);
       // what the status page shows of them (not the measuring itself)
       await one.ep.runner.runNow('queue status');

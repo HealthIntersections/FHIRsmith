@@ -15,8 +15,8 @@
  * Every check must pass against registry.npmjs.org. If one fails there, the check is wrong
  * (or npm has changed its behaviour, which has happened before), not the registry.
  *
- * Used by /packages/npm-check (a report on any registry) and by the test suites
- * tests/packages/npm-registry*.test.js, so all of them run the same checks.
+ * Used by the tester module (tester/npm/run.js: a run against any registry, from /tester) and
+ * by the test suites tests/packages/npm-registry*.test.js, so all of them run the same checks.
  *
  * A registry need not sign packages, but one that lists keys must sign every version with
  * them: that is what `npm audit signatures` checks.
@@ -28,12 +28,12 @@
  */
 
 const crypto = require('crypto');
-const { requestDeadline } = require('../library/http-limits');
+const { requestDeadline } = require('../../library/http-limits');
 const zlib = require('zlib');
 const axios = require('axios');
-const { verifySignature } = require('./npm-signing');
-const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('../library/package-limits');
-const { EntryNames, pathProblem } = require('../library/package-names');
+const { verifySignature } = require('../../packages/npm-signing');
+const { MAX_UNPACKED_BYTES, MAX_UNPACKED_MB } = require('../../library/package-limits');
+const { EntryNames, pathProblem } = require('../../library/package-names');
 
 // What the npm CLI sends when it fetches a package document
 const NPM_ACCEPT = 'application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*';
@@ -586,29 +586,41 @@ function packageUrl(base, name, version) {
 }
 
 /**
- * An HTTP GET for the checks: { url, status, contentType, body } or { url, error }.
+ * An HTTP GET for the checks: { url, accept, status, contentType, headers, body, ms } or
+ * { url, accept, error, ms }.
  *
  * The URLs come from whoever asks for a check (the registry), and from the registry itself
- * (the tarball URL, redirects), so every request must go through SSRF-guarded agents:
- * PackageCrawler.guardedAgents(), which refuse non-public addresses at connection time,
- * redirects included. httpAgent and httpsAgent are required for that reason.
- * options: httpAgent, httpsAgent, timeout (ms), maxBytes (per response), userAgent.
+ * (the tarball URL, redirects), so every request must go through SSRF-guarded agents
+ * (library/ssrf-guard.js createGuardedAgents, or PackageCrawler.guardedAgents()), which refuse
+ * non-public addresses at connection time, redirects included. httpAgent and httpsAgent are
+ * required for that reason.
+ * options: httpAgent, httpsAgent, timeout (ms), maxBytes (per response), userAgent, signal
+ * (aborts every request), token and tokenOrigin (a bearer token, sent only to that origin:
+ * the registry's).
  */
 function makeGetter(options = {}) {
   if (!options.httpAgent || !options.httpsAgent) {
-    throw new Error('makeGetter needs the SSRF-guarded httpAgent and httpsAgent (PackageCrawler.guardedAgents())');
+    throw new Error('makeGetter needs the SSRF-guarded httpAgent and httpsAgent (library/ssrf-guard.js)');
   }
   return async (url, accept = 'application/json') => {
     if (!/^https?:\/\//i.test(url)) {
-      return { url, error: 'not an http(s) URL' };
+      return { url, accept, error: 'not an http(s) URL' };
+    }
+    if (options.signal && options.signal.aborted) {
+      return { url, accept, error: 'not sent: the run was stopped' };
     }
     // timeout is for the whole request: axios's own only covers the wait for the response to
     // start, and the registry being checked is whatever the client named
-    const deadline = requestDeadline(options.timeout || 30000);
+    const deadline = requestDeadline(options.timeout || 30000, options.signal || null);
+    const headers = { accept, 'user-agent': options.userAgent || 'FHIRsmith npm registry check' };
+    if (options.token && options.tokenOrigin && sameOrigin(url, options.tokenOrigin)) {
+      headers.authorization = `Bearer ${options.token}`;
+    }
+    const started = Date.now();
     try {
       const res = await axios.get(url, {
         responseType: 'arraybuffer',
-        headers: { accept, 'user-agent': options.userAgent || 'FHIRsmith npm registry check' },
+        headers,
         timeout: options.timeout || 30000,
         signal: deadline.signal,
         maxContentLength: options.maxBytes || 100 * 1024 * 1024,
@@ -617,20 +629,48 @@ function makeGetter(options = {}) {
         httpAgent: options.httpAgent,
         httpsAgent: options.httpsAgent
       });
-      return { url, status: res.status, contentType: String(res.headers['content-type'] || ''), body: Buffer.from(res.data) };
+      return { url, accept, status: res.status, contentType: String(res.headers['content-type'] || ''), headers: { ...res.headers },
+        body: Buffer.from(res.data), ms: Date.now() - started };
     } catch (e) {
-      const why = e.code === 'ECONNABORTED' || deadline.expired() ? 'timed out' : /maxContentLength/.test(e.message) ? 'the response is too large' : e.message;
-      return { url, error: why };
+      const why = options.signal && options.signal.aborted ? 'stopped: the run was stopped'
+        : e.code === 'ECONNABORTED' || deadline.expired() ? 'timed out' : /maxContentLength/.test(e.message) ? 'the response is too large' : e.message;
+      return { url, accept, error: why, ms: Date.now() - started };
     }
   };
+}
+
+function sameOrigin(url, origin) {
+  try {
+    return new URL(url).origin === new URL(origin).origin;
+  } catch (e) {
+    return false;
+  }
+}
+
+// what is kept of a response body (as text), for the report's detail
+const KEEP_CHARS = 64 * 1024;
+
+/** A response's body as text for people: JSON and text (cut at 64 KB); anything else is described */
+function bodyText(res) {
+  if (!Buffer.isBuffer(res.body)) {
+    return null;
+  }
+  if (!/json|^text\//i.test(res.contentType || '')) {
+    return `(${res.body.length} bytes of ${res.contentType || 'content with no Content-Type'}: not shown)`;
+  }
+  const s = res.body.subarray(0, KEEP_CHARS * 4).toString('utf8');
+  return s.length > KEEP_CHARS ? s.substring(0, KEEP_CHARS) + `\n... (${res.body.length} bytes in all)` : s;
 }
 
 /**
  * Runs every check against one registry. target is { registry, pkg, version }; get is a
  * function from makeGetter. Returns the report: per step, per check, pass or fail with a
  * message, and the requests the checks were based on.
+ * options: onStatus (what the run is doing, as it goes); detail (each request's headers, and
+ * its response's headers and body, as text: for the tester's pages).
  */
-async function runNpmCheck(target, get) {
+async function runNpmCheck(target, get, options = {}) {
+  const status = (text) => options.onStatus && options.onStatus(text);
   let base = target.registry;
   while (base.endsWith('/')) {
     base = base.slice(0, -1);
@@ -639,6 +679,7 @@ async function runNpmCheck(target, get) {
   const started = new Date();
   const search = extra => get(`${base}/-/v1/search?text=${encodeURIComponent(pkg)}${extra}`);
   const r = {};
+  status('Searching, and reading the package and version documents');
   [r.search, r.searchSize1, r.searchFrom1, r.packument, r.fullPackument, r.versionDoc, r.latestDoc, r.missing, r.missingVersion, r.keys] = await Promise.all([
     search(`&size=${SEARCH_SIZE}`),
     search('&size=1'),
@@ -655,6 +696,7 @@ async function runNpmCheck(target, get) {
     try {
       const tarball = JSON.parse(r.packument.body.toString('utf8')).versions?.[version]?.dist?.tarball;
       if (typeof tarball === 'string' && /^https?:\/\//.test(tarball)) {
+        status('Downloading the tarball');
         r.tarball = await get(tarball, '*/*');
       }
     } catch (e) {
@@ -675,10 +717,12 @@ async function runNpmCheck(target, get) {
     if (typeof dist.integrity === 'string' && dist.integrity.includes('-')) {
       algs.push(dist.integrity.split(/-(.*)/s)[0]);
     }
+    status('Unpacking the tarball');
     r.tarball.digests = await digestsOf(r.tarball.body, algs);
     r.tarball.packageJson = await readPackageJson(r.tarball.body);
   }
 
+  status('Checking');
   const c = context({ pkg, version }, r);
   const results = CHECKS.map(check => {
     try {
@@ -694,6 +738,9 @@ async function runNpmCheck(target, get) {
   for (const [name, res] of Object.entries(r)) {
     requests[name] = res.error ? { url: res.url, error: res.error }
       : { url: res.url, status: res.status, contentType: res.contentType, bytes: res.body.length };
+    if (options.detail) {
+      Object.assign(requests[name], { accept: res.accept, ms: res.ms, headers: res.headers || {}, body: res.error ? null : bodyText(res) });
+    }
   }
   return {
     registry: base,

@@ -1280,7 +1280,9 @@ class OperationContext {
 
   _ensureLanguages(param) {
     assert(typeof param === 'string' || param instanceof Languages, 'Parameter must be string or Languages object');
-    return typeof param === 'string' ? Languages.fromAcceptLanguage(param, this.i18n.languageDefinitions, false) : param;
+    // a string is the request's Accept-Language header: an entry that can't be read is left out
+    // (RFC 9110 12.5.4), as TxParameters does
+    return typeof param === 'string' ? Languages.fromAcceptLanguage(param, this.i18n.languageDefinitions, false, true) : param;
   }
 
   _generateId() {

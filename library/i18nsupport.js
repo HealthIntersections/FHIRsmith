@@ -298,12 +298,12 @@ function requestMessage(acceptLanguage, messageId, parameters = []) {
     i18n.loadSync();
     shared = i18n;
   }
-  // (the tags are only broken into parts, not checked against the registry: a tag this can't
-  // read leaves the message in English)
+  // (the tags are only broken into parts, not checked against the registry; a tag this can't
+  // read is left out, and one with none it can leaves the message in English)
   let languages = null;
   if (typeof acceptLanguage === 'string' && acceptLanguage.trim()) {
     try {
-      languages = Languages.fromAcceptLanguage(acceptLanguage, null, false);
+      languages = Languages.fromAcceptLanguage(acceptLanguage, null, false, true);
     } catch {
       languages = null;
     }

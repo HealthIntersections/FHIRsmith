@@ -24,7 +24,8 @@
  *
  * The StructureDefinition's id ('profile-' + a random id), its url ([base]/StructureDefinition/{id}),
  * its name (derived from the title) and the constraints' keys are the server's: the
- * administrator edits the title and the constraints. An uploaded StructureDefinition must
+ * administrator edits the title, the description (markdown: the profile's intent, and where its
+ * content comes from - pure markdown, no HTML) and the constraints. An uploaded StructureDefinition must
  * be no more than that - a profile on Bundle with constraints on its root element - or it
  * is rejected; its id, url and keys are reassigned. Profiles made when they were on
  * Composition are moved onto Bundle (migrate()).
@@ -37,10 +38,12 @@ const fhirpath = require('fhirpath');
 const r4Model = require('fhirpath/fhir-context/r4');
 const { ipsFunctions } = require('./fhirpath-ips');
 const { SECTIONS, LOINC } = require('./editor-schema');
+const { markdownHtmlParts } = require('./patient-comments');
 
 const BUNDLE = 'http://hl7.org/fhir/StructureDefinition/Bundle';
 const OLD_BASE = 'http://hl7.org/fhir/StructureDefinition/Composition';
 const MAX_TITLE = 200;
+const MAX_DESCRIPTION = 10000;
 const MAX_HUMAN = 1000;
 const MAX_EXPRESSION = 2000;
 const MAX_CONSTRAINTS = 200;
@@ -300,13 +303,38 @@ function newId() {
 }
 
 /**
- * Check what the editor (or an upload) gives - a title and constraints - and give each
- * constraint its key: a key it already has in the profile it replaces is kept, the others
- * get new ones.
+ * Check a profile's description: markdown, pure markdown only - HTML is refused, not just left
+ * unrendered (as for patient comments).
+ * @param {*} description - undefined or null for none
+ * @returns {{description: string, problems: string[]}} description: trimmed, '' for none
+ */
+function checkDescription(description) {
+  if (description === undefined || description === null) {
+    return { description: '', problems: [] };
+  }
+  if (typeof description !== 'string') {
+    return { description: '', problems: ['The description must be text (markdown)'] };
+  }
+  const text = description.replace(/\r\n?/g, '\n').trim();
+  const problems = [];
+  if (text.length > MAX_DESCRIPTION) {
+    problems.push(`The description is longer than ${MAX_DESCRIPTION} characters`);
+  }
+  const html = markdownHtmlParts(text);
+  if (html.length) {
+    problems.push(`The description has HTML in it (${html[0].length > 40 ? html[0].substring(0, 40) + '...' : html[0]}): only pure markdown is allowed`);
+  }
+  return { description: text, problems };
+}
+
+/**
+ * Check what the editor (or an upload) gives - a title, a description and constraints - and give
+ * each constraint its key: a key it already has in the profile it replaces is kept, the others
+ * get new ones. With no description given, the profile it replaces keeps its own.
  *
- * @param {{title: *, constraints: *}} input
+ * @param {{title: *, description?: *, constraints: *}} input
  * @param {Object|null} previous - the StructureDefinition being replaced
- * @returns {{title: string, constraints: Array<{key, human, expression}>, problems: string[]}}
+ * @returns {{title: string, description: string, constraints: Array<{key, human, expression}>, problems: string[]}}
  */
 function checkInput(input, previous = null) {
   const problems = [];
@@ -316,6 +344,8 @@ function checkInput(input, previous = null) {
   } else if (title.length > MAX_TITLE) {
     problems.push(`The title is longer than ${MAX_TITLE} characters`);
   }
+  const described = input?.description !== undefined ? checkDescription(input.description) : { description: descriptionOf(previous), problems: [] };
+  problems.push(...described.problems);
   const list = Array.isArray(input?.constraints) ? input.constraints : [];
   if (input?.constraints !== undefined && !Array.isArray(input.constraints)) {
     problems.push('The constraints must be a list');
@@ -351,12 +381,17 @@ function checkInput(input, previous = null) {
     used.add(key);
     constraints.push({ key, human, expression });
   });
-  return { title, constraints, problems };
+  return { title, description: described.description, constraints, problems };
+}
+
+/** A StructureDefinition's description (markdown), or '' when it has none. */
+function descriptionOf(sd) {
+  return typeof sd?.description === 'string' ? sd.description : '';
 }
 
 /**
  * The StructureDefinition.
- * @param {{id: string, url: string, title: string, constraints: Array, guides?: Array, date?: string}} p - guides: checked (checkGuides)
+ * @param {{id: string, url: string, title: string, description?: string, constraints: Array, guides?: Array, date?: string}} p - description: checked (checkDescription); guides: checked (checkGuides)
  */
 function build(p) {
   return {
@@ -368,6 +403,7 @@ function build(p) {
     title: p.title,
     status: 'active',
     date: p.date || new Date().toISOString(),
+    ...(p.description ? { description: p.description } : {}),
     fhirVersion: '4.0.1',
     kind: 'resource',
     abstract: false,
@@ -394,15 +430,15 @@ function constraintsOf(sd) {
 
 // what an uploaded StructureDefinition may have: what build() makes, and the metadata a
 // tool might add that is replaced anyway
-const UPLOAD_KEYS = new Set(['resourceType', 'id', 'meta', 'text', 'contained', 'extension', 'url', 'version', 'name', 'title', 'status', 'date', 'publisher',
+const UPLOAD_KEYS = new Set(['resourceType', 'id', 'meta', 'text', 'contained', 'extension', 'url', 'version', 'name', 'title', 'status', 'date', 'publisher', 'description',
   'fhirVersion', 'kind', 'abstract', 'type', 'baseDefinition', 'derivation', 'differential']);
 const ELEMENT_KEYS = new Set(['id', 'path', 'constraint']);
 const CONSTRAINT_KEYS = new Set(['key', 'severity', 'human', 'expression', 'source']);
 
 /**
- * An uploaded StructureDefinition, as the editor's input (title, constraints and guided input,
- * the keys and linkIds dropped so they are assigned afresh), or the reasons it can't be taken.
- * @returns {{input: {title, constraints, guides}|null, problems: string[]}}
+ * An uploaded StructureDefinition, as the editor's input (title, description, constraints and guided
+ * input, the keys and linkIds dropped so they are assigned afresh), or the reasons it can't be taken.
+ * @returns {{input: {title, description?, constraints, guides}|null, problems: string[]}}
  */
 function fromUpload(sd) {
   const problems = [];
@@ -469,8 +505,13 @@ function fromUpload(sd) {
   }
   const guided = guidesFromUpload(sd);
   problems.push(...guided.problems);
+  const described = checkDescription(sd.description);
+  problems.push(...described.problems);
   const title = typeof sd.title === 'string' && sd.title.trim() ? sd.title : (typeof sd.name === 'string' ? sd.name : '');
-  return { input: { title, constraints: list.map(c => (isObject(c) ? { human: c.human, expression: c.expression } : c)), guides: guided.guides }, problems };
+  return {
+    input: { title, ...(described.description ? { description: described.description } : {}), constraints: list.map(c => (isObject(c) ? { human: c.human, expression: c.expression } : c)), guides: guided.guides },
+    problems
+  };
 }
 
 // ---- guided input ----------------------------------------------------------------------------
@@ -942,7 +983,7 @@ function onDocument(expression) {
 
 /**
  * A profile made when profiles were on Composition, moved onto Bundle: the same id, url,
- * title and keys, the expressions moved onto the document (onDocument).
+ * title, description and keys, the expressions moved onto the document (onDocument).
  * @returns {Object|null} the new StructureDefinition, or null when there is nothing to do
  */
 function migrate(sd) {
@@ -950,7 +991,7 @@ function migrate(sd) {
     return null;
   }
   const constraints = constraintsOf(sd).map(c => ({ ...c, expression: onDocument(c.expression) }));
-  return build({ id: String(sd.id).replace(/^profile-/, ''), url: sd.url, title: sd.title || sd.name || 'Profile', constraints, date: sd.date });
+  return build({ id: String(sd.id).replace(/^profile-/, ''), url: sd.url, title: sd.title || sd.name || 'Profile', description: descriptionOf(sd), constraints, date: sd.date });
 }
 
 /** The resource types the editor offers for a rule about resources (any other can be typed). */
@@ -972,5 +1013,5 @@ module.exports = {
   INPUT_GUIDE, UNIT_OPTION, QUESTION_TYPES, GUIDE_RESOURCES, guidesOf, checkGuides, guideGroups, editorGuidance, definitionUri, definitionPath, BUNDLE, MAX_CONSTRAINTS, ID_RE, migrate,
   parseResourceShape, resourceShapeExpression, kindOf, describeResource,
   parseShape, shapeExpression, parseCard, cardText, expressionProblem, nameFromTitle, newId,
-  checkInput, build, constraintsOf, fromUpload, describePart
+  checkInput, checkDescription, descriptionOf, MAX_DESCRIPTION, build, constraintsOf, fromUpload, describePart
 };

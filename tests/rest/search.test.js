@@ -314,3 +314,34 @@ describe.each(engines())('rest search (%s)', (engine) => {
     expect(found(await search('/r4/Patient?family=gone'))).toEqual([]);
   });
 });
+
+// In the server, another module (tx) puts express.urlencoded on the whole app, so a POST
+// _search form arrives already parsed, as an object: its parameters still count
+describe.each(engines())('rest search: POST _search, with a form already parsed (%s)', (engine) => {
+  const express = require('express');
+  let t;
+  let id;
+
+  beforeAll(async () => {
+    t = await makeApp(engine, { before: async (app) => app.use(express.urlencoded({ extended: true })) });
+    const family = 'Formparsed' + Date.now().toString(36);
+    id = (await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Patient', name: [{ family }], gender: 'female' }))).body.id;
+    await request(t.app).post('/r4/Patient').set('Content-Type', FHIR_JSON).send(body({ resourceType: 'Patient', name: [{ family: family + 'x' }], gender: 'male' }));
+    t.family = family;
+  }, 60000);
+
+  afterAll(async () => {
+    await t.close();
+  });
+
+  test('the parameters in the form are used, repeated ones too', async () => {
+    const ids = (r) => (r.body.entry || []).filter(e => e.search && e.search.mode === 'match').map(e => e.resource.id);
+    const one = await request(t.app).post('/r4/Patient/_search').set('Content-Type', 'application/x-www-form-urlencoded').send(`family=${t.family}&gender=female`);
+    expect(one.status).toBe(200);
+    expect(ids(one)).toEqual([id]);
+    const both = await request(t.app).post('/r4/Patient/_search').set('Content-Type', 'application/x-www-form-urlencoded').send(`family=${t.family}&gender=female&gender=male`);
+    expect(ids(both)).toEqual([]);
+    const self = one.body.link.find(l => l.relation === 'self').url;
+    expect(self).toContain(`family=${t.family}`);
+  });
+});

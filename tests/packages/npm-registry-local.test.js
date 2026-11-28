@@ -16,34 +16,8 @@ const os = require('os');
 const path = require('path');
 const express = require('express');
 const PackagesModule = require('../../packages/packages');
-const { defineNpmRegistryChecks, tgz } = require('./npm-registry-checks');
-
-const PKG = 'example.fhir.npmtest';
-
-const FIXTURES = [
-  { id: PKG, version: '1.0.0', date: '2024-03-01T00:00:00Z', deps: { 'hl7.fhir.r4.core': '4.0.1' } },
-  { id: PKG, version: '1.1.0', date: '2025-03-01T00:00:00Z', deps: { 'hl7.fhir.r4.core': '4.0.1' } },
-  { id: `${PKG}.extras`, version: '1.0.0', date: '2025-06-01T00:00:00Z', deps: { [PKG]: '1.1.0' } },
-  { id: `${PKG}.legacy`, version: '1.0.0', date: '2023-06-01T00:00:00Z', deps: { 'hl7.fhir.r4.core': '4.0.1' } }
-];
-
-function fixtureTarball({ id, version, deps }) {
-  return tgz({
-    'package/package.json': JSON.stringify({
-      name: id,
-      version,
-      type: 'fhir.ig',
-      canonical: `http://example.org/fhir/${id}`,
-      url: `http://example.org/fhir/${id}/${version}`,
-      fhirVersions: ['4.0.1'],
-      dependencies: deps,
-      description: `Test package ${id}`,
-      author: 'FHIRsmith tests',
-      license: 'CC0-1.0'
-    }, null, 2),
-    'package/.index.json': JSON.stringify({ 'index-version': 2, files: [] })
-  });
-}
+const { defineNpmRegistryChecks } = require('./npm-registry-checks');
+const { PKG, FIXTURES, fixtureTarball } = require('./npm-registry-fixtures');
 
 describe('packages module', () => {
   const target = { name: 'local packages module', pkg: PKG, version: '1.0.0' };
@@ -177,11 +151,10 @@ describe('packages module: GET /{id}/{version} content negotiation', () => {
   });
 });
 
-// GET /packages/npm-check: the same checks, run by the server against any registry - here,
-// against itself
-describe('packages module: GET /npm-check', () => {
+// GET /packages/npm-check: the npm registry check is the tester module's now
+describe('packages module: GET /npm-check (moved to /tester?kind=npm)', () => {
   const request = require('supertest');
-  let tmp, module, server, app, base;
+  let tmp, module, app;
 
   beforeAll(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'npm-check-'));
@@ -190,118 +163,30 @@ describe('packages module: GET /npm-check', () => {
       database: path.join(tmp, 'packages.db'),
       mirrorPath: path.join(tmp, 'mirror'),
       masterUrl: 'http://127.0.0.1:1/unused',
-      crawler: { enabled: false },
-      // the registry checked is this test server, on 127.0.0.1; and this suite makes more
-      // runs than the default rate limit allows
-      npmCheck: { control: false, runsPerWindow: 1000 }
+      crawler: { enabled: false }
     });
-    module.crawler.log = { info() {}, warn() {}, error() {} };
-    for (const f of FIXTURES) {
-      const link = `http://example.org/feed/${f.id}-${f.version}.tgz`;
-      await module.crawler.store('test-feed', link, link, new Date(f.date), fixtureTarball(f), `${f.id}#${f.version}`, {});
-    }
     app = express();
     app.use('/packages', module.router);
-    await new Promise(resolve => {
-      server = app.listen(0, '127.0.0.1', resolve);
-    });
-    base = `http://127.0.0.1:${server.address().port}/packages`;
   });
 
   afterAll(async () => {
-    await new Promise(resolve => server.close(resolve));
     await module.shutdown();
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  const check = (query, accept = 'application/json') => request(app).get('/packages/npm-check').query(query).set('Accept', accept);
-  const withConfig = async (overrides, fn) => {
-    const saved = module.config.npmCheck;
-    module.config.npmCheck = { ...saved, ...overrides };
-    try {
-      return await fn();
-    } finally {
-      module.config.npmCheck = saved;
-    }
-  };
-
-  test('a run returns the report, and this module passes every check', async () => {
-    const res = await check({ registry: base, package: PKG, version: '1.0.0' });
-    expect(res.status).toBe(200);
-    const failures = res.body.steps.flatMap(s => s.checks).filter(c => c.status !== 'pass');
-    expect(failures).toEqual([]);
-    expect(res.body).toEqual(expect.objectContaining({ registry: base, package: PKG, version: '1.0.0', failed: 0 }));
-    expect(res.body.passed).toBeGreaterThan(10);
-    expect(res.body.requests.tarball.status).toBe(200);
+  test('a browser is sent to the tester, with the form filled in; anything else is told where it went', async () => {
+    module.npmCheckAt = '/tester?kind=npm';
+    const page = await request(app).get('/packages/npm-check').query({ registry: 'https://registry.example.org', package: PKG, version: '1.0.0' }).set('Accept', 'text/html');
+    expect(page.status).toBe(301);
+    expect(page.headers.location).toBe(`/tester?kind=npm&server=${encodeURIComponent('https://registry.example.org')}&package=${PKG}&version=1.0.0`);
+    expect((await request(app).get('/packages/npm-check').set('Accept', 'text/html')).headers.location).toBe('/tester?kind=npm');
+    const api = await request(app).get('/packages/npm-check').query({ registry: 'https://registry.example.org', package: PKG, version: '1.0.0' });
+    expect(api.status).toBe(410);
+    expect(api.body.error).toContain('/tester?kind=npm');
   });
 
-  test('a failing check says why, and which request it was based on', async () => {
-    // 0.5.0 isn't held, so every check about that version fails
-    const res = await check({ registry: base, package: PKG, version: '0.5.0' });
-    expect(res.status).toBe(200);
-    expect(res.body.failed).toBeGreaterThan(0);
-    const c = res.body.steps.find(s => s.id === 'package').checks.find(x => x.title.startsWith('names the package'));
-    expect(c).toEqual(expect.objectContaining({ status: 'fail', message: 'version 0.5.0 is not in the document', uses: ['packument'] }));
-  });
-
-  test('in a browser: the form, and the report as a page', async () => {
-    const form = await check({}, 'text/html');
-    expect(form.status).toBe(200);
-    expect(form.text).toContain('<form method="get" action="/packages/npm-check"');
-    const page = await check({ registry: base, package: PKG, version: '1.0.0' }, 'text/html');
-    expect(page.status).toBe(200);
-    expect(page.text).toMatch(/All \d+ checks passed/);
-    expect(page.text).toContain(`${base}/-/v1/search?text=${PKG}`);
-  });
-
-  test('the registry, package and version are all needed, and the registry must be http(s)', async () => {
-    expect((await check({})).status).toBe(400);
-    expect((await check({ registry: base })).status).toBe(400);
-    expect((await check({ registry: 'ftp://example.org', package: PKG, version: '1.0.0' })).status).toBe(400);
-    expect((await check({ registry: 'https://user:pw@example.org', package: PKG, version: '1.0.0' })).status).toBe(400);
-    // a repeated parameter, which Express turns into an array
-    expect((await request(app).get(`/packages/npm-check?registry=${encodeURIComponent(base)}&registry=x&package=${PKG}&version=1.0.0`)).status).toBe(400);
-    expect((await request(app).get(`/packages/npm-check?registry=${encodeURIComponent(base)}&package=${PKG}&package=y&version=1.0.0`)).status).toBe(400);
-  });
-
-  test.each([
-    ['localhost', () => base.replace('127.0.0.1', 'localhost')],
-    ['IPv4 loopback in another notation', () => base.replace('127.0.0.1', '2130706433')]
-  ])('this server can be checked over loopback: %s', async (_, url) => {
-    const res = await check({ registry: url(), package: PKG, version: '1.0.0' });
-    expect(res.body.failed).toBe(0);
-  });
-
-  test.each([
-    ['cloud metadata', 'http://169.254.169.254/packages'],
-    ['a private network', 'http://10.1.2.3/packages'],
-    ['a private network, IPv6', 'http://[fd00::1]/packages']
-  ])('other non-public addresses are refused: %s', async (_, registry) => {
-    const res = await check({ registry, package: PKG, version: '1.0.0' });
-    expect(res.status).toBe(200);
-    expect(res.body.passed).toBe(0);
-    expect(Object.values(res.body.requests).every(r => /non-public address/.test(r.error))).toBe(true);
-  });
-
-  test('a response bigger than maxDownloadMB is not read', async () => {
-    // about 100 bytes: smaller than any of the responses here
-    const res = await withConfig({ maxDownloadMB: 0.0001 }, () => check({ registry: base, package: PKG, version: '1.0.0' }));
-    expect(res.body.requests.search.error).toBe('the response is too large');
-  });
-
-  test('beyond maxConcurrentRuns, a run is refused with 503', async () => {
-    const res = await withConfig({ maxConcurrentRuns: 0 }, () => check({ registry: base, package: PKG, version: '1.0.0' }));
-    expect(res.status).toBe(503);
-    expect(res.headers['retry-after']).toBe('30');
-  });
-
-  test('beyond runsPerWindow from one address, a run is refused with 429', async () => {
-    const res = await withConfig({ runsPerWindow: 1 }, () => check({ registry: base, package: PKG, version: '1.0.0' }));
-    expect(res.status).toBe(429);
-  });
-
-  test('turned off, it is a 404', async () => {
-    const res = await withConfig({ enabled: false }, () => check({ registry: base, package: PKG, version: '1.0.0' }));
-    expect(res.status).toBe(404);
+  test('without the tester module, it is a 404', async () => {
+    module.npmCheckAt = null;
+    expect((await request(app).get('/packages/npm-check').set('Accept', 'text/html')).status).toBe(404);
   });
 });

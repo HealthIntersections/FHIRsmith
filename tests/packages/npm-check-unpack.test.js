@@ -1,9 +1,9 @@
-// /npm-check reads a tarball's package.json and works out its digests without holding the event
+// The npm registry checks read a tarball's package.json and works out its digests without holding the event
 // loop: the package.json from a streaming gunzip that stops once it's found, the digests in slices
 
 const crypto = require('crypto');
 const zlib = require('zlib');
-const { readPackageJson, digestsOf } = require('../../packages/npm-check');
+const { readPackageJson, digestsOf } = require('../../tester/npm/checks');
 const { tgz } = require('./npm-registry-checks');
 
 describe('npm-check: unpacking and hashing a tarball', () => {

@@ -649,6 +649,7 @@ class IpsModule {
     // an old link to the full editor (there is no full editor now): the profile's page
     r.get('/StructureDefinition/:id/edit', profile, (req, res) => res.redirect(`${req.baseUrl}/StructureDefinition/${req.profile.id}`));
     r.post('/StructureDefinition/:id/title', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.profileRename(req, res)));
+    r.post('/StructureDefinition/:id/description', profile, this.sameOrigin, this.session, this.form, this.csrf, admin, h('profile', (req, res) => this.profileDescribe(req, res)));
     r.post('/StructureDefinition/:id', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.profileSave(req, res, req.profile)));
     // one constraint at a time, from the profile's page: add, edit (keeping its key), delete
     r.post('/StructureDefinition/:id/constraint', profile, this.sameOrigin, this.session, json, this.csrf, adminJson, h('profile', (req, res) => this.constraintSave(req, res, null)));
@@ -2617,8 +2618,8 @@ class IpsModule {
   }
 
   /**
-   * Save a profile ({title, constraints[, guides]} - a new one can be just a title; without guides,
-   * a profile keeps its own), or a new one from an uploaded StructureDefinition ({upload}).
+   * Save a profile ({title[, description], constraints[, guides]} - a new one can be just a title; without
+   * a description or guides, a profile keeps its own), or a new one from an uploaded StructureDefinition ({upload}).
    * 200/201 with {id, url}, or 422 with {problems}.
    */
   profileSave(req, res, previous) {
@@ -2641,7 +2642,7 @@ class IpsModule {
     }
     const id = previous ? previous.id.substring('profile-'.length) : profiles.newId();
     const url = previous ? previous.url : `${this.baseUrl(req)}/StructureDefinition/profile-${id}`;
-    const sd = profiles.build({ id, url, title: checked.title, constraints: checked.constraints, guides: guided.guides });
+    const sd = profiles.build({ id, url, title: checked.title, description: checked.description, constraints: checked.constraints, guides: guided.guides });
     this.store.saveProfile(id, sd);
     this.log.info(`IPS module: clinical profile ${sd.id} (${sd.title}) ${previous ? 'saved' : (body.upload !== undefined ? 'uploaded' : 'created')}, ${checked.constraints.length} constraints`);
     res.status(previous ? 200 : 201).json({ id: sd.id, url: `${req.baseUrl}/StructureDefinition/${sd.id}` });
@@ -2693,12 +2694,13 @@ class IpsModule {
     this.saveProfileParts(previous, { constraints });
   }
 
-  /** Save a profile with some of its parts changed: title, constraints, guides (each as it was when not given). */
+  /** Save a profile with some of its parts changed: title, description, constraints, guides (each as it was when not given). */
   saveProfileParts(previous, parts) {
     const id = previous.id.substring('profile-'.length);
     this.store.saveProfile(id, profiles.build({
       id, url: previous.url,
       title: parts.title !== undefined ? parts.title : previous.title,
+      description: parts.description !== undefined ? parts.description : profiles.descriptionOf(previous),
       constraints: parts.constraints !== undefined ? parts.constraints : profiles.constraintsOf(previous),
       guides: parts.guides !== undefined ? parts.guides : profiles.guidesOf(previous)
     }));
@@ -2713,6 +2715,21 @@ class IpsModule {
     }
     this.saveProfileParts(previous, { title: checked.title });
     this.log.info(`IPS module: clinical profile ${previous.id} renamed '${checked.title}'`);
+    res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}`);
+  }
+
+  /**
+   * A new description for a profile (markdown - pure markdown, HTML is refused; empty removes it),
+   * back to the profile's page.
+   */
+  profileDescribe(req, res) {
+    const previous = req.profile;
+    const checked = profiles.checkDescription(typeof req.body?.description === 'string' ? req.body.description : '');
+    if (checked.problems.length) {
+      return htmlServer.sendErrorResponse(res, TEMPLATE, new Error(checked.problems.join('; ')), 400);
+    }
+    this.saveProfileParts(previous, { description: checked.description });
+    this.log.info(`IPS module: clinical profile ${previous.id} description ${checked.description ? 'saved' : 'removed'}`);
     res.redirect(`${req.baseUrl}/StructureDefinition/${previous.id}`);
   }
 

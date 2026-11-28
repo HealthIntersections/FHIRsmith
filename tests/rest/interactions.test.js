@@ -212,6 +212,9 @@ describe.each(engines())('rest interactions (%s)', (engine) => {
     const p = r.body.rest[0].resource.find(x => x.type === 'Patient');
     expect(p.searchParam.some(s => s.name === 'birthdate')).toBe(true);
     expect(p.operation.some(o => o.name === 'everything')).toBe(true);
+    // conditional patch, R5's conditionalPatch, as its cross-version extension in R4
+    expect(p.conditionalPatch).toBeUndefined();
+    expect(p.extension).toEqual([{ url: 'http://hl7.org/fhir/5.0/StructureDefinition/extension-CapabilityStatement.rest.resource.conditionalPatch', valueBoolean: true }]);
   });
 
   test('formats (XML: xml.test.js)', async () => {

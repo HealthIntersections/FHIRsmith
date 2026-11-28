@@ -99,13 +99,15 @@ class TxParameters {
     }
     if (this.hasParam(params, "__Content-Language")) {
       const lang = this.paramstr(params, "__Content-Language");
-      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating);
-      if (lang) this.FHasHTTPLanguages = true;
+      // a header: an entry that can't be read is left out (displayLanguage, below, is refused)
+      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating, true);
+      if (lang && this.HTTPLanguages.skipped.length < lang.split(',').length) this.FHasHTTPLanguages = true;
     }
     if (this.hasParam(params, "__Accept-Language")) {
       const lang = this.paramstr(params, "__Accept-Language");
-      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating);
-      if (lang) this.FHasHTTPLanguages = true;
+      // a header: an entry that can't be read is left out (displayLanguage, below, is refused)
+      this.HTTPLanguages = Languages.fromAcceptLanguage(lang, this.languageDefinitions, !this.validating, true);
+      if (lang && this.HTTPLanguages.skipped.length < lang.split(',').length) this.FHasHTTPLanguages = true;
     }
 
     for (let p of params.parameter) {

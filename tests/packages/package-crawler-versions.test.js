@@ -490,7 +490,7 @@ describe('crawler: requests to non-public addresses are refused', () => {
   });
 
   test('a redirect to a non-public address is refused too', async () => {
-    const { makeGetter } = require('../../packages/npm-check');
+    const { makeGetter } = require('../../tester/npm/checks');
     const redirector = http.createServer((req, res) => {
       res.writeHead(302, { Location: 'http://169.254.169.254/latest/meta-data/' });
       res.end();
@@ -508,7 +508,7 @@ describe('crawler: requests to non-public addresses are refused', () => {
   });
 
   test('the npm check\'s HTTP client refuses to run without the guarded agents', () => {
-    const { makeGetter } = require('../../packages/npm-check');
+    const { makeGetter } = require('../../tester/npm/checks');
     expect(() => makeGetter()).toThrow(/SSRF-guarded/);
   });
 
