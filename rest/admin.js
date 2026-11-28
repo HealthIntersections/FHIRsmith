@@ -10,6 +10,9 @@
  *   [base]/_admin/valuesets   value sets registered for searching by membership (:in and
  *                             :not-in on value sets too big to expand, or not closed)
  *   [base]/_admin/packages    packages loaded into the endpoint (rest/packages.js)
+ *   [base]/_admin/reset       wiping the database and making it again from config.json
+ *                             (rest/maintenance.js); while that goes on it is the only page
+ *                             that answers: everything else is 503, under maintenance
  *
  * Pages for a browser: a form post is checked for its origin and CSRF token (library/auth),
  * and answered with a redirect back to the page.
@@ -26,6 +29,7 @@ const { PackageLoader, STATUS_NAMES, QUEUED, RUNNING } = require('./packages');
 
 const VALUESETS = '/_admin/valuesets';
 const PACKAGES = '/_admin/packages';
+const RESET = '/_admin/reset';
 
 class RestAdmin {
   /**
@@ -42,22 +46,32 @@ class RestAdmin {
     r.post(VALUESETS, auth.sameOrigin, auth.session, auth.form, auth.csrf, (req, res) => this.run(req, res, () => this.valueSetAction(req, res)));
     r.get(PACKAGES, ...auth.web, (req, res) => this.run(req, res, () => this.packages(req, res)));
     r.post(PACKAGES, auth.sameOrigin, auth.session, auth.form, auth.csrf, (req, res) => this.run(req, res, () => this.packageAction(req, res)));
+    r.get(RESET, ...auth.web, (req, res) => this.run(req, res, () => this.reset(req, res), true));
+    r.post(RESET, auth.sameOrigin, auth.session, auth.form, auth.csrf, (req, res) => this.run(req, res, () => this.resetAction(req, res), true));
     return r;
   }
 
-  async run(req, res, fn) {
+  /**
+   * @param {boolean} [duringMaintenance] - the page answers under maintenance too (the reset page)
+   */
+  async run(req, res, fn, duringMaintenance) {
     const start = Date.now();
     try {
       const principal = this.ep.options.principal ? await this.ep.options.principal(req) : null;
-      access.check(principal, this.ep, 'manage');
+      // (no settings while a reset makes the database again: managing doesn't depend on them)
+      access.check(principal, this.ep.settings ? this.ep : { path: this.ep.path, settings: {} }, 'manage');
       req.restPrincipal = principal;
+      if (!duringMaintenance) {
+        await this.ep.checkMaintenance();
+        await this.ep.refresh();
+      }
       await fn(start);
     } catch (e) {
-      if (!(e instanceof FhirError)) {
+      const known = await this.ep.errorFor(e);
+      if (!known) {
         this.ep.log.error(`Rest ${this.ep.path}: ${req.method} ${req.originalUrl} failed: ${e.stack || e.message}`);
       }
-      const fe = e instanceof FhirError ? e : new FhirError(500, 'exception', 'Internal error');
-      this.ep.web.error(req, res, fe, start);
+      this.ep.web.error(req, res, known || new FhirError(500, 'exception', 'Internal error'), start);
     }
   }
 
@@ -294,6 +308,98 @@ class RestAdmin {
     }
     res.redirect(303, `${req.baseUrl}${PACKAGES}`);
   }
+
+  // ---- resetting the database ----
+
+  /** Who did something, for the log and the page */
+  by(req) {
+    const p = req.restPrincipal;
+    return p ? String(p.login || p.name || p.id).substring(0, 128) : null;
+  }
+
+  async reset(req, res) {
+    const start = Date.now();
+    const ep = this.ep;
+    const page = `${req.baseUrl}${RESET}`;
+    const when = (t) => t ? escape(new Date(Number(t)).toISOString().substring(0, 19).replace('T', ' ')) : '';
+    const m = await ep.maintenance.current(true);
+    const packages = ((ep.cfg.initialSettings || {}).loadPackages || []).map(p => {
+      try {
+        const x = PackageLoader.parse(p);
+        return `${x.package}${x.version ? '#' + x.version : ''}${x.examples ? ' (with examples)' : ''}`;
+      } catch (e) {
+        return String(p);
+      }
+    });
+    let html = '';
+    if (m) {
+      if (m.state !== 'failed') {
+        html += '<meta http-equiv="refresh" content="5"/>';
+      }
+      html += `<p><b>The endpoint is under maintenance</b>: every other request to it is answered 503 until this is over.</p>`;
+      html += '<table class="table table-sm grid"><tbody>' +
+        `<tr><th>State</th><td>${escape(m.state)}</td></tr>` +
+        `<tr><th>Asked for</th><td>${when(m.started)}${m.startedBy ? ' by ' + escape(m.startedBy) : ''}</td></tr>` +
+        `<tr><th>Now</th><td>${escape(m.message)}${m.updated ? ` <small>(${when(m.updated)})</small>` : ''}</td></tr>` +
+        '</tbody></table>';
+      if (m.state === 'loading') {
+        const loads = await ep.db.read(q => q.all('SELECT Package, Version, Examples, Status, Message FROM PackageLoads ORDER BY LoadKey'));
+        if (loads.length) {
+          html += '<h3>Packages</h3><table class="table table-sm grid"><thead><tr><th>Package</th><th>Status</th><th>Result</th></tr></thead><tbody>';
+          for (const l of loads) {
+            html += `<tr><td>${escape(l.Package)}${l.Version ? '#' + escape(l.Version) : ''}${Number(l.Examples) ? ' <small>(with examples)</small>' : ''}</td>` +
+              `<td>${STATUS_NAMES[Number(l.Status)] || l.Status}</td><td>${escape(l.Message || '')}</td></tr>`;
+          }
+          html += '</tbody></table>';
+        }
+      }
+      if (m.state === 'failed') {
+        html += `<form method="post" action="${escape(page)}" style="display: inline">${this.csrfField(res)}<input type="hidden" name="action" value="retry"/>` +
+          '<button type="submit" class="btn btn-primary">Try the reset again</button></form> ' +
+          `<form method="post" action="${escape(page)}" style="display: inline" onsubmit="return confirm('End maintenance, with the database as the reset left it?')">` +
+          `${this.csrfField(res)}<input type="hidden" name="action" value="end"/>` +
+          '<button type="submit" class="btn btn-secondary">End maintenance</button></form>';
+      }
+      return ep.web.send(req, res, 200, 'Reset the database', html, start);
+    }
+    html += '<p>Resetting the database <b>deletes everything in it</b> - every resource and its history, the settings and types ' +
+      'changed since it was made, custom search parameters, registered value sets, async requests - and makes it again as ' +
+      'config.json sets up a new database: its <code>initialSettings</code> and <code>types</code>, and then the packages in ' +
+      '<code>initialSettings.loadPackages</code>, loaded one after another. Users and their permissions are not in the endpoint\'s database, and are kept.</p>';
+    html += '<p>While it happens, the endpoint is under maintenance: every request to it is answered 503, and this page says how it is going.</p>';
+    html += `<p>Packages to load: ${packages.length ? packages.map(p => `<code>${escape(p)}</code>`).join(', ') : '<i>none</i>'}</p>`;
+    html += `<form method="post" action="${escape(page)}">${this.csrfField(res)}<input type="hidden" name="action" value="reset"/>` +
+      `<p><label for="reset-confirm">To confirm, type the endpoint's path (<code>${escape(ep.path)}</code>)</label> ` +
+      '<input type="text" id="reset-confirm" name="confirm" size="30" autocomplete="off"/></p>' +
+      '<p><button type="submit" class="btn btn-danger">Wipe the database and load it again</button></p></form>';
+    return ep.web.send(req, res, 200, 'Reset the database', html, start);
+  }
+
+  async resetAction(req, res) {
+    const ep = this.ep;
+    const body = req.body || {};
+    const action = String(body.action || '');
+    const by = this.by(req);
+    if (action === 'reset') {
+      if (String(body.confirm || '').trim() !== ep.path) {
+        throw badRequest(`To reset the database, type the endpoint's path (${ep.path}) to confirm`);
+      }
+      if (!(await ep.maintenance.request(by))) {
+        throw new FhirError(409, 'conflict', 'The endpoint is under maintenance already');
+      }
+    } else if (action === 'retry') {
+      if (!(await ep.maintenance.request(by))) {
+        throw new FhirError(409, 'conflict', 'There is no failed reset to try again');
+      }
+    } else if (action === 'end') {
+      if (!(await ep.maintenance.end(by))) {
+        throw new FhirError(409, 'conflict', 'There is no failed reset to end');
+      }
+    } else {
+      throw badRequest(`Unknown action '${action}'`);
+    }
+    res.redirect(303, `${req.baseUrl}${RESET}`);
+  }
 }
 
-module.exports = { RestAdmin, VALUESETS, PACKAGES };
+module.exports = { RestAdmin, VALUESETS, PACKAGES, RESET };

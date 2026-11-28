@@ -101,7 +101,7 @@ when it changes).
 |---|---|---|
 | `versionAware` | false | Updates and patches need `If-Match`. |
 | `interactions` | all | The interactions allowed: `read`, `vread`, `update`, `patch`, `delete`, `history-instance`, `history-type`, `create`, `search-type`. |
-| `conditionalCreate`, `conditionalUpdate`, `conditionalDelete` | true | |
+| `conditionalCreate`, `conditionalUpdate`, `conditionalDelete` | true | Conditional patch goes with `conditionalUpdate` (and `patch`): the CapabilityStatement says so as `conditionalPatch` in R5, and in R4 as its cross-version extension (`http://hl7.org/fhir/5.0/StructureDefinition/extension-CapabilityStatement.rest.resource.conditionalPatch`). |
 
 `Types.Supported` 0 takes a type off the endpoint.
 
@@ -326,7 +326,11 @@ the server's body limit.
 
 JSON and XML, in and out. A response is XML when `_format` asks for it (`xml`,
 `application/fhir+xml`...), or when the first type in `Accept` (by q, then order) that is JSON
-or XML is XML; `text/html` and wildcards count as JSON, which is the default. A body is read as
+or XML is XML; `text/html` and wildcards count as JSON, which is the default. An `Accept` with
+none of those (only `image/png`, say) is 406, except for a Binary's own content. The answer's
+`Content-Type` is `application/fhir+json` or `application/fhir+xml`, unless the client asked
+for a generic type (`application/json`, `text/json` or `application/xml`, in `Accept` or
+`_format`): then it's that type, as http.html says it should be. A body is read as
 XML when its `Content-Type` is `application/fhir+xml`, `application/xml` or `text/xml`. Errors
 come back in the format asked for. `_pretty=true` indents either.
 
@@ -376,10 +380,11 @@ over the same API, with the same access checks:
 `?_format=json` gets the JSON in a browser. These pages only read: every change goes through the
 API.
 
-For the manage role there are two administration pages, linked from the endpoint's page and
+For the manage role there are three administration pages, linked from the endpoint's page and
 the user's account page:
 
 - `[base]/_admin/packages`: loading packages (below).
+- `[base]/_admin/reset`: wiping the database and making it again (Resetting the database, below).
 - `[base]/_admin/valuesets`: the value sets registered for searching. A value set too big to
   expand, or not closed, can't be searched with `:in` (the search says so, and points here);
   registered, with a version chosen from those the terminology server has, it is searched by
@@ -413,6 +418,31 @@ resource that can't be stored is reported, without stopping the rest.
 
 Loading is administrative: the ids are worked out when it starts, on the assumption that the
 endpoint isn't being changed at the same time.
+
+## Resetting the database
+
+On the reset page (`[base]/_admin/reset`, the manage role), the database can be wiped and made
+again as config.json sets up a new one: its `initialSettings` and `types`, then the packages in
+`initialSettings.loadPackages`, loaded one after another (rest/maintenance.js). Everything in the
+database goes: resources and their history, settings and types changed since, custom search
+parameters, registered value sets, async requests. Users and their permissions are the
+server's, and are kept. The page asks for the endpoint's path to be typed, to confirm.
+
+From then until the last package has loaded (or failed to: the Packages page says which), the
+endpoint is under maintenance: every request to it, from the API, its pages, and its other
+administration pages, is answered `503`, with `Retry-After: 30` and an OperationOutcome
+(`transient`) saying how it is going. The reset page still answers, and shows the state:
+requested, wiping, loading. The server's status page lists it as a problem. Other endpoints, and
+the server's other modules, are not affected; a tx module publishing the endpoint's terminology
+(a `rest:` source) goes on with what it read before until the reset is over.
+
+The jobs process does the work: it waits a few seconds for requests already under way and for
+the background work running, then drops every table, makes the schema again, sets the database
+up, and loads the packages. Every process notices the new database (by its epoch, in Config) and
+sets itself up from it before it uses it again. If the jobs process stops part way, it carries
+on when it starts again. If the reset itself fails (the database refused, say), the endpoint
+stays under maintenance, and the page offers to try again, or to end maintenance and leave the
+database as it is. With SQLite the file is vacuumed, so it shrinks.
 
 ## Access
 

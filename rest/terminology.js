@@ -15,7 +15,7 @@
 
 const crypto = require('crypto');
 const { TxClient } = require('../ips/tx-client');
-const { FhirError, tooCostly } = require('./library/errors');
+const { FhirError, tooCostly, notSupported } = require('./library/errors');
 
 const EXPANSION_KEEP_MS = 5 * 60 * 1000;
 const CLOSURE_BATCH = 200;
@@ -29,6 +29,28 @@ const UNCLOSED = 'http://hl7.org/fhir/StructureDefinition/valueset-unclosed';
 const UP = new Set(['subsumes', 'wider', 'source-is-narrower-than-target']);
 const DOWN = new Set(['specializes', 'narrower', 'source-is-broader-than-target']);
 
+// how long what was found of the terminology server's health holds
+const HEALTH_MS = 60 * 1000;
+
+/**
+ * Whether an answer shows the terminology server isn't working, as opposed to it refusing what
+ * was asked (a code it doesn't know is an OperationOutcome): a server error, or an answer that
+ * isn't FHIR at all (a txServer that points somewhere there's no terminology server: a 404 page)
+ * @returns {string|null} what's wrong
+ */
+function troubleWith(r) {
+  if (!r) {
+    return 'no answer';
+  }
+  if (r.status >= 500) {
+    return `status ${r.status}`;
+  }
+  if (r.status !== 200 && !(r.resource && r.resource.resourceType === 'OperationOutcome')) {
+    return `status ${r.status}, and the answer isn't an OperationOutcome (is txServer right?)`;
+  }
+  return null;
+}
+
 class Terminology {
   /**
    * @param {string} server - a path on this server or an http(s) URL
@@ -36,7 +58,10 @@ class Terminology {
    */
   constructor(server, options = {}) {
     this.client = new TxClient(server, { app: options.app, log: options.log });
+    this.server = server;
     this.log = options.log;
+    // whether the server is answering, as this process last found: { ok, message, at }
+    this.health = null;
     this.expansions = new Map();
     // codes searched for, by closure: their relationships, or null if the server refused them
     this.searched = new Map();
@@ -85,8 +110,11 @@ class Terminology {
       try {
         r = await this.sendConcepts(closure.Name, [{ system, code }]);
       } catch (e) {
-        this.log.warn(`Closure for ${this.where(ep, g)}: couldn't add ${system}|${code} for a search: ${e.message}`);
-        continue;
+        throw notSupported(`:below and :above need the terminology server (txServer ${this.server}), and it isn't working: ${e.message}`);
+      }
+      const trouble = troubleWith(r);
+      if (trouble) {
+        throw notSupported(`:below and :above need the terminology server (txServer ${this.server}), and it isn't working: $closure: ${trouble}`);
       }
       if (r.status === 200 && r.resource && r.resource.resourceType === 'ConceptMap') {
         const pairs = parsePairs(r.resource);
@@ -108,6 +136,57 @@ class Terminology {
       }
     }
     return out;
+  }
+
+  /**
+   * :below and :above need the terminology server: when it isn't answering (a wrong txServer,
+   * the server down), they're refused (501), not answered from what the database happens to
+   * have. What this process last found is kept for a minute; past that, the server is asked
+   * for its metadata.
+   */
+  async assertWorking() {
+    if (!this.health || Date.now() - this.health.at > HEALTH_MS) {
+      let r;
+      try {
+        r = await this.client.get('/metadata', { _summary: 'true' });
+      } catch (e) {
+        r = null;
+        this.noteTrouble(e.message);
+      }
+      if (r) {
+        const trouble = troubleWith(r) || (r.status !== 200 ? `status ${r.status}` : null);
+        if (trouble) {
+          this.noteTrouble(trouble);
+        } else {
+          this.health = { ok: true, at: Date.now() };
+        }
+      }
+    }
+    if (!this.health.ok) {
+      throw notSupported(`:below and :above need the terminology server (txServer ${this.server}), and it isn't working: ${this.health.message}`);
+    }
+  }
+
+  noteTrouble(message) {
+    this.health = { ok: false, message, at: Date.now() };
+  }
+
+  /** A $closure call, noting whether the server is working */
+  async closureCall(params) {
+    let r;
+    try {
+      r = await this.client.post('/$closure', params);
+    } catch (e) {
+      this.noteTrouble(e.message);
+      throw e;
+    }
+    const trouble = troubleWith(r);
+    if (trouble) {
+      this.noteTrouble(`$closure: ${trouble}`);
+    } else {
+      this.health = { ok: true, at: Date.now() };
+    }
+    return r;
   }
 
   remember(k, v) {
@@ -458,7 +537,7 @@ class Terminology {
       return { key: Number(row.ClosureKey), name: row.Name };
     }
     const name = crypto.randomUUID();
-    const r = await this.client.post('/$closure', { resourceType: 'Parameters', parameter: [{ name: 'name', valueString: name }] });
+    const r = await this.closureCall({ resourceType: 'Parameters', parameter: [{ name: 'name', valueString: name }] });
     if (r.status !== 200) {
       throw new Error(`The terminology server didn't start a closure (status ${r.status}${reason(r) ? ', ' + reason(r) : ''})`);
     }
@@ -476,7 +555,7 @@ class Terminology {
     }
     // (no version: $closure adds concepts or resynchronises from a version, never both; the
     // answer to adding concepts is everything new they bring)
-    return this.client.post('/$closure', params);
+    return this.closureCall(params);
   }
 
   /** Store the relationships a $closure answer brings, and mark the concepts sent */

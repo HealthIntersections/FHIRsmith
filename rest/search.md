@@ -94,7 +94,12 @@ including those with no value at all. `in` and `ni` in `_filter` are the same.
 ### `:below` and `:above` on tokens
 
 These need the endpoint's `txServer`, and its `$closure` (in FHIRsmith's tx module, turned on
-with `modules.tx.closure.enabled`). The endpoint keeps a closure table on the terminology server
+with `modules.tx.closure.enabled`); without a `txServer` they are refused (501), as `:in` is,
+and so they are when the terminology server isn't working: it can't be reached, or answers
+with something that isn't FHIR (a `txServer` that points where there is no terminology server),
+or with a server error. Each process checks it at most once a minute (its metadata), and
+whenever it uses `$closure`. A code it doesn't know (an OperationOutcome) isn't that: the
+search then matches only the code itself. The endpoint keeps a closure table on the terminology server
 for each place a code can be: each resource type's token search parameter (`Observation.code`
 and `Condition.code` are two places, though one SearchParameter defines both). The table
 holds the codes found in that place, and the server says how they relate; a job on the master

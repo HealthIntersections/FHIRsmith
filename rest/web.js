@@ -171,9 +171,10 @@ class RestWeb {
   send(req, res, status, title, content, start) {
     const html = htmlServer.renderPage(TEMPLATE, title, content, {
       endpointpath: req.baseUrl,
-      fhirversion: this.ep.settings.fhirVersion,
+      // (no settings while a reset makes the database again)
+      fhirversion: this.ep.settings ? this.ep.settings.fhirVersion : (this.ep.cfg.fhirVersion || ''),
       processingTime: Date.now() - start,
-      templateVars: { 'endpoint-name': this.ep.settings.name || 'Endpoint' }
+      templateVars: { 'endpoint-name': (this.ep.settings && this.ep.settings.name) || 'Endpoint' }
     });
     res.status(status).set('Content-Type', 'text/html; charset=utf-8');
     if (req.method === 'HEAD') {

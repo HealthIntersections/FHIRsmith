@@ -31,7 +31,7 @@
  */
 
 const rateLimit = require('express-rate-limit');
-const { RestAdmin, VALUESETS, PACKAGES } = require('./admin');
+const { RestAdmin, VALUESETS, PACKAGES, RESET } = require('./admin');
 const auth = require('../library/auth');
 const folders = require('../library/folder-setup');
 const { PackageManager } = require('../library/package-manager');
@@ -109,7 +109,8 @@ class RestModule {
         stats: this.stats,
         principal: options.principal || ((req) => auth.principal(req)),
         // the user an async request runs as, when it runs (queue/async.js)
-        principalById: options.principalById || ((id) => auth.principalById(Number(id)))
+        principalById: options.principalById || ((id) => auth.principalById(Number(id))),
+        maintenanceGraceMs: options.maintenanceGraceMs
       });
       await ep.open();
       const router = require('express').Router();
@@ -120,6 +121,8 @@ class RestModule {
       auth.addAdminPage(MODULE, { label: `Value sets for searching (${ep.path})`, path: `${ep.path}${VALUESETS}`,
         description: 'value sets too big to expand, searched by membership' });
       auth.addAdminPage(MODULE, { label: `Packages (${ep.path})`, path: `${ep.path}${PACKAGES}`, description: 'load a package\'s resources into the endpoint' });
+      auth.addAdminPage(MODULE, { label: `Reset (${ep.path})`, path: `${ep.path}${RESET}`,
+        description: 'wipe the database and make it again from config.json (initialSettings, loadPackages): under maintenance meanwhile' });
       app.use(ep.path, router);
       this.endpoints.push(ep);
     }

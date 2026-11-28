@@ -209,6 +209,17 @@ class SqliteDatabase {
   }
 
   /**
+   * Give the space of what was deleted back to the file system (after a reset: rest/maintenance.js),
+   * on the write connection, outside any transaction
+   */
+  vacuum() {
+    const run = () => this.writer.exec('VACUUM');
+    const result = this.writeQueue.then(run, run);
+    this.writeQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  /**
    * Run fn holding the schema lock: for SQLite, a write transaction (DDL is transactional).
    */
   async withSchemaLock(fn) {

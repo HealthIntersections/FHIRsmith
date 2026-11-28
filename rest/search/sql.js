@@ -322,6 +322,12 @@ class SqlBuilder {
    * only has it once that is written, after the search.
    */
   async subsumption(v, x, node) {
+    if (!this.ep.terminology) {
+      // without a terminology server there is no closure: only the code itself would match,
+      // which isn't what was asked, so it's refused (as a server SHALL refuse what it doesn't do)
+      throw notSupported(':below and :above on a token need a terminology server (the endpoint\'s txServer setting)');
+    }
+    await this.ep.terminology.assertWorking();
     const sk = await this.space(v.system);
     const row = sk === null ? null : await this.q.get('SELECT ConceptKey FROM Concepts WHERE SpaceKey = ? AND Code = ?', [sk, v.code]);
     const ck = row ? Number(row.ConceptKey) : null;
