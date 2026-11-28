@@ -471,14 +471,25 @@ class Languages {
     validateOptionalParameter(definitions, "definitions", LanguageDefinitions);
     this.definitions = definitions;
     this.languages = [];
+    // fromAcceptLanguage with skipUnreadable: the entries it left out
+    this.skipped = [];
 
   }
 
   /**
    * Parse Accept-Language header
    * Format: "en-US,en;q=0.9,fr;q=0.8"
+   *
+   * @param {string} acceptLanguageHeader
+   * @param {LanguageDefinitions} [languageDefinitions] - the registry the tags are checked against
+   * @param {boolean} [addWildcard] - add '*' (quality 0.01) when the header has no wildcard
+   * @param {boolean} [skipUnreadable] - leave out an entry that isn't a tag this can read
+   *   (they are in .skipped), rather than throw: for an HTTP header. A header none of whose
+   *   entries can be read is treated as if there were none. Without it, any such entry throws
+   *   (displayLanguage, which is refused)
+   * @returns {Languages}
    */
-  static fromAcceptLanguage(acceptLanguageHeader, languageDefinitions, addWildcard) {
+  static fromAcceptLanguage(acceptLanguageHeader, languageDefinitions, addWildcard, skipUnreadable = false) {
     const languages = new Languages(languageDefinitions);
     let wc = false;
 
@@ -495,10 +506,27 @@ class Languages {
       const quality = qValue ? Utilities.parseFloatOrDefault(qValue.split('=')[1], 1.0) : 1.0;
 
       let lc = langCode.trim();
+      let lang;
+      try {
+        lang = new Language(lc, languageDefinitions);
+      } catch (e) {
+        if (!skipUnreadable) {
+          throw e;
+        }
+        // An HTTP header carries language ranges (RFC 4647), and a server may ignore the
+        // ones it can't use (RFC 9110 12.5.4): an entry that isn't a tag this can read is
+        // left out, rather than failing the request
+        languages.skipped.push(lc);
+        continue;
+      }
       wc = wc || lc == '*';
-      const lang = new Language(lc, languageDefinitions);
       lang.quality = quality;
       parsed.push(lang);
+    }
+    if (parsed.length === 0 && languages.skipped.length > 0) {
+      // nothing in the header could be read: as if there were none
+      languages.add(Language.fromSystemDefault());
+      return languages;
     }
     if (addWildcard && !wc) {
       const lang = new Language('*', languageDefinitions);
