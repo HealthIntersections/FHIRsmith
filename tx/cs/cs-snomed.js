@@ -4926,9 +4926,10 @@ class SnomedServicesFactory extends CodeSystemFactoryProvider {
     if (id === '?fhir_vs=refset') {
       // List of all reference sets
       const concepts = [];
-      for (let i = 0; i < this.refSetIndex.count; i++) {
-        const code = this.refSetIndex.getReferenceSetCode(i);
-        concepts.push({code: this.getConceptId(code)});
+      const sct = this.snomedServices;
+      for (let i = 0; i < sct.refSetIndex.count(); i++) {
+        const refSet = sct.refSetIndex.getReferenceSet(i);
+        concepts.push({code: String(sct.concepts.getConceptId(refSet.definition))});
       }
       return {
         resourceType: 'ValueSet',
