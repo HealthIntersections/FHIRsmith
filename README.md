@@ -27,7 +27,6 @@ This server provides a set of server-side services that are useful for the FHIR 
 
 These are not being actively developed at present.
 
-* [NpmProjector](npmprojector/readme.md) (`npmprojector`) - watches a local npm package directory and serves its FHIR resources with FHIRPath-based search
 
 ## Planned
 
