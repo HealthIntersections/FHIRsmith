@@ -51,6 +51,42 @@ describe('Iso4217Services', () => {
       }
     });
 
+    test('should locate codes in the current ISO 4217 list (published 2026-09-17)', async () => {
+      const current = { SLE: 2, UYW: 4, VED: 2, VES: 2, XAD: 2, XCG: 2, ZWG: 2 };
+
+      for (const [code, decimals] of Object.entries(current)) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeTruthy();
+        expect(result.context.decimals).toBe(decimals);
+      }
+    });
+
+    test('should use the list-one minor units for CVE, MGA and MRU', async () => {
+      for (const code of ['CVE', 'MGA', 'MRU']) {
+        const result = await provider.locate(code);
+        expect(result.context.decimals).toBe(2);
+      }
+    });
+
+    test('should report withdrawn codes as retired', async () => {
+      for (const code of ['ANG', 'BGN', 'CUC', 'HRK', 'SLL', 'VEF', 'ZWL']) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeTruthy();
+        expect(await provider.isInactive(result.context)).toBe(true);
+        expect(await provider.getStatus(result.context)).toBe('retired');
+      }
+      const usd = (await provider.locate('USD')).context;
+      expect(await provider.isInactive(usd)).toBe(false);
+      expect(await provider.getStatus(usd)).toBeNull();
+    });
+
+    test('should not know codes that were never in ISO 4217', async () => {
+      for (const code of ['GGP', 'IMP', 'JEP', 'TVD']) {
+        const result = await provider.locate(code);
+        expect(result.context).toBeNull();
+      }
+    });
+
     test('should return error for invalid codes', async () => {
       const result = await provider.locate('ZZZ');
       expect(result.context).toBeNull();
@@ -185,16 +221,27 @@ describe('Iso4217Services', () => {
   });
 
   describe('Filter Support - Decimals', () => {
-    test('should support decimals equals filter', async () => {
-      expect(await provider.doesFilter('decimals', 'equals', '2')).toBe(true);
-      expect(await provider.doesFilter('decimals', 'equals', '0')).toBe(true);
-      expect(await provider.doesFilter('decimals', 'equals', '3')).toBe(true);
+    test('should support decimals = filter', async () => {
+      expect(await provider.doesFilter('decimals', '=', '2')).toBe(true);
+      expect(await provider.doesFilter('decimals', '=', '0')).toBe(true);
+      expect(await provider.doesFilter('decimals', '=', '3')).toBe(true);
+    });
+
+    test('should return the 3-decimal currencies for decimals = 3', async () => {
+      const ctxt = await provider.getPrepContext(false);
+      await provider.filter(ctxt, true, 'decimals', '=', '3');
+      const [set] = await provider.executeFilters(ctxt);
+      const codes = set.list.map(c => c.code).sort();
+      expect(codes).toEqual(['BHD', 'IQD', 'JOD', 'KWD', 'LYD', 'OMR', 'TND']);
     });
 
     test('should not support other filters', async () => {
       expect(await provider.doesFilter('symbol', 'equals', '$')).toBe(false);
       expect(await provider.doesFilter('decimals', 'contains', '2')).toBe(false);
+      expect(await provider.doesFilter('decimals', 'regex', '2')).toBe(false);
       expect(await provider.doesFilter('display', 'equals', 'Dollar')).toBe(false);
+      // "equals" is not a FHIR filter operator (filter-operator uses "=")
+      expect(await provider.doesFilter('decimals', 'equals', '2')).toBe(false);
     });
 
     test('should search the names (text filter)', async () => {
@@ -211,6 +258,9 @@ describe('Iso4217Services', () => {
       await expect(
         provider.filter(ctxt, true, 'symbol', 'equals', '$')
       ).rejects.toMatchObject({ cause: 'not-supported', message: 'The filter "symbol equals $" is not understood or supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
+      await expect(
+        provider.filter(ctxt, true, 'decimals', 'equals', '2')
+      ).rejects.toMatchObject({ cause: 'not-supported', msgId: 'FILTER_NOT_UNDERSTOOD', statusCode: 422 });
     });
   });
 
@@ -220,7 +270,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '2');
+      await provider.filter(ctxt, true, 'decimals', '=', '2');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -287,7 +337,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '0');
+      await provider.filter(ctxt, true, 'decimals', '=', '0');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -345,7 +395,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '3');
+      await provider.filter(ctxt, true, 'decimals', '=', '3');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -390,7 +440,7 @@ describe('Iso4217Services', () => {
 
     beforeEach(async () => {
       ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '-1');
+      await provider.filter(ctxt, true, 'decimals', '=', '-1');
       const filters = await provider.executeFilters(ctxt);
       decimalsFilter = filters[0];
     });
@@ -432,7 +482,7 @@ describe('Iso4217Services', () => {
   describe('Execute Filters', () => {
     test('should execute single filter', async () => {
       const ctxt = await provider.getPrepContext(false);
-      await provider.filter(ctxt, true, 'decimals', 'equals', '2');
+      await provider.filter(ctxt, true, 'decimals', '=', '2');
       const results = await provider.executeFilters(ctxt);
 
       expect(results).toBeTruthy();
@@ -673,7 +723,6 @@ describe('Iso4217Services', () => {
 
       // Should have currencies with different decimal places
       expect(decimalCounts[0]).toBeGreaterThan(0); // 0 decimals
-      expect(decimalCounts[1]).toBeGreaterThan(0); // 1 decimal
       expect(decimalCounts[2]).toBeGreaterThan(0); // 2 decimals
       expect(decimalCounts[3]).toBeGreaterThan(0); // 3 decimals
       expect(decimalCounts[-1]).toBeGreaterThan(0); // -1 decimals
