@@ -298,8 +298,8 @@ class PackageCrawler {
   // http/https agents that route every connection through the SSRF lookup. Cached so
   // connections can be pooled across requests. Node doesn't do a lookup when the host is
   // an IP address (http://127.0.0.1/, http://169.254.169.254/), so those are checked here.
-  // allowLoopback: loopback addresses are allowed too (/npm-check, so it can check this
-  // server itself); other non-public addresses are still refused. The crawler doesn't use it.
+  // allowLoopback: loopback addresses are allowed too (the npm registry checks' tests, against
+  // a server on this machine); other non-public addresses are still refused. The crawler doesn't use it.
   guardedAgents({allowLoopback = false} = {}) {
     this._guardedAgentSets = this._guardedAgentSets || {};
     const key = allowLoopback ? 'loopback' : 'public';
