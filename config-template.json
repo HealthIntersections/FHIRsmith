@@ -314,15 +314,6 @@
         }
       }
     },
-    "npmprojector": {
-      "enabled": false,
-      "fhirVersion": "r4",  // Options: "r4", "r5", "stu3", "dstu2"
-      "basePath": "/fhir",   // Default: "/npmprojector"
-      "npmPath": "./data/fhir-package",
-      "resourceTypes": null,
-      "searchParametersPath": null,
-      "debounceMs": 500
-    },
     "tx": {
       "enabled": false,
       "librarySource": "/absolute/path/to/library.yml",
@@ -496,6 +487,15 @@
         "enabled": true,
         "requestTimeout": 30000,
         "maxDownloadMB": 50
+      },
+      // the terminology tests (/tester?kind=tx), run through the FHIR validator: on when there's
+      // Java to run it in; these are the defaults ("jar": a validator of your own, used as it is)
+      "tx": {
+        "enabled": true,
+        "port": 8083,
+        "idleMinutes": 15,
+        "limitMinutes": 30,
+        "testsVersion": "current"
       }
       // where each run's TestReport is sent (a /testing module, say), and the API token for it:
       // the name of an environment variable that holds it, or a file (never the token itself)

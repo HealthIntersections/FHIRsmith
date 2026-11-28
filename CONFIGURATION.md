@@ -295,7 +295,6 @@ Each module has its own entry under `modules`, documented with the module:
 | `testing` - test reports | [testing/readme.md](testing/readme.md) |
 | `tester` - testing FHIR servers | [tester/README.md](tester/README.md) |
 | `folder` | [folder/readme.md](folder/readme.md) |
-| `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |
 | `xig` | [xig/readme.md](xig/readme.md) |
 | `vcl` | [vcl/readme.md](vcl/readme.md) |
 | `publisher` | [publisher/readme.md](publisher/readme.md) |

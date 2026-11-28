@@ -260,14 +260,7 @@ const MODULES = {
     }),
     npmSigning: obj({ enabled: bool(), keyFile: str({ nonEmpty: true }) }),
     feedCheck: obj({ enabled: bool(), maxItems: int({ min: 1 }), maxTotalMB: positive(), keepMinutes: positive() }),
-    npmCheck: obj({
-      enabled: bool(),
-      maxConcurrentRuns: int({ min: 1 }),
-      runsPerWindow: count(),
-      requestTimeout: positive(),
-      maxDownloadMB: positive(),
-      control: either(bool(), obj({ registry: url(), package: str({ nonEmpty: true }), version: str({ nonEmpty: true }) }))
-    })
+    npmCheck: obsolete('is no longer used: the npm registry check is part of the tester module now (/tester?kind=npm), and its settings are modules.tester.npm')
   }),
   registry: obj({
     enabled: bool(),
@@ -318,17 +311,8 @@ const MODULES = {
       installations: map(int({ min: 1 }))
     })
   }),
-  npmprojector: obj({
-    enabled: bool(),
-    fhirVersion: str({ values: ['r4', 'r5', 'stu3', 'dstu2'] }),
-    basePath: str({ pattern: /^\//, patternText: 'a path starting with /' }),
-    npmPath: str({ nonEmpty: true }),
-    resourceTypes: arr(str({ nonEmpty: true })),
-    resourceFolders: arr(str({ nonEmpty: true })),
-    searchParametersPath: str(),
-    searchParametersFolder: str(),
-    debounceMs: count()
-  }),
+  // removed: serving a package's resources is the rest module's (load the package into an endpoint)
+  npmprojector: obsolete('the npm projector module has been removed: the rest module serves FHIR resources, with the packages loaded into an endpoint (initialSettings.loadPackages)'),
   // removed: logging in with Google, Facebook or GitHub, and API keys, are the server's (library/auth)
   token: obsolete('the token module has been removed: logins (GitHub included) and API tokens are the server\'s ("auth")'),
   tx: obj({
@@ -433,6 +417,32 @@ const MODULES = {
     maxSize: int({ min: 1 }),
     rateLimit: rateLimitWindow,
     retentionDays: positive()
+  }),
+  tester: obj({
+    enabled: bool(),
+    database: str({ nonEmpty: true }),
+    allowPrivateAddresses: bool(),
+    keepDays: positive(),
+    reportServer: url(),
+    reportTokenEnv: str({ nonEmpty: true }),
+    reportTokenFile: str({ nonEmpty: true }),
+    reportTokenHeader: str({ nonEmpty: true }),
+    packageServers: arr(url()),
+    npm: obj({
+      enabled: bool(),
+      requestTimeout: positive(),
+      maxDownloadMB: positive(),
+      control: either(bool(), obj({ registry: url(), package: str({ nonEmpty: true }), version: str({ nonEmpty: true }) }))
+    }),
+    tx: obj({
+      enabled: bool(),
+      jar: str({ nonEmpty: true }),
+      port: int({ min: 1 }),
+      idleMinutes: positive(),
+      limitMinutes: positive(),
+      timeout: positive(),
+      testsVersion: str({ nonEmpty: true })
+    })
   }),
   ips: obj({
     enabled: bool(),
