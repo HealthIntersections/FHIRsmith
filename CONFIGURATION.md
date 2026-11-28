@@ -228,6 +228,7 @@ counts in the statistics database for the period. The modules that report:
 | Packages | packages served (tarball downloads) and new package versions found by the crawler |
 | XIG | pages served, and whether the database could be accessed (and whether the last download failed) |
 | Testing | pages served, test reports received, and the number held |
+| Tester | test runs asked for, and the number kept |
 | SMART Health Links | QR codes created (SMART Health Links and Verifiable Health Links), link accesses, and the documents stored to serve them |
 | IPS | pages served, IPS documents received, and the number stored |
 | Publisher | publication runs started, and how many finished successfully |
@@ -292,6 +293,7 @@ Each module has its own entry under `modules`, documented with the module:
 | `ips` - IPS documents | [ips/readme.md](ips/readme.md) |
 | `rest` - FHIR REST servers | [rest/README.md](rest/README.md#configuration) |
 | `testing` - test reports | [testing/readme.md](testing/readme.md) |
+| `tester` - testing FHIR servers | [tester/README.md](tester/README.md) |
 | `folder` | [folder/readme.md](folder/readme.md) |
 | `npmprojector` | [npmprojector/readme.md](npmprojector/readme.md) |
 | `xig` | [xig/readme.md](xig/readme.md) |
